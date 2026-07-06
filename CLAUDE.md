@@ -5,7 +5,7 @@
 JobApplier is an autonomous job-hunting agent. It fetches new job postings, scores each one
 against a base resume, tailors the resume for good matches, finds a verified contact email at
 the hiring company, drafts a cold outreach email, and sends it — within strict safety limits.
-It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`, `contacts`, `email`) and
+It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`, `contacts`, `gmail`) and
 two skills (`match-jobs`, `draft-outreach`). Phase 1 only does cold email; no LinkedIn messaging.
 
 ## Preferences
@@ -57,8 +57,10 @@ EXACTLY, in order. Do not skip steps. Do not send more than `SEND_LIMIT_PER_RUN`
    the top verified contact from step 4c. It returns `{subject, body}`.
 
 7. If the number of real emails already sent in this run is LESS THAN `SEND_LIMIT_PER_RUN`:
-   call `email.send_email({to: <top verified contact's email>, subject, body,
-   attachment_path: <pdf_path from step 5>})`. Increment the sent count.
+   send via the `gmail` MCP `send_email` tool — to the top verified contact's email, with the
+   subject and body from step 6, and the tailored PDF (`pdf_path` from step 5) attached. Consult
+   the tool's input schema for the exact field names (e.g. `to`, `subject`, `body`, `attachments`).
+   Increment the sent count.
    If the number of real emails already sent in this run has REACHED `SEND_LIMIT_PER_RUN`:
    do NOT call `email.send_email`. Instead add this job (title, company, contact email,
    subject, body) to a "queued — send limit reached" list for the report. Do not draft further
@@ -102,7 +104,7 @@ When tailoring the base resume JSON for a specific job, follow these rules:
 
 1. Only send email to addresses marked `verified: true` by `contacts.find_company_emails`.
    Never send to an unverified guess.
-2. Never exceed `SEND_LIMIT_PER_RUN` real sends via `email.send_email` in a single run. Extra
+2. Never exceed `SEND_LIMIT_PER_RUN` real sends via the `gmail` `send_email` tool in a single run. Extra
    matches beyond the limit get queued and reported, not sent.
 3. Cold email is the only outreach channel in Phase 1. Do not attempt LinkedIn messages, LinkedIn
    connection requests, or any other outreach channel.
