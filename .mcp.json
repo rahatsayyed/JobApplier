@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "job-fetch": { "command": "npx", "args": ["tsx", "src/mcp/job-fetch.ts"] },
+    "resume": { "command": "npx", "args": ["tsx", "src/mcp/resume.ts"] },
+    "contacts": { "command": "npx", "args": ["tsx", "src/mcp/contacts.ts"] },
+    "email": { "command": "npx", "args": ["tsx", "src/mcp/email.ts"] }
+  }
+}
