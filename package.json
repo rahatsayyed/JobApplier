@@ -1,0 +1,28 @@
+{
+  "name": "jobapplier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc -p .",
+    "mcp:job-fetch": "tsx src/mcp/job-fetch.ts",
+    "mcp:resume": "tsx src/mcp/resume.ts",
+    "mcp:contacts": "tsx src/mcp/contacts.ts",
+    "mcp:email": "tsx src/mcp/email.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^11.8.0",
+    "nodemailer": "^6.10.0",
+    "playwright": "^1.58.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^6.4.17",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

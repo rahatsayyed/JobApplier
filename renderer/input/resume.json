@@ -1,0 +1,123 @@
+{
+  "name": "Rahat Sayyed",
+  "jobTitle": null,
+  "email": "rahxtsayyed@gmail.com",
+  "phone": "+91 9075459597",
+  "website": {
+    "url": "https://rahatsayyed.xyz",
+    "label": "rahatsayyed.xyz"
+  },
+  "social": {
+    "linkedin": {
+      "url": "https://linkedin.com/in/rahatsayyed",
+      "label": "linkedin.com/in/rahatsayyed"
+    },
+    "github": {
+      "url": "https://github.com/rahatsayyed",
+      "label": "github.com/rahatsayyed"
+    }
+  },
+  "summary": "Software Engineer with 3+ years of experience in frontend architecture, contract-driven API design, AI-integrated systems and blockchain; architected a system-wide state management refactor resulting in improved loading by 11 seconds, and optimized deployment workflows decreasing development build time by ~10 minutes per cycle.",
+  "experience": [
+    {
+      "title": "Software Engineer",
+      "company": "Copods",
+      "companyUrl": "https://copods.co/",
+      "location": null,
+      "start": "Jul 2025",
+      "end": "Present",
+      "description": [
+        "Led the architecture and implementation of a modular, policy-driven governance layer centralizing MCP access control and model I/O auditing, enabling consistent enforcement across agent workflows and reducing policy misconfiguration issues by ~50%.",
+        "Designed multi-policy schemas and contract-driven TypeScript APIs, reducing integration-related regressions by 70% as AI interfaces evolved.",
+        "Directed a system-wide refactor of React state management, eliminating 9+ redundant API calls and reducing initial load time by 11 seconds.",
+        "Built a unified violations ingestion pipeline across LLM, MCP and RAG flows, standardizing cross-source observability reducing incident investigation time by approximately 40% through centralized event tracing.",
+        "Developed D3-based interactive risk analytics dashboards to distinguish LLM vs. tool exposure patterns, accelerating policy debugging and strengthening audit traceability across 12+ policies.",
+        "Optimized Docker-based frontend build pipeline on AWS EC2 by restructuring dependency installation strategy and leveraging layer caching, reducing development build times by ~10 minutes and accelerating backend frontend integration cycles.",
+        "Developed role-based authentication and onboarding in Next.js with tenant-level access boundaries, eliminating post-login misrouting and reducing user-reported login errors by 30% within the first month post release.",
+        "Coordinated cross-functional efforts between frontend, backend, and AI teams, integrating 3+ evolving model capabilities with governance constraints, maintaining consistent policy enforcement as the platform introduced new tools and agents."
+      ]
+    },
+    {
+      "title": "Web 3.0 Developer",
+      "company": "Konma Dao",
+      "companyUrl": "https://www.konma.io/",
+      "location": null,
+      "start": "Feb 2023",
+      "end": "Jun 2025",
+      "description": [
+        "Designed and deployed Aiken-based smart contracts for a carbon credit marketplace, refactoring validation logic to reduce transaction failures by 80%.",
+        "Optimized smart contract architecture for Karbon Ledger, reducing transaction fees by ~35% through script refactoring and execution efficiency improvements.",
+        "Built secure Next.js frontend integrations using Lucid.js and Mesh.js, connecting 8+ Cardano smart contracts to a Haskell based backend and REST services.",
+        "Performed smart contract reviews and testing to identify edge cases and failure scenarios, improving reliability before mainnet deployment and identifying 8 vulnerabilities."
+      ]
+    }
+  ],
+  "projects": [],
+  "education": [
+    {
+      "degree": "Bachelors’ of Engineering: Computer Engineering",
+      "school": "Keystone School of Engineering",
+      "location": "Pune, India",
+      "year": "Jun 2023"
+    }
+  ],
+  "skills": [
+    {
+      "category": "Frontend",
+      "items": [
+        "React",
+        "Next.js",
+        "TypeScript",
+        "JavaScript",
+        "TailwindCSS",
+        "Server-Side Rendering",
+        "Client–Server Rendering Patterns",
+        "State Management with React Context",
+        "Performance Optimization"
+      ]
+    },
+    {
+      "category": "Backend",
+      "items": [
+        "Node.js",
+        "Express.js",
+        "REST APIs",
+        "Server-Sent Events (SSE)",
+        "API Contract Design"
+      ]
+    },
+    {
+      "category": "Blockchain",
+      "items": [
+        "Aiken",
+        "Solidity",
+        "Cardano CLI",
+        "Lucid.js",
+        "Mesh.js",
+        "Smart Contract Design",
+        "UTXO Model"
+      ]
+    },
+    {
+      "category": "Infrastructure & Data",
+      "items": [
+        "Docker",
+        "AWS EC2",
+        "Environment Configuration",
+        "Supabase",
+        "NoSQL (MongoDB",
+        "Firestore)"
+      ]
+    },
+    {
+      "category": "AI Integration",
+      "items": [
+        "OpenAI APIs",
+        "AI Response Handling",
+        "Prompt-Based Feature Integration",
+        "AI tools"
+      ]
+    }
+  ],
+  "certificates": []
+}
