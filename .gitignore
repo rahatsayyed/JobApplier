@@ -7,3 +7,4 @@ renderer/automation/
 renderer/node_modules/
 dist/
 .superpowers/
+.hunter_usage.json
