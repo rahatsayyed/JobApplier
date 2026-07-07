@@ -9,7 +9,8 @@
     "mcp:job-fetch": "tsx src/mcp/job-fetch.ts",
     "mcp:resume": "tsx src/mcp/resume.ts",
     "mcp:contacts": "tsx src/mcp/contacts.ts",
-    "mcp:email": "tsx src/mcp/email.ts"
+    "mcp:email": "tsx src/mcp/email.ts",
+    "mcp:sqlite": "tsx src/mcp/sqlite.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

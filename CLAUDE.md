@@ -62,20 +62,56 @@ the Telegram channel active (i.e. Claude Code was started with
 
 ## Commands
 
-When a message arrives (Telegram or CLI), match it against this table first. Match on intent,
-not exact wording — but do not run a stage that wasn't asked for.
+When a message arrives (Telegram or CLI), match it against this table first. **Telegram slash commands** (e.g., `/runhunt`) are preferred and more reliable; natural language fallbacks are supported but less precise.
 
-| Trigger (examples)                                    | Action                                              |
-| ------------------------------------------------------ | --------------------------------------------------- |
-| "run hunt", "run the hunt", "find jobs", cron prompt   | Run the full hunt pipeline (below).                  |
-| "status", "summary", "how are things"                  | Read current SQLite state (jobs/contacts/outreach counts, no tool side effects) and report it. Do not run any pipeline stage. |
-| "apply to job #N", "apply to <company>"                | Phase 2 — not built yet. Reply that Phase 2 (apply) isn't implemented; point to `docs/superpowers/plans/2026-07-07-jobapplier-phase2.md`. |
-| "apply all", "apply to today's matches"                | Same — Phase 2 not built yet. |
-| "connect <job#/company>"                                | Phase 2 — not built yet. Same pointer. |
-| "check replies"                                         | Phase 3 — not built yet. Point to `docs/superpowers/plans/2026-07-07-jobapplier-phase3.md`. |
+| Trigger | Action |
+|---------|--------|
+| `/runhunt` or "run hunt", "find jobs" | Run the full hunt pipeline (below). |
+| `/status` or "status", "summary" | Query SQLite: count of jobs (total/matched/by-source), outreach (sent/queued/failed), etc. No side effects, instant response. |
+| `/followups` | Phase 1.5 — send follow-up nudges to old sent emails (if implemented). |
+| `/apply #N` or "apply to job #N" | Phase 2 — not built yet. Reply with link to Phase 2 plan. |
+| `/applyall` | Phase 2 — not built yet. |
+| `/connect` | Phase 2 — not built yet. |
+| `/checkreplies` | Phase 3 — not built yet. Reply with link to Phase 3 plan. |
 
-As Phase 2/3 get implemented, add their commands' real actions here — do not leave this table
-silently stale.
+**Setting up Telegram slash commands** (one-time, via BotFather):
+1. Message @BotFather on Telegram.
+2. Select your bot, then `/setcommands`.
+3. Paste this list (one per line):
+   ```
+   runhunt - Discover jobs, match, find contacts, send cold emails
+   status - Show job/outreach/thread stats
+   followups - Send follow-up nudges (Phase 1.5)
+   apply - Apply to a job (Phase 2 — not yet)
+   connect - Connect on LinkedIn (Phase 2 — not yet)
+   checkreplies - Check replies (Phase 3 — not yet)
+   ```
+
+As Phase 2/3 get implemented, update BotFather's command list and this table — do not leave
+commands silently stale.
+
+## Status Command
+
+When told `/status` or "show status", query the SQLite MCP for stats (no tool side effects, instant):
+
+1. Call `sqlite.get_job_stats()` → returns total, by_status, by_source.
+2. Call `sqlite.get_outreach_stats()` → returns total, by_status, by_month.
+3. Format a concise summary:
+   ```
+   📊 Job Stats
+   • Total discovered: N
+   • Matched (≥70): M
+   • By source: Adzuna X, Remotive Y, RemoteOK Z
+
+   📧 Outreach Stats
+   • Sent: N
+   • Queued (limit reached): M
+   • Failed: K
+   • Last sent: [date]
+   ```
+4. Post to Telegram. No other action.
+
+---
 
 ## Running the hunt (subagent-per-stage)
 
