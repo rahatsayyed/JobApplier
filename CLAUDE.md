@@ -33,24 +33,28 @@ the Telegram channel active (i.e. Claude Code was started with
 
 **Every command → Telegram response:**
 - Every message the user sends (run hunt, status, apply, etc.) gets an immediate response back
-  to Telegram. Never go silent — always reply, even if it's "working..." or "error: ...".
+  to Telegram using the `telegram.reply` tool. Never go silent — always reply, even if it's
+  "working..." or "error: ...".
+- Use: `telegram.reply({chat_id: <extracted from incoming message>, text: "Your response"})`
 
 **Long-running tasks → mid-task progress updates:**
 - If a task will take more than ~30 seconds (e.g., discovering 50 jobs, matching them, finding
-  contacts), post progress updates to Telegram mid-run (e.g., "Discovered 50 jobs, matching...",
-  then "Matched 10, finding contacts...", then "Sent 1 email").
+  contacts), call `telegram.reply()` mid-run with progress updates (e.g., "Discovered 50 jobs,
+  matching...", then "Matched 10, finding contacts...", then "Sent 1 email").
 - This keeps the user informed and confirms the agent is still running, not frozen.
 
 **Final summaries:**
-- After all stages complete, post the full summary to Telegram (counts, job titles, any manual
-  contact flags or failures).
+- After all stages complete, call `telegram.reply()` with the full summary (counts, job titles,
+  any manual contact flags or failures).
 - If both a terminal and Telegram are available, prioritize Telegram — that's the channel the
   user actually reads.
 
 **Error handling:**
-- Any question you need the user to answer → Telegram.
-- Any error you can't recover from → Telegram (log + ask for guidance).
-- "Needs manual contact" or "queued — send limit reached" items → Telegram (never silent).
+- Any question you need the user to answer → `telegram.reply()`.
+- Any error you can't recover from → `telegram.reply()` with error message (log + ask for
+  guidance).
+- "Needs manual contact" or "queued — send limit reached" items → `telegram.reply()` (never
+  silent).
 
 **Fallback (no Telegram):**
 - If Telegram is NOT active (e.g., a plain local run without `--channels`), print clearly to
@@ -59,6 +63,14 @@ the Telegram channel active (i.e. Claude Code was started with
 **Keep summaries concise:**
 - Counts, job titles, companies — not full email bodies or raw JSON, unless the user explicitly
   asks.
+
+**Using the `telegram.reply` tool:**
+- Incoming Telegram messages arrive as `<channel source="telegram" chat_id="..." ...>` tags.
+- Extract `chat_id` from the tag and pass it to `telegram.reply({chat_id: <id>, text: "<message>"})`.
+- Pass `reply_to: <message_id>` only if replying to an earlier message in the thread; omit for
+  normal responses.
+- Use `telegram.reply({chat_id, text, files: ["/path/to/file"]})` to attach files (e.g., PDFs).
+- The reply tool is the only way messages reach the user's Telegram chat — never rely on stdout.
 
 ## Commands
 
