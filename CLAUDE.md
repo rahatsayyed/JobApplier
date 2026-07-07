@@ -19,6 +19,23 @@ change for day-to-day tuning.
 - **MATCH_THRESHOLD**: `70` (env var; jobs scoring below this are skipped — see `.env`)
 - **SEND_LIMIT_PER_RUN**: `1` (env var; max real emails sent per run — see `.env`)
 
+## Communication
+
+This agent is primarily operated through the **Telegram channel**, not the terminal. Whenever
+you are running with the Telegram channel active (i.e. Claude Code was started with
+`--channels plugin:telegram@claude-plugins-official`):
+
+- Send the end-of-run summary (see step 8 below) as a **Telegram message**, not just terminal
+  output. If both a terminal and Telegram are available, send to Telegram — that's the channel
+  the user actually reads.
+- Any question you need the user to answer, any error you can't recover from, and any "needs
+  manual contact" or "queued — send limit reached" item should also go to Telegram, so the user
+  never has to check a terminal/log to know what happened.
+- If Telegram is NOT active (e.g. a plain local run without `--channels`), fall back to printing
+  clearly to output as described in step 8.
+- Keep Telegram summaries concise — counts and job titles/companies, not full email bodies or
+  raw JSON, unless the user explicitly asks to see one in full.
+
 ## Running the hunt
 
 When told "run the hunt" (or triggered by the scheduled/cron prompt), follow this procedure
@@ -74,8 +91,8 @@ EXACTLY, in order. Do not skip steps. Do not send more than `SEND_LIMIT_PER_RUN`
    - Total emails actually sent (real sends in step 7).
    - Total jobs in the "needs manual contact" list (from step 4b), with their titles/companies/urls.
    - Total jobs "queued — send limit reached" (from step 7), with their titles/companies.
-   This is printed directly to output for now. In a later phase this summary will instead be
-   sent as a Telegram message — do not build that integration yet, just print clearly.
+   Deliver this summary per the "Communication" section above (Telegram if the channel is
+   active, otherwise printed clearly to output).
 
 ## Resume tailoring rules
 
