@@ -8,6 +8,12 @@ the hiring company, drafts a cold outreach email, and sends it — within strict
 It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`, `contacts`, `gmail`) and
 two skills (`match-jobs`, `draft-outreach`). Phase 1 only does cold email; no LinkedIn messaging.
 
+The orchestrating session does not call the `job-fetch`/`contacts`/`resume`/`gmail` tools
+directly for the hunt pipeline — it dispatches one subagent per pipeline stage (defined in
+`.claude/agents/`: `discoverer`, `matcher`, `contact-finder`, `outreach-preparer`, `sender`) via
+the Task tool, and only ever sees each stage's compact JSON result. See "Running the hunt"
+below.
+
 ## Preferences
 
 Edit these to change what the agent hunts for. These are the ONLY lines you should need to
@@ -25,74 +31,80 @@ This agent is primarily operated through the **Telegram channel**, not the termi
 you are running with the Telegram channel active (i.e. Claude Code was started with
 `--channels plugin:telegram@claude-plugins-official`):
 
-- Send the end-of-run summary (see step 8 below) as a **Telegram message**, not just terminal
-  output. If both a terminal and Telegram are available, send to Telegram — that's the channel
-  the user actually reads.
+- Send the end-of-run summary (see "Report" step below) as a **Telegram message**, not just
+  terminal output. If both a terminal and Telegram are available, send to Telegram — that's the
+  channel the user actually reads.
 - Any question you need the user to answer, any error you can't recover from, and any "needs
   manual contact" or "queued — send limit reached" item should also go to Telegram, so the user
   never has to check a terminal/log to know what happened.
 - If Telegram is NOT active (e.g. a plain local run without `--channels`), fall back to printing
-  clearly to output as described in step 8.
+  clearly to output as described in the "Report" step below.
 - Keep Telegram summaries concise — counts and job titles/companies, not full email bodies or
   raw JSON, unless the user explicitly asks to see one in full.
 
-## Running the hunt
+## Commands
 
-When told "run the hunt" (or triggered by the scheduled/cron prompt), follow this procedure
-EXACTLY, in order. Do not skip steps. Do not send more than `SEND_LIMIT_PER_RUN` real emails.
+When a message arrives (Telegram or CLI), match it against this table first. Match on intent,
+not exact wording — but do not run a stage that wasn't asked for.
 
-1. Call `job-fetch.list_new_jobs({role, location})` using the Role and Location from the
-   Preferences block above. This returns a JSON array of new Job objects
-   `{id, source, title, company, url, apply_url, description}` that have not been seen before.
-   If the array is empty, skip straight to step 8 and report zero new jobs.
+| Trigger (examples)                                    | Action                                              |
+| ------------------------------------------------------ | --------------------------------------------------- |
+| "run hunt", "run the hunt", "find jobs", cron prompt   | Run the full hunt pipeline (below).                  |
+| "status", "summary", "how are things"                  | Read current SQLite state (jobs/contacts/outreach counts, no tool side effects) and report it. Do not run any pipeline stage. |
+| "apply to job #N", "apply to <company>"                | Phase 2 — not built yet. Reply that Phase 2 (apply) isn't implemented; point to `docs/superpowers/plans/2026-07-07-jobapplier-phase2.md`. |
+| "apply all", "apply to today's matches"                | Same — Phase 2 not built yet. |
+| "connect <job#/company>"                                | Phase 2 — not built yet. Same pointer. |
+| "check replies"                                         | Phase 3 — not built yet. Point to `docs/superpowers/plans/2026-07-07-jobapplier-phase3.md`. |
 
-2. Call `resume.get_base_resume()` ONCE. Keep this base resume JSON in memory — do not call it
-   again for each job.
+As Phase 2/3 get implemented, add their commands' real actions here — do not leave this table
+silently stale.
 
-3. For EACH job returned in step 1, in order:
-   a. Invoke the `match-jobs` skill with the job and the base resume JSON. It returns
-      `{score, reasons, missing_keywords}`.
-   b. If `score < MATCH_THRESHOLD` (read the `MATCH_THRESHOLD` env var; default 70 if unset),
-      SKIP this job — do not contact, do not tailor a resume, do not draft anything. Move to
-      the next job.
-   c. If `score >= MATCH_THRESHOLD`, this job is a MATCH — continue to step 4 for this job.
+## Running the hunt (subagent-per-stage)
 
-4. For each MATCHED job:
-   a. Call `contacts.find_company_emails({company: job.company, domain?: <company domain if known>})`.
-      This returns a ranked array of `{email, type, verified, source, confidence}`.
-   b. If there is NO entry with `verified: true` in the result, DO NOT send any email for this
-      job. Add the job (title, company, url) to a "needs manual contact" list to include in the
-      final report, and move on to the next matched job — do not proceed to steps 5-7 for it.
-   c. If there IS at least one `verified: true` entry, take the highest-confidence verified one
-      as the "top verified contact" and continue to step 5 for this job.
+When told "run hunt" (see Commands above), run the pipeline below. **You (the orchestrating
+session) do not call `job-fetch`, `contacts`, `resume`, or `gmail` tools yourself.** Instead,
+dispatch a fresh subagent per stage using the Task tool, so each stage's tool output and
+reasoning stay out of your own context — you only see the compact JSON each stage returns. Do
+not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails.
 
-5. Tailor the base resume JSON to this job following the "Resume tailoring rules" below. Then
-   call `resume.render_resume({resume_json: <tailored resume>})`, which returns `{pdf_path}`.
-   Keep this `pdf_path` for step 7.
+1. **Discover** — dispatch `subagent_type: discoverer` with the Role and Location from
+   Preferences. It returns a JSON array of new Job objects. If empty, skip to step 6 and report
+   zero new jobs.
 
-6. Invoke the `draft-outreach` skill with the job, a short summary of the tailored resume, and
-   the top verified contact from step 4c. It returns `{subject, body}`.
+2. **Match** — dispatch `subagent_type: matcher` with the full job list from step 1. It returns
+   `[{job_id, score, reasons, missing_keywords}, ...]` for every job (unfiltered).
+   In the orchestrating session (cheap, no tools needed), filter this yourself: any `job_id`
+   with `score < MATCH_THRESHOLD` (env var, default 70) is SKIPPED — not contacted, not
+   tailored, not drafted. Keep the list of MATCHED job_ids and their full Job objects (from
+   step 1) for step 3.
 
-7. If the number of real emails already sent in this run is LESS THAN `SEND_LIMIT_PER_RUN`:
-   send via the `gmail` MCP `send_email` tool — to the top verified contact's email, with the
-   subject and body from step 6, and the tailored PDF (`pdf_path` from step 5) attached. Consult
-   the tool's input schema for the exact field names (e.g. `to`, `subject`, `body`, `attachments`).
-   Increment the sent count.
-   If the number of real emails already sent in this run has REACHED `SEND_LIMIT_PER_RUN`:
-   do NOT call `email.send_email`. Instead add this job (title, company, contact email,
-   subject, body) to a "queued — send limit reached" list for the report. Do not draft further
-   emails once queued jobs are just being logged — still run steps 5-6 for every match so the
-   report is complete, only step 7's actual send is gated by the limit.
+3. **Find contacts** — dispatch `subagent_type: contact-finder` with the list of MATCHED jobs
+   from step 2. It returns `[{job_id, contact: {...}|null}, ...]`. Split this yourself:
+   - `contact: null` → add to the "needs manual contact" list for the final report; do not
+     proceed to step 4 for this job.
+   - `contact: {...}` (verified) → keep for step 4.
 
-8. After all jobs from step 1 have been processed, print a clear summary to output with these
-   exact counts:
-   - Total new jobs fetched (from step 1).
-   - Total jobs matched (score >= MATCH_THRESHOLD).
-   - Total emails actually sent (real sends in step 7).
-   - Total jobs in the "needs manual contact" list (from step 4b), with their titles/companies/urls.
-   - Total jobs "queued — send limit reached" (from step 7), with their titles/companies.
-   Deliver this summary per the "Communication" section above (Telegram if the channel is
-   active, otherwise printed clearly to output).
+4. **Prepare outreach** — for EACH job with a verified contact from step 3, dispatch a separate
+   `subagent_type: outreach-preparer` call with that one job + its contact + the base resume
+   (you may fetch the base resume once yourself via a single lightweight call, or let the first
+   preparer subagent fetch it — either is fine since it's read-only). Each call returns
+   `{job_id, pdf_path, subject, body, to}`. Collect all of these into one list. These can be
+   dispatched one at a time or, if the runtime supports concurrent Task calls, in parallel —
+   either way, do not call `gmail.send_email` yourself for any of them.
+
+5. **Send** — dispatch ONE `subagent_type: sender` call with the entire list of prepared items
+   from step 4 and the current `SEND_LIMIT_PER_RUN` value. It returns
+   `{sent: [...], queued: [...], failed: [...]}`. This is the only stage that ever calls
+   `gmail.send_email`, which keeps the per-run cap enforced in exactly one place.
+
+6. **Report** — after all stages complete (or immediately, if step 1 returned zero jobs), deliver
+   a clear summary per the "Communication" section above with these exact counts:
+   - Total new jobs fetched (step 1).
+   - Total jobs matched (step 2, `score >= MATCH_THRESHOLD`).
+   - Total emails actually sent (`sent` from step 5).
+   - Total jobs "needs manual contact" (step 3), with titles/companies/urls.
+   - Total jobs "queued — send limit reached" (`queued` from step 5), with titles/companies.
+   - Total "failed" sends (step 5), with titles/companies and the error, if any.
 
 ## Resume tailoring rules
 
