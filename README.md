@@ -21,8 +21,8 @@ An autonomous job-hunting agent that discovers relevant job postings, matches th
 ### 1. Clone and install
 
 ```bash
-git clone <repo> ~/Documents/Projects/personal/JobApplier
-cd ~/Documents/Projects/personal/JobApplier
+git clone https://github.com/rahatsayyed/JobApplier.git
+cd JobApplier
 npm install
 npx playwright install --with-deps chromium
 ```
@@ -37,7 +37,6 @@ cp .env.example .env
 # - ADZUNA_APP_ID, ADZUNA_APP_KEY (free)
 # - SERPER_API_KEY (2,500 free, then $1/1k)
 # - HUNTER_API_KEY (optional, capped 50/mo, off by default)
-# - GMAIL_USER, GMAIL_APP_PASSWORD (for sending; or set up Gmail MCP OAuth)
 # - TELEGRAM_BOT_TOKEN (if using Telegram channel)
 ```
 
@@ -48,6 +47,7 @@ See `docs/model-auth-setup.md` for the full model/provider setup (Grok via CCR o
 Choose one of two providers:
 
 **Option A: Grok/xAI via Claude Code Router (currently working)**
+
 ```bash
 # 1. Install CCR locally (not globally — macOS permissions issue)
 npm install @musistudio/claude-code-router@2
@@ -88,6 +88,7 @@ EOF
 ```
 
 **Option B: OpenRouter/DeepSeek (parked — needs funding, but direct, no proxy needed)**
+
 ```bash
 # Put in .env or .env.openrouter:
 ANTHROPIC_BASE_URL=https://openrouter.ai/api
@@ -99,17 +100,6 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek/deepseek-v4-pro
 
 ### 4. (First time only) Set up Gmail
 
-Two paths; pick one:
-
-**Simple (Phase 1 smoke test):** Gmail app password
-```bash
-# 1. In your Google Account, generate an app password (Settings → Security → App passwords)
-# 2. Put in .env:
-GMAIL_USER=your@gmail.com
-GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
-```
-
-**Better (Phase 3 conversations, replies):** GongRzhe Gmail MCP with OAuth
 ```bash
 # See docs/gmail-mcp-setup.md for detailed steps
 # The MCP is already in .mcp.json; just run the OAuth flow once:
@@ -139,6 +129,7 @@ claude -p "list your available MCP tools" --mcp-config ./.mcp.json --strict-mcp-
 ### Option A: Interactive (Telegram channel — recommended for ongoing use)
 
 **One-time Telegram setup:**
+
 ```bash
 # Install the official Telegram plugin
 claude /plugin install telegram@claude-plugins-official
@@ -153,6 +144,7 @@ claude --mcp-config ./.mcp.json --channels plugin:telegram@claude-plugins-offici
 ```
 
 **Send commands via Telegram:**
+
 ```
 user: "run hunt"
 → agent discovers jobs, matches, finds contacts, drafts emails, sends (up to SEND_LIMIT_PER_RUN)
@@ -180,6 +172,7 @@ user: "apply to job #3"
 ```
 
 `run-hunt.sh` automatically:
+
 - Sources `.env` and `.env.ccr`
 - Ensures CCR gateway is running
 - Runs Claude Code with `--permission-mode bypassPermissions` (safe for cron)
@@ -309,6 +302,7 @@ claude --mcp-config ./.mcp.json --channels plugin:telegram@claude-plugins-offici
 ```
 
 Or as a **systemd service** (`~/jobapplier.service`):
+
 ```ini
 [Unit]
 Description=JobApplier Telegram Channel
@@ -417,14 +411,14 @@ See `docs/superpowers/specs/2026-07-07-jobapplier-phase3-design.md` and the Phas
 
 ## Commands (via Telegram or CLI)
 
-| Command | What it does |
-|---------|---|
-| `run hunt` | Full pipeline: discover → match → contact → draft → send. |
-| `status` | Show current DB counts (jobs/contacts/sent) — no side effects. |
-| `apply to job #3` | Phase 2 not yet — replies with link to plan. |
-| `apply all` | Phase 2 not yet. |
-| `connect <company>` | Phase 2 not yet. |
-| `check replies` | Phase 3 not yet. |
+| Command             | What it does                                                   |
+| ------------------- | -------------------------------------------------------------- |
+| `run hunt`          | Full pipeline: discover → match → contact → draft → send.      |
+| `status`            | Show current DB counts (jobs/contacts/sent) — no side effects. |
+| `apply to job #3`   | Phase 2 not yet — replies with link to plan.                   |
+| `apply all`         | Phase 2 not yet.                                               |
+| `connect <company>` | Phase 2 not yet.                                               |
+| `check replies`     | Phase 3 not yet.                                               |
 
 ---
 
