@@ -27,20 +27,38 @@ change for day-to-day tuning.
 
 ## Communication
 
-This agent is primarily operated through the **Telegram channel**, not the terminal. Whenever
-you are running with the Telegram channel active (i.e. Claude Code was started with
+This agent is primarily operated through the **Telegram channel**. Whenever you are running with
+the Telegram channel active (i.e. Claude Code was started with
 `--channels plugin:telegram@claude-plugins-official`):
 
-- Send the end-of-run summary (see "Report" step below) as a **Telegram message**, not just
-  terminal output. If both a terminal and Telegram are available, send to Telegram — that's the
-  channel the user actually reads.
-- Any question you need the user to answer, any error you can't recover from, and any "needs
-  manual contact" or "queued — send limit reached" item should also go to Telegram, so the user
-  never has to check a terminal/log to know what happened.
-- If Telegram is NOT active (e.g. a plain local run without `--channels`), fall back to printing
-  clearly to output as described in the "Report" step below.
-- Keep Telegram summaries concise — counts and job titles/companies, not full email bodies or
-  raw JSON, unless the user explicitly asks to see one in full.
+**Every command → Telegram response:**
+- Every message the user sends (run hunt, status, apply, etc.) gets an immediate response back
+  to Telegram. Never go silent — always reply, even if it's "working..." or "error: ...".
+
+**Long-running tasks → mid-task progress updates:**
+- If a task will take more than ~30 seconds (e.g., discovering 50 jobs, matching them, finding
+  contacts), post progress updates to Telegram mid-run (e.g., "Discovered 50 jobs, matching...",
+  then "Matched 10, finding contacts...", then "Sent 1 email").
+- This keeps the user informed and confirms the agent is still running, not frozen.
+
+**Final summaries:**
+- After all stages complete, post the full summary to Telegram (counts, job titles, any manual
+  contact flags or failures).
+- If both a terminal and Telegram are available, prioritize Telegram — that's the channel the
+  user actually reads.
+
+**Error handling:**
+- Any question you need the user to answer → Telegram.
+- Any error you can't recover from → Telegram (log + ask for guidance).
+- "Needs manual contact" or "queued — send limit reached" items → Telegram (never silent).
+
+**Fallback (no Telegram):**
+- If Telegram is NOT active (e.g., a plain local run without `--channels`), print clearly to
+  output instead.
+
+**Keep summaries concise:**
+- Counts, job titles, companies — not full email bodies or raw JSON, unless the user explicitly
+  asks.
 
 ## Commands
 
