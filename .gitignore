@@ -9,4 +9,6 @@ dist/
 .superpowers/
 .hunter_usage.json
 secrets/
-.env.grok
+.env
+.env.*
+!.env.example
