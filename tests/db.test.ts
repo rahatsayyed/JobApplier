@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { openDb, isSeen, saveJob, getJob, saveContact, saveOutreach } from '../src/db';
+import { openDb, isSeen, saveJob, getJob, saveContact, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
 describe('db', () => {

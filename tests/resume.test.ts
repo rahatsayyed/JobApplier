@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { getBaseResume, renderResume } from '../src/resume';
+import { getBaseResume, renderResume } from '../src/resume.js';
 import { existsSync, statSync } from 'node:fs';
 
 test('renders base resume to a PDF', async () => {

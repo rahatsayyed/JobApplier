@@ -1,7 +1,7 @@
-import Database from 'better-sqlite3';
+import BetterSqlite3 from 'better-sqlite3';
 
-export function openDb(path: string = 'data.sqlite'): Database.Database {
-  const db = new Database(path);
+export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
+  const db = new BetterSqlite3(path);
 
   // Create tables if they don't exist
   db.exec(`
@@ -45,7 +45,7 @@ export function openDb(path: string = 'data.sqlite'): Database.Database {
   return db;
 }
 
-export function isSeen(db: Database.Database, id: string): boolean {
+export function isSeen(db: BetterSqlite3.Database, id: string): boolean {
   const result = db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(id);
   return result !== undefined;
 }
@@ -62,7 +62,7 @@ export interface Job {
   status?: string;
 }
 
-export function saveJob(db: Database.Database, job: Job): void {
+export function saveJob(db: BetterSqlite3.Database, job: Job): void {
   db.prepare(`
     INSERT OR IGNORE INTO jobs (id, source, title, company, url, apply_url, description, score, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -79,7 +79,7 @@ export function saveJob(db: Database.Database, job: Job): void {
   );
 }
 
-export function getJob(db: Database.Database, id: string): Job | undefined {
+export function getJob(db: BetterSqlite3.Database, id: string): Job | undefined {
   const result = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as any;
   return result ? {
     id: result.id,
@@ -103,7 +103,7 @@ export interface Contact {
   confidence?: number;
 }
 
-export function saveContact(db: Database.Database, contact: Contact): void {
+export function saveContact(db: BetterSqlite3.Database, contact: Contact): void {
   db.prepare(`
     INSERT INTO contacts (company, email, type, verified, source, confidence)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -126,7 +126,7 @@ export interface Outreach {
   status?: string;
 }
 
-export function saveOutreach(db: Database.Database, outreach: Outreach): void {
+export function saveOutreach(db: BetterSqlite3.Database, outreach: Outreach): void {
   db.prepare(`
     INSERT INTO outreach (job_id, contact_email, subject, body, resume_path, status)
     VALUES (?, ?, ?, ?, ?, ?)

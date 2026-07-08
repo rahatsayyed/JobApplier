@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeAdzuna } from '../src/sources/adzuna';
-import { normalizeRemotive } from '../src/sources/remotive';
-import { normalizeRemoteok } from '../src/sources/remoteok';
-import { normalizeSerper } from '../src/sources/serper';
+import { normalizeAdzuna } from '../src/sources/adzuna.js';
+import { normalizeRemotive } from '../src/sources/remotive.js';
+import { normalizeRemoteok } from '../src/sources/remoteok.js';
+import { normalizeSerper } from '../src/sources/serper.js';
 
 describe('normalizeAdzuna', () => {
   it('maps adzuna results to Job[]', () => {
