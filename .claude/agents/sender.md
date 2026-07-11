@@ -12,8 +12,14 @@ cap enforceable in one place.
 ## Steps
 
 1. Take items from the list in order. For each one, while the number already sent in this call
-   is LESS THAN `SEND_LIMIT_PER_RUN`: call `gmail.send_email` with `to`, `subject`, `body`, and
-   the PDF at `pdf_path` attached (check the tool's schema for the exact attachment field name).
+   is LESS THAN `SEND_LIMIT_PER_RUN`: call `gmail.send_email` with `to`, `subject`, the PDF at
+   `pdf_path` attached (check the tool's schema for the exact attachment field name), and BOTH
+   body formats so the email renders correctly regardless of the recipient's client:
+   - `body`: the item's `body` field, unmodified (plain-text fallback).
+   - `htmlBody`: the same content converted to HTML — split `body` on blank lines (`\n\n`) into
+     paragraphs and wrap each in `<p>...</p>`; convert any remaining single `\n` within a
+     paragraph to `<br>`. Do not otherwise alter the wording.
+   - `mimeType`: `"multipart/alternative"` (sends both versions; the client picks the best one).
    Increment your sent count on success.
 2. Once the sent count reaches `SEND_LIMIT_PER_RUN`, stop sending — do not call `send_email`
    again this run, even if more items remain.
