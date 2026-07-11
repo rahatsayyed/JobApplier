@@ -160,8 +160,13 @@ export async function applyEasyApply(
     const page = await context.newPage();
     await page.goto(job.url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
-    const easyApplyButton = await page.$(SELECTORS.easyApplyButton);
-    if (!easyApplyButton) {
+    // Locators (not ElementHandles) are used throughout: a Locator re-resolves its
+    // selector at the moment of each action, so it survives the re-renders/animations
+    // of LinkedIn's Easy Apply modal. An ElementHandle instead pins to one DOM node
+    // captured at query time, which can detach before a later `.click()`/`.fill()`
+    // fires — causing "Element is not attached to the DOM" failures.
+    const easyApplyButtonLocator = page.locator(SELECTORS.easyApplyButton);
+    if ((await easyApplyButtonLocator.count()) === 0) {
       return recordAndReturn(
         database,
         job_id,
@@ -169,13 +174,16 @@ export async function applyEasyApply(
         'Easy Apply button not found (posting may not support Easy Apply)'
       );
     }
-    await easyApplyButton.click();
+    await easyApplyButtonLocator.first().click();
 
     for (let step = 0; step < MAX_FORM_STEPS; step++) {
-      const groupings = await page.$$(SELECTORS.formGrouping);
-      for (const grouping of groupings) {
-        const labelEl = await grouping.$(SELECTORS.questionLabel);
-        const questionText = labelEl ? ((await labelEl.textContent()) ?? '').trim() : '';
+      const groupingLocator = page.locator(SELECTORS.formGrouping);
+      const groupingCount = await groupingLocator.count();
+      for (let i = 0; i < groupingCount; i++) {
+        const grouping = groupingLocator.nth(i);
+        const labelLocator = grouping.locator(SELECTORS.questionLabel);
+        const questionText =
+          (await labelLocator.count()) > 0 ? ((await labelLocator.first().textContent()) ?? '').trim() : '';
         if (!questionText) continue;
 
         const answer = resolveAnswer(questionText, answers);
@@ -191,17 +199,20 @@ export async function applyEasyApply(
           );
         }
 
-        const inputEl = await grouping.$(SELECTORS.textInput);
-        if (inputEl) {
-          await inputEl.fill(String(answer));
+        const inputLocator = grouping.locator(SELECTORS.textInput);
+        if ((await inputLocator.count()) > 0) {
+          await inputLocator.first().fill(String(answer));
         }
       }
 
-      const submitButton = await page.$(SELECTORS.submitButton);
-      if (submitButton) break;
+      const submitButtonLocator = page.locator(SELECTORS.submitButton);
+      if ((await submitButtonLocator.count()) > 0) break;
 
-      const nextButton = (await page.$(SELECTORS.nextButton)) ?? (await page.$(SELECTORS.reviewButton));
-      if (!nextButton) {
+      const nextButtonLocator = page.locator(SELECTORS.nextButton);
+      const nextButtonCount = await nextButtonLocator.count();
+      const reviewButtonLocator = page.locator(SELECTORS.reviewButton);
+      const reviewButtonCount = nextButtonCount > 0 ? 0 : await reviewButtonLocator.count();
+      if (nextButtonCount === 0 && reviewButtonCount === 0) {
         return recordAndReturn(
           database,
           job_id,
@@ -209,22 +220,26 @@ export async function applyEasyApply(
           'could not find a next/review/submit control on the Easy Apply form'
         );
       }
-      await nextButton.click();
+      if (nextButtonCount > 0) {
+        await nextButtonLocator.first().click();
+      } else {
+        await reviewButtonLocator.first().click();
+      }
     }
 
-    const resumeUploadEl = await page.$(SELECTORS.resumeUpload);
+    const resumeUploadCount = await page.locator(SELECTORS.resumeUpload).count();
     const prepared = database
       .prepare('SELECT resume_path FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
       .get(job_id) as { resume_path: string } | undefined;
-    if (resumeUploadEl && prepared?.resume_path) {
+    if (resumeUploadCount > 0 && prepared?.resume_path) {
       await page.setInputFiles(SELECTORS.resumeUpload, prepared.resume_path);
     }
 
-    const submitButton = await page.$(SELECTORS.submitButton);
-    if (!submitButton) {
+    const finalSubmitButtonLocator = page.locator(SELECTORS.submitButton);
+    if ((await finalSubmitButtonLocator.count()) === 0) {
       return recordAndReturn(database, job_id, 'manual_review', 'submit button not found on final step');
     }
-    await submitButton.click();
+    await finalSubmitButtonLocator.first().click();
 
     return recordAndReturn(database, job_id, 'submitted');
   } catch (err) {

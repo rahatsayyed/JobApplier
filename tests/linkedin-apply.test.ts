@@ -66,8 +66,64 @@ function makeFakeElement(overrides: Partial<{ textContent: () => Promise<string 
   return {
     click: vi.fn().mockResolvedValue(undefined),
     fill: vi.fn().mockResolvedValue(undefined),
-    $: vi.fn().mockResolvedValue(null),
     textContent: overrides.textContent ?? vi.fn().mockResolvedValue(null),
+  };
+}
+
+/**
+ * A minimal fake Playwright `Locator`: wraps zero-or-one fake element(s) and exposes
+ * the subset of the Locator API the implementation uses (`count`, `first`, `nth`,
+ * `click`, `fill`, `textContent`, `locator`). `first()`/`nth()` return the same
+ * locator object since these fakes only ever represent a single logical match.
+ */
+function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
+  const locator: any = {
+    count: vi.fn().mockResolvedValue(el ? 1 : 0),
+    click: vi.fn(async () => {
+      if (!el) throw new Error('no element matched by locator');
+      return el.click();
+    }),
+    fill: vi.fn(async (value: string) => {
+      if (!el) throw new Error('no element matched by locator');
+      return el.fill(value);
+    }),
+    textContent: vi.fn(async () => (el ? el.textContent() : null)),
+    locator: vi.fn(() => makeFakeLocator(null)),
+  };
+  locator.first = vi.fn(() => locator);
+  locator.nth = vi.fn(() => locator);
+  return locator;
+}
+
+/**
+ * A fake "form grouping" locator: represents one `.nth(i)` result of the groupings
+ * locator, and itself exposes `.locator(selector)` for the nested question-label /
+ * text-input lookups within that grouping.
+ */
+function makeFakeGroupingLocator({
+  label = null,
+  input = null,
+}: {
+  label?: ReturnType<typeof makeFakeElement> | null;
+  input?: ReturnType<typeof makeFakeElement> | null;
+} = {}) {
+  return {
+    locator: vi.fn((selector: string) => {
+      if (selector === 'label') return makeFakeLocator(label);
+      return makeFakeLocator(input);
+    }),
+  };
+}
+
+/**
+ * A fake locator representing multiple matches (e.g. `page.locator(formGrouping)`),
+ * backed by an array of grouping-locator-like objects (see above).
+ */
+function makeFakeGroupingsLocator(groupings: ReturnType<typeof makeFakeGroupingLocator>[]) {
+  return {
+    count: vi.fn().mockResolvedValue(groupings.length),
+    first: vi.fn(() => groupings[0]),
+    nth: vi.fn((i: number) => groupings[i]),
   };
 }
 
@@ -121,24 +177,16 @@ describe('applyEasyApply control flow', () => {
     const unrecognizedLabel = makeFakeElement({
       textContent: vi.fn().mockResolvedValue('What is your favorite color?'),
     });
-    const grouping = {
-      $: vi.fn().mockImplementation(async (selector: string) => {
-        if (selector === 'label') return unrecognizedLabel;
-        return null;
-      }),
-    };
+    const grouping = makeFakeGroupingLocator({ label: unrecognizedLabel });
 
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
-      $: vi.fn().mockImplementation(async (selector: string) => {
-        if (selector.includes('Easy Apply')) return easyApplyButton;
-        if (selector.includes('Submit application')) return submitButton;
-        if (selector.includes('Continue to next step')) return nextButton;
-        return null;
-      }),
-      $$: vi.fn().mockImplementation(async (selector: string) => {
-        if (selector.includes('jobs-easy-apply-form-section__grouping')) return [grouping];
-        return [];
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector.includes('Easy Apply')) return makeFakeLocator(easyApplyButton);
+        if (selector.includes('Submit application')) return makeFakeLocator(submitButton);
+        if (selector.includes('Continue to next step')) return makeFakeLocator(nextButton);
+        if (selector.includes('jobs-easy-apply-form-section__grouping')) return makeFakeGroupingsLocator([grouping]);
+        return makeFakeLocator(null);
       }),
       setInputFiles: vi.fn().mockResolvedValue(undefined),
     };
