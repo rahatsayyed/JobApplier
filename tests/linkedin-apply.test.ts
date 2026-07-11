@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveAnswer, applyEasyApply, type EasyApplyAnswers } from '../src/mcp/linkedin-apply.js';
+import { resolveAnswer, applyEasyApply, SELECTORS, type EasyApplyAnswers } from '../src/mcp/linkedin-apply.js';
 import { openDb, saveJob } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
@@ -127,6 +127,29 @@ function makeFakeGroupingsLocator(groupings: ReturnType<typeof makeFakeGroupingL
   };
 }
 
+describe('SELECTORS next/review/submit buttons', () => {
+  // These are pure string assertions on the selector VALUES, not proof the selector
+  // actually resolves on a real LinkedIn page (that can only be verified live — see
+  // .superpowers/sdd/task-6-selector-fix-report.md). What we CAN assert statically:
+  // no dependence on aria-label/hashed classes anymore, and every selector is scoped
+  // to the `footer` ancestor so it can't accidentally match an unrelated page button.
+  it('scopes next/review/submit selectors to a footer ancestor with text-based matching', () => {
+    expect(SELECTORS.nextButton).toMatch(/^footer /);
+    expect(SELECTORS.reviewButton).toMatch(/^footer /);
+    expect(SELECTORS.submitButton).toMatch(/^footer /);
+
+    expect(SELECTORS.nextButton).toContain(':has-text("Next")');
+    expect(SELECTORS.reviewButton).toContain(':has-text("Review")');
+    expect(SELECTORS.submitButton).toContain(':has-text("Submit")');
+  });
+
+  it('no longer relies on aria-label attributes for next/review/submit', () => {
+    expect(SELECTORS.nextButton).not.toContain('aria-label');
+    expect(SELECTORS.reviewButton).not.toContain('aria-label');
+    expect(SELECTORS.submitButton).not.toContain('aria-label');
+  });
+});
+
 describe('applyEasyApply control flow', () => {
   let db: Database.Database;
 
@@ -183,8 +206,8 @@ describe('applyEasyApply control flow', () => {
       goto: vi.fn().mockResolvedValue(undefined),
       locator: vi.fn().mockImplementation((selector: string) => {
         if (selector.includes('Easy Apply')) return makeFakeLocator(easyApplyButton);
-        if (selector.includes('Submit application')) return makeFakeLocator(submitButton);
-        if (selector.includes('Continue to next step')) return makeFakeLocator(nextButton);
+        if (selector.includes('Submit')) return makeFakeLocator(submitButton);
+        if (selector.includes('Next')) return makeFakeLocator(nextButton);
         if (selector.includes('jobs-easy-apply-form-section__grouping')) return makeFakeGroupingsLocator([grouping]);
         return makeFakeLocator(null);
       }),

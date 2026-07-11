@@ -91,17 +91,26 @@ function recordAndReturn(
 }
 
 // Best-effort LinkedIn Easy Apply DOM selectors. LinkedIn's markup changes and isn't
-// publicly stable the way Greenhouse/Lever/Workday/Ashby's is, so these are a starting
-// point and were not confirmed against a live modal (see Task 3 Step 5, deliberately
-// deferred to a human-supervised live test).
-const SELECTORS = {
+// publicly stable the way Greenhouse/Lever/Workday/Ashby's is.
+//
+// nextButton/reviewButton/submitButton were live-tested against a real Easy Apply
+// modal (see .superpowers/sdd/task-6-selector-fix-report.md) and confirmed to render
+// with fully obfuscated/hashed CSS classes, NO aria-label, NO role="dialog", and NO
+// data-test-* attributes anywhere in the ancestor chain. The one stable anchor found
+// was a semantic `<footer>` tag a few levels up (the modal's action-button row), with
+// the button's visible text content ("Next" confirmed live; "Review"/"Submit" are
+// reasonable-copy guesses per LinkedIn's known step labels, not live-verified). These
+// selectors use Playwright's `:has-text()` (case-insensitive substring match) scoped
+// to `footer` so they tolerate minor copy variations (e.g. "Submit application" vs
+// "Submit") without accidentally matching unrelated buttons elsewhere on the page.
+export const SELECTORS = {
   easyApplyButton: 'button.jobs-apply-button, button[aria-label*="Easy Apply" i]',
   formGrouping: '.jobs-easy-apply-form-section__grouping, .fb-dash-form-element',
   questionLabel: 'label',
   textInput: 'input[type="text"], input[type="number"], input[type="tel"], textarea',
-  nextButton: 'button[aria-label="Continue to next step"]',
-  reviewButton: 'button[aria-label="Review your application"]',
-  submitButton: 'button[aria-label="Submit application"]',
+  nextButton: 'footer button:has-text("Next")',
+  reviewButton: 'footer button:has-text("Review")',
+  submitButton: 'footer button:has-text("Submit")',
   resumeUpload: 'input[type="file"]',
 } as const;
 
