@@ -3,7 +3,7 @@ import { detect as detectGreenhouse, fieldMap as greenhouseFieldMap } from '../s
 import { detect as detectLever, fieldMap as leverFieldMap } from '../src/ats/lever.js';
 import { detect as detectWorkday, fieldMap as workdayFieldMap } from '../src/ats/workday.js';
 import { detect as detectAshby, fieldMap as ashbyFieldMap } from '../src/ats/ashby.js';
-import { detectAts } from '../src/mcp/external-apply.js';
+import { detectAts, splitName } from '../src/mcp/external-apply.js';
 
 const REQUIRED_FIELD_KEYS = ['name', 'email', 'phone', 'resumeUpload', 'coverLetter'];
 
@@ -29,6 +29,13 @@ describe('greenhouse ATS', () => {
   it('fieldMap has all required selector keys', () => {
     expectFieldMapComplete(greenhouseFieldMap as unknown as Record<string, unknown>);
   });
+
+  it('splits the name field into separate first/last selectors (Greenhouse form has both inputs)', () => {
+    expect(greenhouseFieldMap.firstName).toBe('#first_name');
+    expect(greenhouseFieldMap.lastName).toBe('#last_name');
+    // firstName/lastName should be distinct from a combined-name selector.
+    expect(greenhouseFieldMap.firstName).not.toBe(greenhouseFieldMap.lastName);
+  });
 });
 
 describe('lever ATS', () => {
@@ -42,6 +49,11 @@ describe('lever ATS', () => {
 
   it('fieldMap has all required selector keys', () => {
     expectFieldMapComplete(leverFieldMap as unknown as Record<string, unknown>);
+  });
+
+  it('uses a single combined name field (Lever form has no separate first/last inputs)', () => {
+    expect(leverFieldMap.firstName).toBeUndefined();
+    expect(leverFieldMap.lastName).toBeUndefined();
   });
 });
 
@@ -59,6 +71,12 @@ describe('workday ATS', () => {
   it('fieldMap has all required selector keys', () => {
     expectFieldMapComplete(workdayFieldMap as unknown as Record<string, unknown>);
   });
+
+  it('splits the name field into separate first/last selectors (Workday form has both inputs)', () => {
+    expect(workdayFieldMap.firstName).toBe('[data-automation-id="legalNameSection_firstName"]');
+    expect(workdayFieldMap.lastName).toBe('[data-automation-id="legalNameSection_lastName"]');
+    expect(workdayFieldMap.firstName).not.toBe(workdayFieldMap.lastName);
+  });
 });
 
 describe('ashby ATS', () => {
@@ -73,6 +91,11 @@ describe('ashby ATS', () => {
   it('fieldMap has all required selector keys', () => {
     expectFieldMapComplete(ashbyFieldMap as unknown as Record<string, unknown>);
   });
+
+  it('uses a single combined name field (Ashby form has no separate first/last inputs)', () => {
+    expect(ashbyFieldMap.firstName).toBeUndefined();
+    expect(ashbyFieldMap.lastName).toBeUndefined();
+  });
 });
 
 describe('detectAts', () => {
@@ -84,5 +107,25 @@ describe('detectAts', () => {
 
   it('returns null when no platform matches', () => {
     expect(detectAts('https://example.com/careers/123')).toBeNull();
+  });
+});
+
+describe('splitName', () => {
+  it('splits a "First Last" string on the first whitespace boundary', () => {
+    expect(splitName('Rahat Sayyed')).toEqual({ first: 'Rahat', last: 'Sayyed' });
+  });
+
+  it('splits a "First Middle Last" string keeping everything after the first space as last', () => {
+    expect(splitName('Mary Jane Watson')).toEqual({ first: 'Mary', last: 'Jane Watson' });
+  });
+
+  it('treats a single-word name as first name only, with an empty last name', () => {
+    expect(splitName('Cher')).toEqual({ first: 'Cher', last: '' });
+  });
+
+  it('handles undefined/empty input without throwing', () => {
+    expect(splitName(undefined)).toEqual({ first: '', last: '' });
+    expect(splitName('')).toEqual({ first: '', last: '' });
+    expect(splitName('   ')).toEqual({ first: '', last: '' });
   });
 });

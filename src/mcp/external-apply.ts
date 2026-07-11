@@ -24,6 +24,36 @@ const ATS_MODULES: AtsModule[] = [greenhouse, lever, workday, ashby];
  * application is routed to manual_review rather than being submitted. */
 const REQUIRED_FIELDS: Array<keyof FieldMap> = ['name', 'email', 'resumeUpload'];
 
+/**
+ * Splits a full name on the first whitespace boundary into first/last parts.
+ * A single-word name (no whitespace) yields an empty last name.
+ */
+export function splitName(fullName: string | undefined): { first: string; last: string } {
+  const trimmed = (fullName ?? '').trim();
+  if (!trimmed) return { first: '', last: '' };
+  const idx = trimmed.indexOf(' ');
+  if (idx === -1) return { first: trimmed, last: '' };
+  return { first: trimmed.slice(0, idx), last: trimmed.slice(idx + 1).trim() };
+}
+
+/**
+ * Returns the [key, selector] pairs that must resolve on the page before submission.
+ * When a platform's fieldMap declares both `firstName` and `lastName` selectors, those
+ * replace the combined `name` requirement so the gate checks the selectors that will
+ * actually be filled, rather than the (unused) combined-name selector.
+ */
+function getRequiredFieldEntries(fieldMap: FieldMap): Array<[string, string]> {
+  const entries: Array<[string, string]> = [];
+  for (const key of REQUIRED_FIELDS) {
+    if (key === 'name' && fieldMap.firstName && fieldMap.lastName) {
+      entries.push(['firstName', fieldMap.firstName], ['lastName', fieldMap.lastName]);
+      continue;
+    }
+    entries.push([key, fieldMap[key] as string]);
+  }
+  return entries;
+}
+
 export interface AtsDetection {
   platform: string;
   fieldMap: FieldMap;
@@ -100,8 +130,7 @@ export async function applyExternal(
     const page = await browser.newPage();
     await page.goto(job.apply_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
-    for (const key of REQUIRED_FIELDS) {
-      const selector = ats.fieldMap[key];
+    for (const [key, selector] of getRequiredFieldEntries(ats.fieldMap)) {
       const el = await page.$(selector);
       if (!el) {
         return recordAndReturn(
@@ -114,7 +143,14 @@ export async function applyExternal(
       }
     }
 
-    await page.fill(ats.fieldMap.name, applicant.name ?? '');
+    if (ats.fieldMap.firstName && ats.fieldMap.lastName) {
+      const { first, last } = splitName(applicant.name);
+      await page.fill(ats.fieldMap.firstName, first);
+      await page.fill(ats.fieldMap.lastName, last);
+    } else {
+      await page.fill(ats.fieldMap.name, applicant.name ?? '');
+    }
+
     await page.fill(ats.fieldMap.email, applicant.email ?? '');
 
     if (applicant.phone) {
