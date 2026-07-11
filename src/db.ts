@@ -40,6 +40,13 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       status TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS daily_counters (
+      day TEXT,
+      key TEXT,
+      count INTEGER DEFAULT 0,
+      PRIMARY KEY (day, key)
+    );
   `);
 
   return db;
