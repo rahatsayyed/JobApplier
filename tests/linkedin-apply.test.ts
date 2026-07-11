@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { resolveAnswer, type EasyApplyAnswers } from '../src/mcp/linkedin-apply.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resolveAnswer, applyEasyApply, type EasyApplyAnswers } from '../src/mcp/linkedin-apply.js';
+import { openDb, saveJob } from '../src/db.js';
+import type Database from 'better-sqlite3';
 
 const answers: EasyApplyAnswers = {
   years_experience: 5,
@@ -53,5 +55,114 @@ describe('resolveAnswer', () => {
   it('returns null for unrecognized questions', () => {
     expect(resolveAnswer('What is your favorite color?', answers)).toBeNull();
     expect(resolveAnswer('Describe a time you overcame a challenge at work.', answers)).toBeNull();
+  });
+});
+
+/**
+ * A minimal fake Playwright element: `click`/`fill` are spies so tests can assert
+ * whether a submit/click action was ever attempted.
+ */
+function makeFakeElement(overrides: Partial<{ textContent: () => Promise<string | null> }> = {}) {
+  return {
+    click: vi.fn().mockResolvedValue(undefined),
+    fill: vi.fn().mockResolvedValue(undefined),
+    $: vi.fn().mockResolvedValue(null),
+    textContent: overrides.textContent ?? vi.fn().mockResolvedValue(null),
+  };
+}
+
+describe('applyEasyApply control flow', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('returns rate_limited and never touches Playwright when the daily limit is already reached', async () => {
+    const launch = vi.fn();
+    const fakeChromium = { launch };
+
+    saveJob(db, {
+      id: 'job-rl-1',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/1',
+      apply_url: 'https://linkedin.com/jobs/view/1',
+      description: 'React role',
+    });
+
+    const result = await applyEasyApply(
+      { job_id: 'job-rl-1' },
+      { db, maxAppliesPerDay: 0, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('rate_limited');
+    // The rate-limit gate must be checked BEFORE any Playwright action — launch()
+    // should never be invoked once the limit is already exhausted.
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('returns manual_review and never clicks submit when a screening question is unanswerable', async () => {
+    saveJob(db, {
+      id: 'job-mr-1',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/2',
+      apply_url: 'https://linkedin.com/jobs/view/2',
+      description: 'React role',
+    });
+
+    const easyApplyButton = makeFakeElement();
+    const submitButton = makeFakeElement();
+    const nextButton = makeFakeElement();
+
+    const unrecognizedLabel = makeFakeElement({
+      textContent: vi.fn().mockResolvedValue('What is your favorite color?'),
+    });
+    const grouping = {
+      $: vi.fn().mockImplementation(async (selector: string) => {
+        if (selector === 'label') return unrecognizedLabel;
+        return null;
+      }),
+    };
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      $: vi.fn().mockImplementation(async (selector: string) => {
+        if (selector.includes('Easy Apply')) return easyApplyButton;
+        if (selector.includes('Submit application')) return submitButton;
+        if (selector.includes('Continue to next step')) return nextButton;
+        return null;
+      }),
+      $$: vi.fn().mockImplementation(async (selector: string) => {
+        if (selector.includes('jobs-easy-apply-form-section__grouping')) return [grouping];
+        return [];
+      }),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = {
+      newContext: vi.fn().mockResolvedValue(context),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const fakeChromium = { launch };
+
+    const result = await applyEasyApply(
+      { job_id: 'job-mr-1' },
+      { db, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/unanswerable screening question/);
+    // The easy-apply button click is expected (it happens before the screening
+    // questions are read), but the submit button must never be clicked once an
+    // unanswerable question forces an early return to manual_review.
+    expect(easyApplyButton.click).toHaveBeenCalledTimes(1);
+    expect(submitButton.click).not.toHaveBeenCalled();
+    expect(nextButton.click).not.toHaveBeenCalled();
   });
 });

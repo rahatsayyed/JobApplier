@@ -107,13 +107,21 @@ const SELECTORS = {
 
 const MAX_FORM_STEPS = 10;
 
+export interface ApplyEasyApplyDeps {
+  db?: BetterSqlite3.Database;
+  maxAppliesPerDay?: number;
+  /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
+  chromium?: { launch: typeof chromium.launch };
+}
+
 export async function applyEasyApply(
   { job_id }: { job_id: string },
-  deps: { db?: BetterSqlite3.Database; maxApplesPerDay?: number } = {}
+  deps: ApplyEasyApplyDeps = {}
 ): Promise<ApplyEasyApplyResult> {
   const database = deps.db ?? db;
+  const browserLauncher = deps.chromium ?? chromium;
   const maxPerDay =
-    deps.maxApplesPerDay ?? Number(process.env.MAX_APPLIES_PER_DAY ?? DEFAULT_MAX_APPLIES_PER_DAY);
+    deps.maxAppliesPerDay ?? Number(process.env.MAX_APPLIES_PER_DAY ?? DEFAULT_MAX_APPLIES_PER_DAY);
 
   const allowed = checkAndIncrement(database, 'easy_apply', maxPerDay);
   if (!allowed) {
@@ -147,7 +155,7 @@ export async function applyEasyApply(
 
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await browserLauncher.launch({ headless: true });
     const context = await browser.newContext({ storageState: BURNER_STATE_PATH });
     const page = await context.newPage();
     await page.goto(job.url, { timeout: 30000, waitUntil: 'domcontentloaded' });
