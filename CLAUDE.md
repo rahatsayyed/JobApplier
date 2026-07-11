@@ -25,6 +25,21 @@ change for day-to-day tuning.
 - **MATCH_THRESHOLD**: `70` (env var; jobs scoring below this are skipped — see `.env`)
 - **SEND_LIMIT_PER_RUN**: `1` (env var; max real emails sent per run — see `.env`)
 
+## Context & Subagent Discipline
+
+- Default to offloading heavy exploration, research, and multi-file investigation to subagents
+  (the Agent tool — use `fork` when the task benefits from shared conversation context, or a
+  fresh subagent for independent research) rather than doing it inline in the main thread. This
+  keeps the main thread's context usage low.
+- Self-monitor context usage during the session. If context is getting high while a task is in
+  progress, finish that task before suggesting compaction — don't interrupt mid-task.
+- If a new task is about to start and context is already elevated, proactively flag that
+  compacting first might be worth it if the new task looks like it will consume significant
+  context.
+- Note: Claude Code has no native percentage-based or task-boundary-aware auto-compact setting
+  (only `autoCompactWindow`, a raw token threshold with no task awareness) — this is a
+  behavioral convention to follow manually, not something enforced by a hook or config.
+
 ## Communication
 
 This agent is primarily operated through the **Telegram channel**. Whenever you are running with
