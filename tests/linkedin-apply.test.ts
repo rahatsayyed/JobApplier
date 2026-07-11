@@ -237,4 +237,95 @@ describe('applyEasyApply control flow', () => {
     expect(submitButton.click).not.toHaveBeenCalled();
     expect(nextButton.click).not.toHaveBeenCalled();
   });
+
+  it('falls through to the normal manual_review path when waitForFormControls times out after the Easy Apply click', async () => {
+    // Regression test for the `.catch(() => {})` in `waitForFormControls` (src/mcp/linkedin-apply.ts).
+    // That helper wraps a bounded `locator.waitFor(...)` in a swallowing catch so a timeout
+    // falls through to the existing `.count()`-based manual_review fallbacks instead of
+    // throwing. Every other test's fake `waitFor` resolves instantly, so none of them
+    // actually exercise the rejection branch. This test forces `waitFor` to reject at the
+    // FIRST call site (immediately after the Easy Apply button click) and asserts the run
+    // still completes with `manual_review` (not `failed`, and not an uncaught throw).
+    saveJob(db, {
+      id: 'job-mr-timeout-1',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/3',
+      apply_url: 'https://linkedin.com/jobs/view/3',
+      description: 'React role',
+    });
+
+    const easyApplyButton = makeFakeElement();
+
+    // No form groupings render at all (empty groupings locator) — combined with no
+    // next/review/submit control found, this exercises the pre-existing
+    // "could not find a next/review/submit control" manual_review fallback, proving
+    // the timed-out waitFor() did not derail the rest of the flow.
+    const emptyGroupingsLocator = {
+      count: vi.fn().mockResolvedValue(0),
+      first: vi.fn(() => ({ waitFor: vi.fn().mockResolvedValue(undefined) })),
+      nth: vi.fn(() => makeFakeGroupingLocator()),
+    };
+
+    // waitForFormControls builds one joined selector string containing all four
+    // candidate selectors (formGrouping, nextButton, reviewButton, submitButton) and
+    // calls `.first().waitFor(...)` on it. That joined string is the only selector
+    // containing a comma, so we can distinguish it from the individual selectors below
+    // (which the rest of the implementation queries separately via `.count()`).
+    const rejectingWaitForLocator = {
+      count: vi.fn().mockResolvedValue(0),
+      first: vi.fn(() => ({
+        waitFor: vi.fn().mockRejectedValue(new Error('Timeout 8000ms exceeded waiting for locator')),
+      })),
+    };
+
+    // The joined "any control" selector built inside `waitForFormControls` is the only
+    // selector queried anywhere in the implementation that contains ALL of these four
+    // substrings at once (formGrouping + nextButton + reviewButton + submitButton joined
+    // by ', ') — every other individual selector query (Easy Apply button, bare Next
+    // button, bare Review button, bare Submit button, bare form grouping) is missing at
+    // least one of them. This lets the fake distinguish the joined wait-helper call from
+    // the implementation's own separate `.count()` lookups.
+    const isAnyControlsSelector = (selector: string) =>
+      selector.includes('jobs-easy-apply-form-section__grouping') &&
+      selector.includes('Next') &&
+      selector.includes('Review') &&
+      selector.includes('Submit');
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (isAnyControlsSelector(selector)) return rejectingWaitForLocator;
+        if (selector.includes('Easy Apply')) return makeFakeLocator(easyApplyButton);
+        // Bare Next/Review/Submit control lookups (used by the loop's own fallback
+        // checks) are all absent, so after the timed-out wait, the loop correctly
+        // falls through to "could not find a next/review/submit control".
+        if (selector.includes('Submit')) return makeFakeLocator(null);
+        if (selector.includes('Review')) return makeFakeLocator(null);
+        if (selector.includes('Next')) return makeFakeLocator(null);
+        if (selector.includes('jobs-easy-apply-form-section__grouping')) return emptyGroupingsLocator;
+        return makeFakeLocator(null);
+      }),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = {
+      newContext: vi.fn().mockResolvedValue(context),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const fakeChromium = { launch };
+
+    const result = await applyEasyApply(
+      { job_id: 'job-mr-timeout-1' },
+      { db, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/could not find a next\/review\/submit control/);
+    // The Easy Apply click itself must still have happened before the timed-out wait.
+    expect(easyApplyButton.click).toHaveBeenCalledTimes(1);
+  });
 });
