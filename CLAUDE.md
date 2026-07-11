@@ -5,8 +5,11 @@
 JobApplier is an autonomous job-hunting agent. It fetches new job postings, scores each one
 against a base resume, tailors the resume for good matches, finds a verified contact email at
 the hiring company, drafts a cold outreach email, and sends it — within strict safety limits.
-It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`, `contacts`, `gmail`) and
-two skills (`match-jobs`, `draft-outreach`). Phase 1 only does cold email; no LinkedIn messaging.
+Phase 2 adds opt-in LinkedIn Easy Apply (burner account), external ATS apply (Greenhouse/Lever/
+Workday/Ashby), and human-approved LinkedIn connection requests (main account) on top of the
+Phase 1 pipeline. It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`,
+`contacts`, `gmail`, `linkedin-apply`, `external-apply`, `connect`) and skills (`match-jobs`,
+`draft-outreach`, `draft-connect-note`).
 
 The orchestrating session does not call the `job-fetch`/`contacts`/`resume`/`gmail` tools
 directly for the hunt pipeline — it dispatches one subagent per pipeline stage (defined in
@@ -87,9 +90,9 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
 | `/runhunt` or "run hunt", "find jobs" | Run the full hunt pipeline (below). |
 | `/status` or "status", "summary" | Query SQLite: count of jobs (total/matched/by-source), outreach (sent/queued/failed), etc. No side effects, instant response. |
 | `/followups` | Phase 1.5 — send follow-up nudges to old sent emails (if implemented). |
-| `/apply #N` or "apply to job #N" | Phase 2 — not built yet. Reply with link to Phase 2 plan. |
-| `/applyall` | Phase 2 — not built yet. |
-| `/connect` | Phase 2 — not built yet. |
+| `/apply #N` or "apply to job #N" | Apply to one matched job (see "Applying" below). |
+| `/applyall` | Apply to all of today's matched jobs (see "Applying" below). |
+| `/connect` | Draft and (with approval) send a LinkedIn connection request for a matched job (see "Connecting" below). |
 | `/checkreplies` | Phase 3 — not built yet. Reply with link to Phase 3 plan. |
 
 **Setting up Telegram slash commands** (one-time, via BotFather):
@@ -100,8 +103,8 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
    runhunt - Discover jobs, match, find contacts, send cold emails
    status - Show job/outreach/thread stats
    followups - Send follow-up nudges (Phase 1.5)
-   apply - Apply to a job (Phase 2 — not yet)
-   connect - Connect on LinkedIn (Phase 2 — not yet)
+   apply - Apply to a job (Easy Apply or external ATS)
+   connect - Draft + (with approval) send a LinkedIn connect request
    checkreplies - Check replies (Phase 3 — not yet)
    ```
 
@@ -178,6 +181,52 @@ not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails.
    - Total jobs "queued — send limit reached" (`queued` from step 5), with titles/companies.
    - Total "failed" sends (step 5), with titles/companies and the error, if any.
 
+## Applying (Phase 2)
+
+Applying is a **separate, opt-in** flow from "Running the hunt" — it is **never** implicitly
+bundled into the Phase 1 email-hunt pipeline. It only runs when:
+- explicitly triggered by command (`/apply #N`, `/applyall`, "apply to job #N", "apply to today's
+  matches"), or
+- the cron/autonomous trigger fires AND `AUTO_APPLY_ENABLED=true` (env var, default `false`).
+
+An explicit manual command may still invoke applying regardless of `AUTO_APPLY_ENABLED` — that
+flag only gates the *autonomous* (cron) path. Manual applies are still subject to the daily rate
+limits below.
+
+Steps, for each targeted job:
+
+1. Look up the job's `apply_url`. If it's a LinkedIn Easy Apply posting, dispatch to
+   `linkedin-apply.apply_easy_apply({job_id})`. Otherwise (Greenhouse/Lever/Workday/Ashby or other
+   external ATS), dispatch to `external-apply.apply_external({job_id})`.
+2. Each call returns one of: `submitted`, `manual_review` (an unanswerable screening question or
+   missing required field — never a guessed submission), or `rate_limited` (daily cap reached for
+   `easy_apply`/`external_apply` — report it, do not retry).
+3. Report results per job to Telegram per the "Communication" section: submitted / needs manual
+   review / rate-limited, with job title + company for each.
+
+Do not call `linkedin-apply` or `external-apply` tools directly yourself for this flow if a
+dedicated subagent exists for the stage — otherwise call them directly, since Applying is
+single-job-at-a-time and doesn't need the multi-stage pipeline "Running the hunt" uses.
+
+## Connecting (Phase 2, human-gated)
+
+For a matched job (with or without a sent cold email):
+
+1. Call `connect.find_linkedin_profile({company, role_hint})` → top 3 candidate profiles.
+2. Invoke the `draft-connect-note` skill with the job and the chosen candidate profile → a
+   drafted note (≤300 chars).
+3. **Post the drafted note to Telegram and STOP.** Do not call `connect.connect_send` in this
+   turn. Wait for the user's next message.
+4. On the user's next reply, matched to this pending draft (e.g. by job/company name):
+   - `send` (or equivalent approval) → call `connect.connect_send({profile_url, note})` now, for
+     the first time, in response to this explicit approval.
+   - `edit: <changes>` → redraft per the requested changes, re-post to Telegram, and wait again
+     (do not send the edited version without a fresh approval).
+   - `skip` or anything else non-approving → mark the connection `status='skipped'` in the DB and
+     move on; do not send.
+5. If `connect_send` reports `rate_limited` (daily `MAX_CONNECTS_PER_DAY` cap reached), report
+   that to Telegram and stop — do not retry later in the same run.
+
 ## Resume tailoring rules
 
 When tailoring the base resume JSON for a specific job, follow these rules:
@@ -211,3 +260,8 @@ When tailoring the base resume JSON for a specific job, follow these rules:
    connection requests, or any other outreach channel.
 4. If any tool call fails or returns an error, do not retry silently more than once; log the
    failure and continue with the next job rather than aborting the whole run.
+5. Never call `connect_send` without a `send` approval reply logged in the same conversation.
+6. Never use the burner account's session for `connect`/`find_linkedin_profile`, and never use
+   the main account's session for `apply_easy_apply`.
+7. Respect `MAX_APPLIES_PER_DAY` / `MAX_CONNECTS_PER_DAY` — stop and report "limit reached" rather
+   than erroring or retrying.
