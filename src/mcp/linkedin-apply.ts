@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -116,6 +116,38 @@ export const SELECTORS = {
 
 const MAX_FORM_STEPS = 10;
 
+// How long to wait for the Easy Apply modal (or its next form step) to actually render
+// before checking for controls. Bounded and non-throwing: `Locator.click()` only
+// auto-waits for the clicked element itself to be actionable, not for whatever the click
+// triggers afterward (e.g. a modal animating in), and `Locator.count()` is a synchronous
+// snapshot with no retry — so without this wait, the very next `.count()` checks race the
+// modal's render and can see 0 elements that appear a moment later. Confirmed live: the
+// real modal's "Next" button (inside a `<footer>`) rendered ~2.5s after the Easy Apply
+// click (see .superpowers/sdd/task-6-timing-fix-report.md). We wait for ANY of the
+// controls a healthy render could produce next (a form grouping, or a next/review/submit
+// button) rather than a fixed sleep, so the wait ends as soon as the DOM is actually
+// ready instead of always burning the full timeout. If nothing appears in time, we
+// swallow the timeout and fall through to the existing `.count()` checks, which then
+// correctly resolve to the existing manual_review fallbacks.
+const MODAL_RENDER_TIMEOUT_MS = 8000;
+
+async function waitForFormControls(page: Pick<Page, 'locator'>): Promise<void> {
+  const anySelector = [
+    SELECTORS.formGrouping,
+    SELECTORS.nextButton,
+    SELECTORS.reviewButton,
+    SELECTORS.submitButton,
+  ].join(', ');
+  await page
+    .locator(anySelector)
+    .first()
+    .waitFor({ state: 'visible', timeout: MODAL_RENDER_TIMEOUT_MS })
+    .catch(() => {
+      // Timed out waiting for the modal/next-step to render. Don't throw — let the
+      // caller's existing `.count()` checks run and take the normal manual_review path.
+    });
+}
+
 export interface ApplyEasyApplyDeps {
   db?: BetterSqlite3.Database;
   maxAppliesPerDay?: number;
@@ -184,6 +216,7 @@ export async function applyEasyApply(
       );
     }
     await easyApplyButtonLocator.first().click();
+    await waitForFormControls(page);
 
     for (let step = 0; step < MAX_FORM_STEPS; step++) {
       const groupingLocator = page.locator(SELECTORS.formGrouping);
@@ -234,6 +267,7 @@ export async function applyEasyApply(
       } else {
         await reviewButtonLocator.first().click();
       }
+      await waitForFormControls(page);
     }
 
     const resumeUploadCount = await page.locator(SELECTORS.resumeUpload).count();

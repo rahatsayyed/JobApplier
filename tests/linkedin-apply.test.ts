@@ -89,6 +89,7 @@ function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
     }),
     textContent: vi.fn(async () => (el ? el.textContent() : null)),
     locator: vi.fn(() => makeFakeLocator(null)),
+    waitFor: vi.fn().mockResolvedValue(undefined),
   };
   locator.first = vi.fn(() => locator);
   locator.nth = vi.fn(() => locator);
@@ -122,7 +123,7 @@ function makeFakeGroupingLocator({
 function makeFakeGroupingsLocator(groupings: ReturnType<typeof makeFakeGroupingLocator>[]) {
   return {
     count: vi.fn().mockResolvedValue(groupings.length),
-    first: vi.fn(() => groupings[0]),
+    first: vi.fn(() => ({ ...groupings[0], waitFor: vi.fn().mockResolvedValue(undefined) })),
     nth: vi.fn((i: number) => groupings[i]),
   };
 }
