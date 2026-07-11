@@ -59,6 +59,18 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       applied_at TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS connections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT,
+      company TEXT,
+      profile_url TEXT,
+      headline TEXT,
+      note TEXT,
+      status TEXT,
+      sent_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Migration: older databases created before `method`/`account` existed on
@@ -193,5 +205,30 @@ export function saveApplication(db: BetterSqlite3.Database, application: Applica
     application.status,
     application.reason ?? null,
     application.applied_at ?? null
+  );
+}
+
+export interface Connection {
+  job_id?: string | null;
+  company?: string | null;
+  profile_url: string;
+  headline?: string | null;
+  note: string;
+  status: 'drafted' | 'approved' | 'sent' | 'skipped';
+  sent_at?: string | null;
+}
+
+export function saveConnection(db: BetterSqlite3.Database, connection: Connection): void {
+  db.prepare(`
+    INSERT INTO connections (job_id, company, profile_url, headline, note, status, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    connection.job_id ?? null,
+    connection.company ?? null,
+    connection.profile_url,
+    connection.headline ?? null,
+    connection.note,
+    connection.status,
+    connection.sent_at ?? null
   );
 }
