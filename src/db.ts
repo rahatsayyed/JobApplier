@@ -47,6 +47,16 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       count INTEGER DEFAULT 0,
       PRIMARY KEY (day, key)
     );
+
+    CREATE TABLE IF NOT EXISTS applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT,
+      platform TEXT,
+      status TEXT,
+      reason TEXT,
+      applied_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   return db;
@@ -144,5 +154,26 @@ export function saveOutreach(db: BetterSqlite3.Database, outreach: Outreach): vo
     outreach.body,
     outreach.resume_path,
     outreach.status ?? null
+  );
+}
+
+export interface Application {
+  job_id: string;
+  platform: string | null;
+  status: 'submitted' | 'manual_review' | 'failed';
+  reason?: string | null;
+  applied_at?: string | null;
+}
+
+export function saveApplication(db: BetterSqlite3.Database, application: Application): void {
+  db.prepare(`
+    INSERT INTO applications (job_id, platform, status, reason, applied_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    application.job_id,
+    application.platform ?? null,
+    application.status,
+    application.reason ?? null,
+    application.applied_at ?? null
   );
 }
