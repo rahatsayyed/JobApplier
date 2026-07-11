@@ -11,7 +11,8 @@
     "mcp:contacts": "tsx src/mcp/contacts.ts",
     "mcp:email": "tsx src/mcp/email.ts",
     "mcp:sqlite": "tsx src/mcp/sqlite.ts",
-    "mcp:external-apply": "tsx src/mcp/external-apply.ts"
+    "mcp:external-apply": "tsx src/mcp/external-apply.ts",
+    "mcp:linkedin-apply": "tsx src/mcp/linkedin-apply.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

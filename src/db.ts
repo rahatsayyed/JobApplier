@@ -52,12 +52,26 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id TEXT,
       platform TEXT,
+      method TEXT,
+      account TEXT,
       status TEXT,
       reason TEXT,
       applied_at TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration: older databases created before `method`/`account` existed on
+  // `applications` (added for linkedin-apply's Easy Apply tracking). Add them
+  // if missing so existing data.sqlite files don't break.
+  const applicationColumns = db.prepare("PRAGMA table_info(applications)").all() as Array<{ name: string }>;
+  const columnNames = new Set(applicationColumns.map((c) => c.name));
+  if (!columnNames.has('method')) {
+    db.exec('ALTER TABLE applications ADD COLUMN method TEXT');
+  }
+  if (!columnNames.has('account')) {
+    db.exec('ALTER TABLE applications ADD COLUMN account TEXT');
+  }
 
   return db;
 }
@@ -160,6 +174,8 @@ export function saveOutreach(db: BetterSqlite3.Database, outreach: Outreach): vo
 export interface Application {
   job_id: string;
   platform: string | null;
+  method?: string | null;
+  account?: string | null;
   status: 'submitted' | 'manual_review' | 'failed';
   reason?: string | null;
   applied_at?: string | null;
@@ -167,11 +183,13 @@ export interface Application {
 
 export function saveApplication(db: BetterSqlite3.Database, application: Application): void {
   db.prepare(`
-    INSERT INTO applications (job_id, platform, status, reason, applied_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO applications (job_id, platform, method, account, status, reason, applied_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     application.job_id,
     application.platform ?? null,
+    application.method ?? null,
+    application.account ?? null,
     application.status,
     application.reason ?? null,
     application.applied_at ?? null
