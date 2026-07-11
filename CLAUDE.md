@@ -256,8 +256,10 @@ When tailoring the base resume JSON for a specific job, follow these rules:
    Never send to an unverified guess.
 2. Never exceed `SEND_LIMIT_PER_RUN` real sends via the `gmail` `send_email` tool in a single run. Extra
    matches beyond the limit get queued and reported, not sent.
-3. Cold email is the only outreach channel in Phase 1. Do not attempt LinkedIn messages, LinkedIn
-   connection requests, or any other outreach channel.
+3. In the "Running the hunt" pipeline (Phase 1 email flow), cold email is the only outreach
+   channel — do not attempt LinkedIn messages, connection requests, or any other channel as part
+   of that flow. LinkedIn connection requests are only ever sent via the separate, human-gated
+   "Connecting" flow below (rule 5), never bundled into a hunt run.
 4. If any tool call fails or returns an error, do not retry silently more than once; log the
    failure and continue with the next job rather than aborting the whole run.
 5. Never call `connect_send` without a `send` approval reply logged in the same conversation.
