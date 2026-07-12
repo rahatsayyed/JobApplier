@@ -3,7 +3,7 @@
 An autonomous job-hunting agent that discovers relevant job postings, matches them against your resume, tailors the resume for each match, finds verified company contacts, and sends humanized cold-outreach emails — all within strict safety limits.
 
 **Phase 1 (Complete):** cold-email discovery + outreach  
-**Phase 2 (Planned):** LinkedIn Easy Apply (burner) + external ATS apply + LinkedIn connection requests  
+**Phase 2 (Substantially complete):** LinkedIn Easy Apply (burner) + external ATS apply + LinkedIn connection requests — implemented, unit-tested, and live-tested; see `docs/phase2-known-issues.md` for open items before treating it as fully production-proven  
 **Phase 3 (Planned):** email + LinkedIn reply automation + capped posting
 
 ---
@@ -153,7 +153,7 @@ user: "status"
 → agent reports current DB counts (jobs found, matched, sent, pending)
 
 user: "apply to job #3"
-→ "Phase 2 not built yet — see docs/superpowers/plans/2026-07-07-jobapplier-phase2.md"
+→ agent applies via Easy Apply or external ATS, reports submitted/manual_review/rate_limited
 ```
 
 **Stop the session:** Ctrl+C
@@ -401,8 +401,8 @@ JobApplier/
 
 **Phase 1 (now):** smoke test locally, then deploy to VPS + Telegram + cron.
 
-**Phase 2 (planned):** LinkedIn Easy Apply (burner), external ATS apply, LinkedIn connect-with-notes (main account, human-approved).  
-See `docs/superpowers/specs/2026-07-07-jobapplier-phase2-design.md` and the Phase 2 plan.
+**Phase 2 (substantially complete):** LinkedIn Easy Apply (burner), external ATS apply, LinkedIn connect-with-notes (main account, human-approved).  
+See `docs/superpowers/specs/2026-07-07-jobapplier-phase2-design.md`, the Phase 2 plan, and `docs/phase2-known-issues.md` for open items (external-apply not yet live-tested; connect_send's final click needs re-verification on a fresh day).
 
 **Phase 3 (planned):** reply detection/drafting, capped LinkedIn posting.  
 See `docs/superpowers/specs/2026-07-07-jobapplier-phase3-design.md` and the Phase 3 plan.
@@ -415,9 +415,9 @@ See `docs/superpowers/specs/2026-07-07-jobapplier-phase3-design.md` and the Phas
 | ------------------- | -------------------------------------------------------------- |
 | `run hunt`          | Full pipeline: discover → match → contact → draft → send.      |
 | `status`            | Show current DB counts (jobs/contacts/sent) — no side effects. |
-| `apply to job #3`   | Phase 2 not yet — replies with link to plan.                   |
-| `apply all`         | Phase 2 not yet.                                               |
-| `connect <company>` | Phase 2 not yet.                                               |
+| `apply to job #3`   | Apply to one matched job (Easy Apply or external ATS).         |
+| `apply all`         | Apply to all of today's matched jobs.                          |
+| `connect <company>` | Draft + (with your approval) send a LinkedIn connect request.  |
 | `check replies`     | Phase 3 not yet.                                               |
 
 ---
@@ -426,7 +426,7 @@ See `docs/superpowers/specs/2026-07-07-jobapplier-phase3-design.md` and the Phas
 
 - **Verified emails only:** the agent NEVER sends to an unverified email address, even a "pretty good guess." Hunter.io and SMTP checks are mandatory before send.
 - **Send cap:** `SEND_LIMIT_PER_RUN` is enforced in the `sender` subagent only, so no stage can overshoot it.
-- **Cold email only (Phase 1):** no LinkedIn messages, connection requests, or auto-applies yet — those are Phase 2.
+- **Cold email (Phase 1) + gated LinkedIn actions (Phase 2):** the Phase 1 hunt pipeline is cold-email only. LinkedIn Easy Apply, external ATS apply, and LinkedIn connection requests are Phase 2 — connection requests always require your explicit approval before sending (see `docs/phase2-known-issues.md` for current limitations).
 - **Fail-safe:** if a tool errors, the agent logs it and continues with the next job instead of crashing.
 
 ---
@@ -438,6 +438,8 @@ See `docs/superpowers/specs/2026-07-07-jobapplier-phase3-design.md` and the Phas
 - Model/provider setup: `docs/model-auth-setup.md`
 - Gmail MCP setup: `docs/gmail-mcp-setup.md`
 - Phase 2/3 outlines: `docs/superpowers/specs/2026-07-07-jobapplier-phase{2,3}-design.md`
+- Phase 2 known issues / live-test findings: `docs/phase2-known-issues.md`
+- LinkedIn session setup (burner + main accounts): `docs/linkedin-sessions-setup.md`
 
 ---
 
