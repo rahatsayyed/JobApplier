@@ -84,23 +84,63 @@ export function validateNoteLength(note: string): { ok: boolean; length: number 
 // itself renders as two adjacent duplicate spans (visible + accessibility mirror), so we
 // take the span after the *last* match, not the first.
 //
-// connectButton/addNoteButton/noteTextarea/sendButton are UNVERIFIED live: the live-tested
-// profile in this session showed "Follow" + a "More" overflow menu as its primary actions,
-// with no visible "Connect" button in the top-level DOM (LinkedIn appears to tuck Connect
-// inside that overflow menu for at least some 2nd-degree profiles) — and opening/clicking
-// that overflow menu was out of scope for a read-only inspection (may trigger real UI
-// state). Per the Easy Apply fix's lesson, aria-label exact-match strings are the most
-// likely to have rotted, so these use `aria-label` prefix/substring matching plus a
-// text-based fallback rather than a bare `aria-label*="Connect"` (which was the OLD,
-// unverified selector) — but treat all four as best-guess, not confirmed.
+// moreButton/connectMenuItem are LIVE-VERIFIED (see
+// .superpowers/sdd/task-6-connect-fix-report.md) against a real profile
+// (`https://www.linkedin.com/in/snehalaundhkar/`, main-account session, read-only
+// inspection): this profile shows only "Follow" + "More" as top-level actions — there is
+// NO direct "Connect" button anywhere in the top-level DOM. The old bare `connectButton`
+// selector (`button[aria-label^="Invite" i], button:has-text("Connect")`) was flatly wrong
+// for this common case: it happened to match unrelated "Invite X to connect" buttons
+// rendered inside "People you may know" carousel cards elsewhere on the page (confirmed
+// live — those cards' aria-labels are literally "Invite <name> to connect"), never the
+// actual action for the profile being viewed.
+//
+// The real flow: click the profile-header "More" button (opens a dropdown/overflow menu),
+// then click "Connect" as a menu item inside that menu.
+//
+// `main button:has-text("More")` matched 15 elements live on the tested profile — most are
+// small "…more" show-more-text toggles inside post captions (bounding-box height ~17.5px),
+// NOT the profile action button; there is also a decoy `button[aria-label="More"]`
+// (icon-only, exact aria-label match) with a genuine 0×0 bounding box in both headless and
+// headed mode — confirmed NOT usable, so aria-label was deliberately not used as the
+// selector here. The correct profile-header "More" button was the ONLY match with a
+// button-shaped bounding box (confirmed live: 58.4px × 48px) — `pickButtonShapedIndex`
+// below picks the first match with height >= 40px, which isolated exactly one element live.
+//
+// Once that "More" button is clicked, the opened menu (a `div[role="menu"]`) contained,
+// live: "Send profile in a message", "Save to PDF", "Connect", "Report / Block", "About
+// this member" — each item an `<a role="menuitem">` (or, for items with no href, a
+// `<div role="menuitem">`). The "Connect" item was confirmed live to be
+// `<a role="menuitem" href="/preload/custom-invite/?vanityName=...">Connect</a>`.
+// Scoping to `[role="menu"] ... [role="menuitem"]` is what excludes the unrelated PYMK-card
+// "Invite X to connect" buttons (those live entirely outside any `[role="menu"]`).
+//
+// addNoteButton/noteTextarea/sendButton remain UNVERIFIED: clicking "Connect" from the menu
+// was explicitly out of scope for this read-only inspection (would risk firing a real
+// connection request or opening a real send-eligible dialog), so the add-note-dialog step
+// that follows a menu-based Connect click was not observed live. These three selectors are
+// carried over unchanged from the prior (already-unverified) version — treat them as
+// best-guess, not confirmed, same caveat as before.
 export const SELECTORS = {
   resultCard: 'div[role="listitem"]',
   profileLink: 'a[href*="/in/"]',
-  connectButton: 'button[aria-label^="Invite" i], button:has-text("Connect")',
+  moreButton: 'main button:has-text("More")',
+  connectMenuItem: '[role="menu"] [role="menuitem"]:has-text("Connect")',
   addNoteButton: 'button[aria-label*="add a note" i], button:has-text("Add a note")',
   noteTextarea: '#custom-message, textarea[name="message"]',
   sendButton: 'button[aria-label^="Send " i], button:has-text("Send invitation"), button:has-text("Send now")',
 } as const;
+
+/**
+ * Pure: given the bounding-box heights of every `SELECTORS.moreButton` match on a profile
+ * page, picks the index of the first one that is button-shaped (height >= minHeightPx) —
+ * this is the profile-header "More" action, as opposed to the many small "…more"
+ * show-more-text toggles inside post captions (~17.5px tall, live-confirmed). Returns -1 if
+ * no candidate is button-shaped. Exported for unit testing without a live Playwright page.
+ */
+export function pickButtonShapedIndex(boxes: Array<{ height: number }>, minHeightPx = 40): number {
+  return boxes.findIndex((box) => box.height >= minHeightPx);
+}
 
 /**
  * Pure: extracts the clean visible name/headline text from a result card's collected
@@ -255,11 +295,32 @@ export async function connectSend(
     await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
     // Locator API throughout (see findLinkedinProfile above for the same rationale).
-    const connectButtonLocator = page.locator(SELECTORS.connectButton);
-    if ((await connectButtonLocator.count()) === 0) {
-      return { status: 'failed', reason: 'Connect button not found on profile' };
+    //
+    // Step 1: find and click the profile-header "More" button. `SELECTORS.moreButton`
+    // matches multiple elements on a real profile (post "…more" toggles etc.) — filter to
+    // the button-shaped one via bounding-box heights (see pickButtonShapedIndex above).
+    const moreButtonsLocator = page.locator(SELECTORS.moreButton);
+    if ((await moreButtonsLocator.count()) === 0) {
+      return { status: 'failed', reason: 'More button not found on profile' };
     }
-    await connectButtonLocator.first().click();
+    const moreButtonBoxes = await moreButtonsLocator.evaluateAll((els) =>
+      els.map((el) => ({ height: el.getBoundingClientRect().height }))
+    );
+    const moreButtonIndex = pickButtonShapedIndex(moreButtonBoxes);
+    if (moreButtonIndex === -1) {
+      return { status: 'failed', reason: 'no button-shaped More button found on profile' };
+    }
+    await moreButtonsLocator.nth(moreButtonIndex).click();
+
+    // Step 2: the "More" click opens a dropdown/overflow menu; find and click its
+    // "Connect" menu item (scoped to `[role="menu"]` so this never matches the unrelated
+    // "Invite X to connect" buttons rendered in "People you may know" carousel cards
+    // elsewhere on the page).
+    const connectMenuItemLocator = page.locator(SELECTORS.connectMenuItem);
+    if ((await connectMenuItemLocator.count()) === 0) {
+      return { status: 'failed', reason: 'Connect menu item not found after opening More menu' };
+    }
+    await connectMenuItemLocator.first().click();
 
     const addNoteButtonLocator = page.locator(SELECTORS.addNoteButton);
     if ((await addNoteButtonLocator.count()) > 0) {

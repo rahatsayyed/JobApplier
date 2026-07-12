@@ -4,6 +4,7 @@ import {
   findLinkedinProfile,
   connectSend,
   extractNameAndHeadline,
+  pickButtonShapedIndex,
   SELECTORS,
 } from '../src/mcp/connect.js';
 import { openDb } from '../src/db.js';
@@ -37,6 +38,20 @@ function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
     }),
   };
   locator.first = vi.fn(() => locator);
+  return locator;
+}
+
+/**
+ * A fake multi-match Locator backed by an array of fake elements and their bounding-box
+ * heights — mirrors `page.locator(SELECTORS.moreButton)`, which can match several elements
+ * on a real profile page. `nth(i)` returns a fake Locator wrapping just that element.
+ */
+function makeFakeMultiLocator(elements: Array<ReturnType<typeof makeFakeElement>>, heights: number[]): any {
+  const locator: any = {
+    count: vi.fn().mockResolvedValue(elements.length),
+    evaluateAll: vi.fn().mockResolvedValue(heights.map((height) => ({ height }))),
+    nth: vi.fn((i: number) => makeFakeLocator(elements[i] ?? null)),
+  };
   return locator;
 }
 
@@ -109,6 +124,39 @@ describe('SELECTORS', () => {
 
   it('no longer relies on the obsolete app-aware-link class for profileLink', () => {
     expect(SELECTORS.profileLink).not.toContain('app-aware-link');
+  });
+
+  it('no longer assumes a direct Connect button is visible on the profile (More-menu flow instead)', () => {
+    // Live finding: the tested profile had no top-level Connect button at all — Connect is
+    // tucked inside the "More" overflow menu. `connectButton` is gone; `moreButton` +
+    // `connectMenuItem` replace it.
+    expect(SELECTORS).not.toHaveProperty('connectButton');
+    expect(SELECTORS.moreButton).toContain('More');
+    expect(SELECTORS.connectMenuItem).toContain('role="menu"');
+    expect(SELECTORS.connectMenuItem).toContain('Connect');
+  });
+});
+
+describe('pickButtonShapedIndex', () => {
+  it('picks the first candidate at or above the button-shaped height threshold', () => {
+    // Shaped after the live finding: index 0 was the real 48px-tall profile-header "More"
+    // button; the rest were ~17.5px "…more" show-more-text toggles inside post captions.
+    const boxes = [{ height: 48 }, { height: 17.5 }, { height: 17.5 }, { height: 17.5 }];
+    expect(pickButtonShapedIndex(boxes)).toBe(0);
+  });
+
+  it('skips small candidates and picks the first later one that is button-shaped', () => {
+    const boxes = [{ height: 17.5 }, { height: 17.5 }, { height: 48 }];
+    expect(pickButtonShapedIndex(boxes)).toBe(2);
+  });
+
+  it('returns -1 when no candidate is button-shaped', () => {
+    const boxes = [{ height: 17.5 }, { height: 20 }, { height: 0 }];
+    expect(pickButtonShapedIndex(boxes)).toBe(-1);
+  });
+
+  it('returns -1 for an empty list', () => {
+    expect(pickButtonShapedIndex([])).toBe(-1);
   });
 });
 
@@ -351,10 +399,10 @@ describe('connectSend control flow', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('returns failed and never clicks send when no Connect button is found on the profile', async () => {
+  it('returns failed and never proceeds when no More button is found on the profile', async () => {
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation(() => makeFakeLocator(null)),
+      locator: vi.fn().mockImplementation(() => makeFakeMultiLocator([], [])),
     };
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
@@ -366,11 +414,65 @@ describe('connectSend control flow', () => {
     );
 
     expect(result.status).toBe('failed');
-    expect(result.reason).toMatch(/Connect button not found/);
+    expect(result.reason).toMatch(/More button not found/);
   });
 
-  it('clicks connect, adds a note, and clicks send via the Locator API on the happy path', async () => {
-    const connectButton = makeFakeElement();
+  it('returns failed when More buttons are found but none is button-shaped (e.g. only post "…more" toggles)', async () => {
+    const smallToggle1 = makeFakeElement();
+    const smallToggle2 = makeFakeElement();
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.moreButton) {
+          return makeFakeMultiLocator([smallToggle1, smallToggle2], [17.5, 17.5]);
+        }
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/no button-shaped More button/);
+    expect(smallToggle1.click).not.toHaveBeenCalled();
+    expect(smallToggle2.click).not.toHaveBeenCalled();
+  });
+
+  it('returns failed and never clicks send when the More menu has no Connect menu item', async () => {
+    const moreButton = makeFakeElement();
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(null);
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Connect menu item not found/);
+    expect(moreButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('clicks More, then Connect in the opened menu, adds a note, and clicks send via the Locator API on the happy path', async () => {
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
     const addNoteButton = makeFakeElement();
     const noteInput = makeFakeElement();
     const sendButton = makeFakeElement();
@@ -378,7 +480,14 @@ describe('connectSend control flow', () => {
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.connectButton) return makeFakeLocator(connectButton);
+        // A real profile has several `SELECTORS.moreButton` matches (post "…more" toggles
+        // etc.) — mirror that here with one small decoy plus the real 48px-tall button at
+        // index 1, to prove pickButtonShapedIndex's filtering is actually exercised.
+        if (selector === SELECTORS.moreButton) {
+          const decoy = makeFakeElement();
+          return makeFakeMultiLocator([decoy, moreButton], [17.5, 48]);
+        }
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
         if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
         if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
         if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
@@ -395,7 +504,8 @@ describe('connectSend control flow', () => {
     );
 
     expect(result.status).toBe('sent');
-    expect(connectButton.click).toHaveBeenCalledTimes(1);
+    expect(moreButton.click).toHaveBeenCalledTimes(1);
+    expect(connectMenuItem.click).toHaveBeenCalledTimes(1);
     expect(addNoteButton.click).toHaveBeenCalledTimes(1);
     expect(noteInput.fill).toHaveBeenCalledWith('Hi, would love to connect!');
     expect(sendButton.click).toHaveBeenCalledTimes(1);
