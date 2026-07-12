@@ -40,7 +40,50 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       status TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS daily_counters (
+      day TEXT,
+      key TEXT,
+      count INTEGER DEFAULT 0,
+      PRIMARY KEY (day, key)
+    );
+
+    CREATE TABLE IF NOT EXISTS applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT,
+      platform TEXT,
+      method TEXT,
+      account TEXT,
+      status TEXT,
+      reason TEXT,
+      applied_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS connections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT,
+      company TEXT,
+      profile_url TEXT,
+      headline TEXT,
+      note TEXT,
+      status TEXT,
+      sent_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
+
+  // Migration: older databases created before `method`/`account` existed on
+  // `applications` (added for linkedin-apply's Easy Apply tracking). Add them
+  // if missing so existing data.sqlite files don't break.
+  const applicationColumns = db.prepare("PRAGMA table_info(applications)").all() as Array<{ name: string }>;
+  const columnNames = new Set(applicationColumns.map((c) => c.name));
+  if (!columnNames.has('method')) {
+    db.exec('ALTER TABLE applications ADD COLUMN method TEXT');
+  }
+  if (!columnNames.has('account')) {
+    db.exec('ALTER TABLE applications ADD COLUMN account TEXT');
+  }
 
   return db;
 }
@@ -137,5 +180,55 @@ export function saveOutreach(db: BetterSqlite3.Database, outreach: Outreach): vo
     outreach.body,
     outreach.resume_path,
     outreach.status ?? null
+  );
+}
+
+export interface Application {
+  job_id: string;
+  platform: string | null;
+  method?: string | null;
+  account?: string | null;
+  status: 'submitted' | 'manual_review' | 'failed';
+  reason?: string | null;
+  applied_at?: string | null;
+}
+
+export function saveApplication(db: BetterSqlite3.Database, application: Application): void {
+  db.prepare(`
+    INSERT INTO applications (job_id, platform, method, account, status, reason, applied_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    application.job_id,
+    application.platform ?? null,
+    application.method ?? null,
+    application.account ?? null,
+    application.status,
+    application.reason ?? null,
+    application.applied_at ?? null
+  );
+}
+
+export interface Connection {
+  job_id?: string | null;
+  company?: string | null;
+  profile_url: string;
+  headline?: string | null;
+  note: string;
+  status: 'drafted' | 'approved' | 'sent' | 'skipped';
+  sent_at?: string | null;
+}
+
+export function saveConnection(db: BetterSqlite3.Database, connection: Connection): void {
+  db.prepare(`
+    INSERT INTO connections (job_id, company, profile_url, headline, note, status, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    connection.job_id ?? null,
+    connection.company ?? null,
+    connection.profile_url,
+    connection.headline ?? null,
+    connection.note,
+    connection.status,
+    connection.sent_at ?? null
   );
 }

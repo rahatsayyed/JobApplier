@@ -4,6 +4,9 @@
     "resume": { "command": "npx", "args": ["tsx", "src/mcp/resume.ts"] },
     "contacts": { "command": "npx", "args": ["tsx", "src/mcp/contacts.ts"] },
     "sqlite": { "command": "npx", "args": ["tsx", "src/mcp/sqlite.ts"] },
-    "gmail": { "command": "npx", "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"] }
+    "gmail": { "command": "npx", "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"] },
+    "external-apply": { "command": "npx", "args": ["tsx", "src/mcp/external-apply.ts"] },
+    "linkedin-apply": { "command": "npx", "args": ["tsx", "src/mcp/linkedin-apply.ts"] },
+    "connect": { "command": "npx", "args": ["tsx", "src/mcp/connect.ts"] }
   }
 }
