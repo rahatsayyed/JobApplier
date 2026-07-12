@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { detect as detectGreenhouse, fieldMap as greenhouseFieldMap } from '../src/ats/greenhouse.js';
 import { detect as detectLever, fieldMap as leverFieldMap } from '../src/ats/lever.js';
 import { detect as detectWorkday, fieldMap as workdayFieldMap } from '../src/ats/workday.js';
 import { detect as detectAshby, fieldMap as ashbyFieldMap } from '../src/ats/ashby.js';
-import { detectAts, splitName } from '../src/mcp/external-apply.js';
+import { detectAts, splitName, applyExternal } from '../src/mcp/external-apply.js';
+import { openDb, saveJob, saveOutreach } from '../src/db.js';
+import type Database from 'better-sqlite3';
 
 const REQUIRED_FIELD_KEYS = ['name', 'email', 'phone', 'resumeUpload', 'coverLetter'];
 
@@ -127,5 +129,144 @@ describe('splitName', () => {
     expect(splitName(undefined)).toEqual({ first: '', last: '' });
     expect(splitName('')).toEqual({ first: '', last: '' });
     expect(splitName('   ')).toEqual({ first: '', last: '' });
+  });
+});
+
+describe('applyExternal rate limiting (Finding 1)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  function seedApplicableJob(jobId: string) {
+    saveJob(db, {
+      id: jobId,
+      source: 'greenhouse',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://boards.greenhouse.io/acme/jobs/123',
+      apply_url: 'https://boards.greenhouse.io/acme/jobs/123',
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: jobId,
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+  }
+
+  it('returns rate_limited and never touches Playwright when the daily apply limit is already reached', async () => {
+    seedApplicableJob('job-ext-rl-1');
+    const launch = vi.fn();
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-rl-1' },
+      { db, maxAppliesPerDay: 0, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('rate_limited');
+    expect(result.platform).toBe('greenhouse');
+    // The rate-limit gate must be checked BEFORE any Playwright action — launch()
+    // should never be invoked once the limit is already exhausted.
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('shares the same "easy_apply" daily counter as linkedin-apply.ts (documented shared cap)', async () => {
+    seedApplicableJob('job-ext-shared-1');
+
+    // Pre-exhaust the shared counter the way applyEasyApply would.
+    db.prepare('INSERT INTO daily_counters (day, key, count) VALUES (date(\'now\'), ?, ?)').run(
+      'easy_apply',
+      1
+    );
+
+    const launch = vi.fn();
+    const result = await applyExternal(
+      { job_id: 'job-ext-shared-1' },
+      { db, maxAppliesPerDay: 1, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('rate_limited');
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: job not found)', async () => {
+    const launch = vi.fn();
+
+    const result = await applyExternal(
+      { job_id: 'job-does-not-exist' },
+      { db, maxAppliesPerDay: 5, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(launch).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('easy_apply') as { count: number } | undefined;
+    expect(row).toBeUndefined();
+  });
+
+  it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: no tailored resume prepared)', async () => {
+    saveJob(db, {
+      id: 'job-ext-no-outreach',
+      source: 'greenhouse',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://boards.greenhouse.io/acme/jobs/456',
+      apply_url: 'https://boards.greenhouse.io/acme/jobs/456',
+      description: 'React role',
+    });
+    const launch = vi.fn();
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-no-outreach' },
+      { db, maxAppliesPerDay: 5, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(launch).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('easy_apply') as { count: number } | undefined;
+    expect(row).toBeUndefined();
+  });
+
+  it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: unsupported ATS)', async () => {
+    saveJob(db, {
+      id: 'job-ext-unsupported-ats',
+      source: 'other',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://example.com/careers/123',
+      apply_url: 'https://example.com/careers/123',
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: 'job-ext-unsupported-ats',
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+    const launch = vi.fn();
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-unsupported-ats' },
+      { db, maxAppliesPerDay: 5, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/unsupported ATS platform/);
+    expect(launch).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('easy_apply') as { count: number } | undefined;
+    expect(row).toBeUndefined();
   });
 });

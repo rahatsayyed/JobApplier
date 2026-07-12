@@ -5,11 +5,16 @@ import { chromium } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, getJob, saveApplication } from '../db.js';
 import { getBaseResume } from '../resume.js';
+import { checkAndIncrement } from '../lib/rateLimit.js';
 import type { FieldMap } from '../ats/types.js';
 import * as greenhouse from '../ats/greenhouse.js';
 import * as lever from '../ats/lever.js';
 import * as workday from '../ats/workday.js';
 import * as ashby from '../ats/ashby.js';
+
+// Must match linkedin-apply.ts's own DEFAULT_MAX_APPLIES_PER_DAY — see the shared-counter
+// rationale on the `checkAndIncrement` call below.
+const DEFAULT_MAX_APPLIES_PER_DAY = 5;
 
 const db = openDb('data.sqlite');
 
@@ -70,16 +75,23 @@ export function detectAts(url: string): AtsDetection | null {
 
 export interface ApplyExternalResult {
   job_id: string;
-  status: 'submitted' | 'manual_review' | 'failed';
+  status: 'submitted' | 'manual_review' | 'failed' | 'rate_limited';
   platform?: string | null;
   reason?: string;
+}
+
+export interface ApplyExternalDeps {
+  db?: BetterSqlite3.Database;
+  maxAppliesPerDay?: number;
+  /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
+  chromium?: { launch: typeof chromium.launch };
 }
 
 function recordAndReturn(
   database: BetterSqlite3.Database,
   jobId: string,
   platform: string | null,
-  status: ApplyExternalResult['status'],
+  status: 'submitted' | 'manual_review' | 'failed',
   reason?: string
 ): ApplyExternalResult {
   saveApplication(database, {
@@ -94,9 +106,10 @@ function recordAndReturn(
 
 export async function applyExternal(
   { job_id }: { job_id: string },
-  deps: { db?: BetterSqlite3.Database } = {}
+  deps: ApplyExternalDeps = {}
 ): Promise<ApplyExternalResult> {
   const database = deps.db ?? db;
+  const browserLauncher = deps.chromium ?? chromium;
 
   const job = getJob(database, job_id);
   if (!job || !job.apply_url) {
@@ -124,9 +137,31 @@ export async function applyExternal(
 
   const applicant = getBaseResume();
 
+  // Gate immediately before the Playwright launch — after every cheap, pure, non-browser
+  // pre-flight check above (job lookup, tailored-resume lookup, ATS detection, base resume
+  // fetch) has already had a chance to reject the request for free, so a rejection never
+  // burns a quota slot for a no-op.
+  //
+  // Judgment call: this shares the SAME 'easy_apply' counter key as linkedin-apply.ts's
+  // `apply_easy_apply`, per the design spec (docs/superpowers/specs/2026-07-07-jobapplier-
+  // phase2-design.md §5.1: "Rate-limited by MAX_APPLIES_PER_DAY (shared counter with 5.2)"),
+  // where §5.2 is this file. So `MAX_APPLIES_PER_DAY` is one combined daily cap across
+  // LinkedIn Easy Apply + external ATS applies, not two independent caps.
+  const maxPerDay =
+    deps.maxAppliesPerDay ?? Number(process.env.MAX_APPLIES_PER_DAY ?? DEFAULT_MAX_APPLIES_PER_DAY);
+  const allowed = checkAndIncrement(database, 'easy_apply', maxPerDay);
+  if (!allowed) {
+    return {
+      job_id,
+      status: 'rate_limited',
+      platform: ats.platform,
+      reason: `daily apply limit (${maxPerDay}) reached`,
+    };
+  }
+
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    browser = await browserLauncher.launch({ headless: true });
     const page = await browser.newPage();
     await page.goto(job.apply_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
@@ -198,8 +233,9 @@ server.registerTool(
   {
     description:
       'Apply directly to a Greenhouse/Lever/Workday/Ashby-hosted job posting using its apply_url, ' +
-      'filling in the tailored resume and cover letter prepared for that job. Falls back to manual_review ' +
-      'if the ATS is unsupported or a required field cannot be located.',
+      'filling in the tailored resume and cover letter prepared for that job. Gated by the same daily ' +
+      'MAX_APPLIES_PER_DAY limit shared with apply_easy_apply. Falls back to manual_review if the ATS ' +
+      'is unsupported or a required field cannot be located.',
     inputSchema: {
       job_id: z.string(),
     },

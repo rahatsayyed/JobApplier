@@ -164,15 +164,9 @@ export async function applyEasyApply(
   const maxPerDay =
     deps.maxAppliesPerDay ?? Number(process.env.MAX_APPLIES_PER_DAY ?? DEFAULT_MAX_APPLIES_PER_DAY);
 
-  const allowed = checkAndIncrement(database, 'easy_apply', maxPerDay);
-  if (!allowed) {
-    return {
-      job_id,
-      status: 'rate_limited',
-      reason: `daily Easy Apply limit (${maxPerDay}) reached`,
-    };
-  }
-
+  // Cheap, pure, non-browser pre-flight checks run BEFORE the rate-limit gate below, so a
+  // pre-flight rejection (missing job, bad answers config, missing burner session) never
+  // burns a quota slot for a no-op that was never going to touch Playwright.
   const job = getJob(database, job_id);
   if (!job || !job.url) {
     return recordAndReturn(database, job_id, 'manual_review', 'job not found or missing url');
@@ -192,6 +186,17 @@ export async function applyEasyApply(
 
   if (!existsSync(BURNER_STATE_PATH)) {
     return recordAndReturn(database, job_id, 'manual_review', 'burner session state not found');
+  }
+
+  // Gate immediately before the Playwright launch — still strictly "before any Playwright
+  // action", just moved as late as possible so the cheap checks above get first refusal.
+  const allowed = checkAndIncrement(database, 'easy_apply', maxPerDay);
+  if (!allowed) {
+    return {
+      job_id,
+      status: 'rate_limited',
+      reason: `daily Easy Apply limit (${maxPerDay}) reached`,
+    };
   }
 
   let browser;

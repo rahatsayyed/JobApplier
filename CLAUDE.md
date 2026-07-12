@@ -199,8 +199,9 @@ Steps, for each targeted job:
    `linkedin-apply.apply_easy_apply({job_id})`. Otherwise (Greenhouse/Lever/Workday/Ashby or other
    external ATS), dispatch to `external-apply.apply_external({job_id})`.
 2. Each call returns one of: `submitted`, `manual_review` (an unanswerable screening question or
-   missing required field — never a guessed submission), or `rate_limited` (daily cap reached for
-   `easy_apply`/`external_apply` — report it, do not retry).
+   missing required field — never a guessed submission), or `rate_limited` (daily
+   `MAX_APPLIES_PER_DAY` cap reached — report it, do not retry). `apply_easy_apply` and
+   `apply_external` share the SAME daily counter, so an apply of either kind can trip this.
 3. Report results per job to Telegram per the "Communication" section: submitted / needs manual
    review / rate-limited, with job title + company for each.
 
@@ -216,14 +217,17 @@ For a matched job (with or without a sent cold email):
 2. Invoke the `draft-connect-note` skill with the job and the chosen candidate profile → a
    drafted note (≤300 chars).
 3. **Post the drafted note to Telegram and STOP.** Do not call `connect.connect_send` in this
-   turn. Wait for the user's next message.
+   turn. Optionally call `connect.record_connection_status({profile_url, note, status: 'drafted',
+   job_id, company})` to record the draft (pure bookkeeping write, no side effects). Wait for the
+   user's next message.
 4. On the user's next reply, matched to this pending draft (e.g. by job/company name):
    - `send` (or equivalent approval) → call `connect.connect_send({profile_url, note})` now, for
      the first time, in response to this explicit approval.
    - `edit: <changes>` → redraft per the requested changes, re-post to Telegram, and wait again
      (do not send the edited version without a fresh approval).
-   - `skip` or anything else non-approving → mark the connection `status='skipped'` in the DB and
-     move on; do not send.
+   - `skip` or anything else non-approving → call
+     `connect.record_connection_status({profile_url, note, status: 'skipped', job_id, company})`
+     to mark the connection `status='skipped'` in the DB, then move on; do not send.
 5. If `connect_send` reports `rate_limited` (daily `MAX_CONNECTS_PER_DAY` cap reached), report
    that to Telegram and stop — do not retry later in the same run.
 

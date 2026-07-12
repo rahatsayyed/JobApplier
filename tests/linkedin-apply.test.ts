@@ -183,6 +183,24 @@ describe('applyEasyApply control flow', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: job not found)', async () => {
+    const launch = vi.fn();
+    const fakeChromium = { launch };
+
+    const result = await applyEasyApply(
+      { job_id: 'job-does-not-exist' },
+      { db, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(launch).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('easy_apply') as { count: number } | undefined;
+    expect(row).toBeUndefined();
+  });
+
   it('returns manual_review and never clicks submit when a screening question is unanswerable', async () => {
     saveJob(db, {
       id: 'job-mr-1',

@@ -3,6 +3,7 @@ import {
   validateNoteLength,
   findLinkedinProfile,
   connectSend,
+  recordConnectionStatus,
   extractNameAndHeadline,
   pickButtonShapedIndex,
   SELECTORS,
@@ -429,6 +430,25 @@ describe('connectSend control flow', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: invalid note length)', async () => {
+    const launch = vi.fn();
+    const fakeChromium = { launch };
+    const overLongNote = 'a'.repeat(301);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: overLongNote },
+      { db, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(launch).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('connect_send') as { count: number } | undefined;
+    expect(row).toBeUndefined();
+  });
+
   it('returns failed and never proceeds when no More button is found on the profile', async () => {
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
@@ -686,5 +706,61 @@ describe('connectSend control flow', () => {
     expect(result.reason).toMatch(/Send button not found on connect dialog/);
     // Add a note must still have been clicked before the timed-out wait.
     expect(addNoteButton.click).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('recordConnectionStatus (Finding 3: drafted/skipped bookkeeping)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('records a "drafted" row without touching Playwright or the rate-limit counter', () => {
+    const result = recordConnectionStatus(
+      {
+        profile_url: 'https://linkedin.com/in/example',
+        note: 'Hi, would love to connect!',
+        status: 'drafted',
+        job_id: 'job-1',
+        company: 'Acme Corp',
+      },
+      { db }
+    );
+
+    expect(result.status).toBe('ok');
+
+    const row = db.prepare('SELECT * FROM connections WHERE profile_url = ?').get(
+      'https://linkedin.com/in/example'
+    ) as any;
+    expect(row.status).toBe('drafted');
+    expect(row.job_id).toBe('job-1');
+    expect(row.company).toBe('Acme Corp');
+    expect(row.sent_at).toBeNull();
+
+    const counterRow = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = 'connect_send'")
+      .get();
+    expect(counterRow).toBeUndefined();
+  });
+
+  it('records a "skipped" row when the user declines to approve a draft', () => {
+    const result = recordConnectionStatus(
+      {
+        profile_url: 'https://linkedin.com/in/example-2',
+        note: 'Hi, would love to connect!',
+        status: 'skipped',
+      },
+      { db }
+    );
+
+    expect(result.status).toBe('ok');
+
+    const row = db.prepare('SELECT * FROM connections WHERE profile_url = ?').get(
+      'https://linkedin.com/in/example-2'
+    ) as any;
+    expect(row.status).toBe('skipped');
+    expect(row.job_id).toBeNull();
+    expect(row.company).toBeNull();
   });
 });

@@ -68,6 +68,11 @@ export interface ConnectSendResult {
   reason?: string;
 }
 
+export interface RecordConnectionStatusResult {
+  status: 'ok' | 'failed';
+  reason?: string;
+}
+
 export interface ConnectDeps {
   db?: BetterSqlite3.Database;
   maxSearchesPerDay?: number;
@@ -366,13 +371,9 @@ export async function connectSend(
   const maxPerDay =
     deps.maxConnectsPerDay ?? Number(process.env.MAX_CONNECTS_PER_DAY ?? DEFAULT_MAX_CONNECTS_PER_DAY);
 
-  // Gate first, before any Playwright action — same pattern as linkedin-apply.ts's
-  // applyEasyApply and this file's findLinkedinProfile above.
-  const allowed = checkAndIncrement(database, 'connect_send', maxPerDay);
-  if (!allowed) {
-    return { status: 'rate_limited', reason: `daily connect limit (${maxPerDay}) reached` };
-  }
-
+  // Cheap, pure, non-browser pre-flight checks run BEFORE the rate-limit gate below, so a
+  // pre-flight rejection (invalid note length, missing main session) never burns a quota
+  // slot for a no-op that was never going to touch Playwright.
   const { ok, length } = validateNoteLength(note);
   if (!ok) {
     return {
@@ -383,6 +384,15 @@ export async function connectSend(
 
   if (!existsSync(MAIN_STATE_PATH)) {
     return { status: 'failed', reason: 'main LinkedIn session state not found' };
+  }
+
+  // Gate immediately before the Playwright launch — still strictly "before any Playwright
+  // action" (same pattern as linkedin-apply.ts's applyEasyApply and this file's
+  // findLinkedinProfile above), just moved as late as possible so the cheap checks above
+  // get first refusal.
+  const allowed = checkAndIncrement(database, 'connect_send', maxPerDay);
+  if (!allowed) {
+    return { status: 'rate_limited', reason: `daily connect limit (${maxPerDay}) reached` };
   }
 
   let browser;
@@ -461,6 +471,44 @@ export async function connectSend(
   }
 }
 
+/**
+ * Pure bookkeeping write for a connection draft that was never sent — records a
+ * `drafted` or `skipped` row so the orchestrator (per CLAUDE.md's "Connecting" section)
+ * has a real tool to call when the user doesn't approve a drafted note, instead of a
+ * DB write instruction with no corresponding tool. No Playwright involved and no
+ * rate-limit gating needed — this never touches LinkedIn, it only records a status the
+ * orchestrator already decided on.
+ */
+export function recordConnectionStatus(
+  {
+    profile_url,
+    note,
+    status,
+    job_id,
+    company,
+  }: { profile_url: string; note: string; status: 'drafted' | 'skipped'; job_id?: string; company?: string },
+  deps: { db?: BetterSqlite3.Database } = {}
+): RecordConnectionStatusResult {
+  const database = deps.db ?? db;
+  try {
+    saveConnection(database, {
+      job_id: job_id ?? null,
+      company: company ?? null,
+      profile_url,
+      headline: null,
+      note,
+      status,
+      sent_at: null,
+    });
+    return { status: 'ok' };
+  } catch (err) {
+    return {
+      status: 'failed',
+      reason: (err as Error).message ?? 'unknown error recording connection status',
+    };
+  }
+}
+
 const server = new McpServer({ name: 'connect', version: '0.1.0' });
 
 server.registerTool(
@@ -500,6 +548,28 @@ server.registerTool(
   },
   async ({ profile_url, note, job_id, company }) => {
     const result = await connectSend({ profile_url, note, job_id, company });
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  }
+);
+
+server.registerTool(
+  'record_connection_status',
+  {
+    description:
+      "Records a connection draft's status as 'drafted' or 'skipped' in the database. Pure " +
+      "bookkeeping write — no Playwright, no rate-limit gating. Use this after posting a drafted " +
+      "connection note to Telegram (status='drafted'), or when the user declines to approve it " +
+      "(status='skipped'), so the DB reflects what actually happened without ever calling connect_send.",
+    inputSchema: {
+      profile_url: z.string(),
+      note: z.string(),
+      status: z.enum(['drafted', 'skipped']),
+      job_id: z.string().optional(),
+      company: z.string().optional(),
+    },
+  },
+  async ({ profile_url, note, status, job_id, company }) => {
+    const result = recordConnectionStatus({ profile_url, note, status, job_id, company });
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   }
 );
