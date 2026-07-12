@@ -36,6 +36,7 @@ function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
       if (!el) throw new Error('no element matched by locator');
       return el.fill(value);
     }),
+    waitFor: vi.fn().mockResolvedValue(undefined),
   };
   locator.first = vi.fn(() => locator);
   return locator;
@@ -509,5 +510,47 @@ describe('connectSend control flow', () => {
     expect(addNoteButton.click).toHaveBeenCalledTimes(1);
     expect(noteInput.fill).toHaveBeenCalledWith('Hi, would love to connect!');
     expect(sendButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to the normal "Connect menu item not found" failure when waitForConnectMenu times out after the More click', async () => {
+    // Regression test for the `.catch(() => {})` in `waitForConnectMenu` (src/mcp/connect.ts),
+    // added for the same bug class already fixed in `waitForFormControls`
+    // (src/mcp/linkedin-apply.ts, see tests/linkedin-apply.test.ts's matching timeout test).
+    // `waitForConnectMenu` wraps a bounded `locator.waitFor(...)` in a swallowing catch so a
+    // timeout falls through to the existing `.count()`-based "not found" fallback instead of
+    // throwing. Every other test's fake `waitFor` resolves instantly, so none of them
+    // exercise the rejection branch. Here we force `waitFor` to reject and assert the run
+    // still completes with the pre-existing 'failed' / "Connect menu item not found" result
+    // (not an uncaught throw), and that the More button was still clicked beforehand.
+    const moreButton = makeFakeElement();
+
+    const rejectingConnectMenuLocator: any = {
+      count: vi.fn().mockResolvedValue(0),
+      first: vi.fn(() => ({
+        waitFor: vi.fn().mockRejectedValue(new Error('Timeout 8000ms exceeded waiting for locator')),
+      })),
+    };
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return rejectingConnectMenuLocator;
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Connect menu item not found/);
+    // The More button click itself must still have happened before the timed-out wait.
+    expect(moreButton.click).toHaveBeenCalledTimes(1);
   });
 });

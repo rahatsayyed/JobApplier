@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -130,6 +130,30 @@ export const SELECTORS = {
   noteTextarea: '#custom-message, textarea[name="message"]',
   sendButton: 'button[aria-label^="Send " i], button:has-text("Send invitation"), button:has-text("Send now")',
 } as const;
+
+// How long to wait for the profile-header "More" overflow menu to actually render after
+// being clicked, before checking for its "Connect" menu item. Bounded and non-throwing —
+// same rationale and pattern as `waitForFormControls` in src/mcp/linkedin-apply.ts:
+// `Locator.click()` only auto-waits for the clicked element ("More") itself to be
+// actionable, not for whatever the click triggers afterward (the menu animating in), and
+// `Locator.count()` is a synchronous snapshot with no retry — so without this wait, the
+// very next `.count()` check on `connectMenuItem` races the menu's render and can
+// incorrectly see 0 elements that would appear a moment later, reporting "Connect menu
+// item not found" prematurely. If the menu doesn't render within the timeout, we swallow
+// the error and fall through to the existing `.count()` check below, which then correctly
+// resolves to the existing "Connect menu item not found" failure — never throws.
+const MENU_RENDER_TIMEOUT_MS = 8000;
+
+async function waitForConnectMenu(page: Pick<Page, 'locator'>): Promise<void> {
+  await page
+    .locator(SELECTORS.connectMenuItem)
+    .first()
+    .waitFor({ state: 'visible', timeout: MENU_RENDER_TIMEOUT_MS })
+    .catch(() => {
+      // Timed out waiting for the More menu to render. Don't throw — let the caller's
+      // existing `.count()` check run and take the normal "not found" failure path.
+    });
+}
 
 /**
  * Pure: given the bounding-box heights of every `SELECTORS.moreButton` match on a profile
@@ -311,6 +335,7 @@ export async function connectSend(
       return { status: 'failed', reason: 'no button-shaped More button found on profile' };
     }
     await moreButtonsLocator.nth(moreButtonIndex).click();
+    await waitForConnectMenu(page);
 
     // Step 2: the "More" click opens a dropdown/overflow menu; find and click its
     // "Connect" menu item (scoped to `[role="menu"]` so this never matches the unrelated
