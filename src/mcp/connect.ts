@@ -175,8 +175,14 @@ export async function findLinkedinProfile(
       const profileLinksLocator = card.locator(SELECTORS.profileLink);
       const linkCount = await profileLinksLocator.count();
 
+      // Only indices 0 and 1 are ever consumed by extractNameAndHeadline() below — a card
+      // can have MORE than 2 `a[href*="/in/"]` matches (2, 3, or 4 observed live), the
+      // extras being "mutual connections"/"also viewed" avatar links unrelated to this
+      // result's own profile. Querying those extra indices is not just unused work — it
+      // was observed to hang/timeout live (likely lazily-rendered/off-screen nodes), so we
+      // bound the loop to the indices actually used instead of the full linkCount.
       const profileLinkTexts: string[] = [];
-      for (let j = 0; j < linkCount; j++) {
+      for (let j = 0; j < Math.min(linkCount, 2); j++) {
         profileLinkTexts.push(((await profileLinksLocator.nth(j).textContent()) ?? '').trim());
       }
       // The clean-name link is the SECOND `a[href*="/in/"]` match within a card (live

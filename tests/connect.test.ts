@@ -235,6 +235,85 @@ describe('findLinkedinProfile control flow', () => {
       },
     ]);
   });
+
+  it('extracts the correct name/headline/url from a card with MORE than 2 profile links, never reading beyond index 1', async () => {
+    // Live finding: a real result card can have 2, 3, or 4 `a[href*="/in/"]` matches — the
+    // extras beyond index 1 are "mutual connections"/"also viewed" avatar links unrelated
+    // to this result's own profile, and querying them was observed to hang/timeout live.
+    // `nth(2)`/`nth(3)` below reject if ever called, proving findLinkedinProfile only reads
+    // indices 0 and 1 (the indices extractNameAndHeadline actually consumes).
+    const cardsLocator: any = {
+      count: vi.fn().mockResolvedValue(1),
+      nth: vi.fn((i: number) => {
+        expect(i).toBe(0);
+        return {
+          locator: vi.fn((selector: string) => {
+            if (selector === 'span') {
+              return {
+                evaluateAll: vi
+                  .fn()
+                  .mockResolvedValue(['• 2nd', '• 2nd', 'Talent Acquisition Specialist', 'Bengaluru, India']),
+              };
+            }
+            const linkTexts = [
+              'Sundarraj Ganesha Sundarraj Ganesha  • 2ndTalent Acquisition Specialist...',
+              'Sundarraj Ganesha',
+            ];
+            const linkHrefs = [
+              'https://www.linkedin.com/in/sundarraj-ganesha-93113815a/',
+              'https://www.linkedin.com/in/sundarraj-ganesha-93113815a/',
+            ];
+            const linksLocator: any = {
+              count: vi.fn().mockResolvedValue(4), // 4 links present on the real card
+              nth: vi.fn((j: number) => {
+                if (j >= 2) {
+                  return {
+                    textContent: vi.fn().mockRejectedValue(new Error(`unused mutual-connection link nth(${j}) queried`)),
+                    getAttribute: vi.fn().mockRejectedValue(new Error(`unused mutual-connection link nth(${j}) queried`)),
+                  };
+                }
+                return {
+                  textContent: vi.fn().mockResolvedValue(linkTexts[j]),
+                  getAttribute: vi.fn().mockResolvedValue(linkHrefs[j]),
+                };
+              }),
+            };
+            return linksLocator;
+          }),
+        };
+      }),
+    };
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.resultCard) return cardsLocator;
+        return makeFakeLocator(null);
+      }),
+    };
+
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = {
+      newContext: vi.fn().mockResolvedValue(context),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const fakeChromium = { launch };
+
+    const result = await findLinkedinProfile(
+      { company: 'InfoVision' },
+      { db, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.candidates).toEqual([
+      {
+        profile_url: 'https://www.linkedin.com/in/sundarraj-ganesha-93113815a/',
+        name: 'Sundarraj Ganesha',
+        headline: 'Talent Acquisition Specialist',
+      },
+    ]);
+  });
 });
 
 describe('connectSend control flow', () => {
