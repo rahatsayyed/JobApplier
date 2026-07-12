@@ -136,6 +136,26 @@ describe('SELECTORS', () => {
     expect(SELECTORS.connectMenuItem).toContain('role="menu"');
     expect(SELECTORS.connectMenuItem).toContain('Connect');
   });
+
+  it('no longer relies on has-text("Send invitation") for sendButton, since that button\'s VISIBLE TEXT is only "Send" (its aria-label is "Send invitation")', () => {
+    // Live re-inspection of the real post-"Add a note"-click dialog (see
+    // .superpowers/sdd/task-6-connect-fix-report.md, final "Fix: sendButton selector +
+    // add-note transition wait" section) confirmed this button's accessible name
+    // ("Send invitation") lives ONLY in its aria-label, never in its rendered text content
+    // (just "Send"). `:has-text()` matches visible text, so the old
+    // `button:has-text("Send invitation")` alternative could never match this element —
+    // that dead alternative must be gone.
+    expect(SELECTORS.sendButton).not.toContain('has-text("Send invitation")');
+  });
+
+  it('matches the real send button via an aria-label-based selector (exact and prefix)', () => {
+    expect(SELECTORS.sendButton).toContain('aria-label="Send invitation"');
+    expect(SELECTORS.sendButton).toContain('aria-label^="Send "');
+  });
+
+  it('does not modify the already-live-verified noteTextarea selector', () => {
+    expect(SELECTORS.noteTextarea).toBe('#custom-message, textarea[name="message"]');
+  });
 });
 
 describe('pickButtonShapedIndex', () => {
@@ -552,5 +572,104 @@ describe('connectSend control flow', () => {
     expect(result.reason).toMatch(/Connect menu item not found/);
     // The More button click itself must still have happened before the timed-out wait.
     expect(moreButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('finds and clicks the real send button via its aria-label alone (visible text is only "Send", not "Send invitation")', async () => {
+    // Regression test for the live bug: the send button's accessible name ("Send
+    // invitation") lives only in its aria-label, never its visible text ("Send"). This
+    // fake element models exactly that split — `makeFakeLocator`/`makeFakeElement` don't
+    // carry any text/attribute data, so what actually proves the fix is that `connectSend`
+    // locates and clicks whatever `page.locator(SELECTORS.sendButton)` resolves to without
+    // ever needing a `:has-text("Send invitation")` match; the SELECTORS-level tests above
+    // additionally confirm that broken text-based alternative is gone from the selector
+    // value itself.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        // The note-dialog-transition wait's joined selector (noteTextarea + sendButton)
+        // also resolves here via the generic fallback and its waitFor() resolves
+        // instantly (see makeFakeLocator), so it doesn't block this happy path.
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to the normal "Send button not found" failure when waitForNoteDialogTransition times out after clicking Add a note', async () => {
+    // Regression test for the `.catch(() => {})` in `waitForNoteDialogTransition`
+    // (src/mcp/connect.ts) — added because the real "Add a note?" dialog's textarea and
+    // new button set (including the Send button) don't necessarily exist in the DOM the
+    // instant "Add a note" is clicked; without this bounded wait, the very next
+    // `.count()` checks on noteTextarea/sendButton can race that render and report "Send
+    // button not found on connect dialog" prematurely. Mirrors the equivalent
+    // `waitForConnectMenu` timeout test above and `waitForFormControls`'s in
+    // tests/linkedin-apply.test.ts.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+
+    // waitForNoteDialogTransition builds one joined selector string containing both
+    // noteTextarea and sendButton and calls `.first().waitFor(...)` on it. That joined
+    // string is the only selector containing both substrings, so it can be distinguished
+    // from the individual `noteTextarea`/`sendButton` lookups the rest of the
+    // implementation queries separately via `.count()`.
+    const isNoteTransitionSelector = (selector: string) =>
+      selector.includes('custom-message') && selector.includes('Send invitation');
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (isNoteTransitionSelector(selector)) {
+          return {
+            count: vi.fn().mockResolvedValue(0),
+            first: vi.fn(() => ({
+              waitFor: vi.fn().mockRejectedValue(new Error('Timeout 8000ms exceeded waiting for locator')),
+            })),
+          };
+        }
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        // Both the note textarea and the send button are absent after the timed-out
+        // wait, so the flow falls through to the pre-existing "not found" checks.
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(null);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(null);
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Send button not found on connect dialog/);
+    // Add a note must still have been clicked before the timed-out wait.
+    expect(addNoteButton.click).toHaveBeenCalledTimes(1);
   });
 });

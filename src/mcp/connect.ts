@@ -115,12 +115,28 @@ export function validateNoteLength(note: string): { ok: boolean; length: number 
 // Scoping to `[role="menu"] ... [role="menuitem"]` is what excludes the unrelated PYMK-card
 // "Invite X to connect" buttons (those live entirely outside any `[role="menu"]`).
 //
-// addNoteButton/noteTextarea/sendButton remain UNVERIFIED: clicking "Connect" from the menu
-// was explicitly out of scope for this read-only inspection (would risk firing a real
-// connection request or opening a real send-eligible dialog), so the add-note-dialog step
-// that follows a menu-based Connect click was not observed live. These three selectors are
-// carried over unchanged from the prior (already-unverified) version — treat them as
-// best-guess, not confirmed, same caveat as before.
+// addNoteButton/noteTextarea/sendButton — NOW LIVE-VERIFIED (see
+// .superpowers/sdd/task-6-connect-fix-report.md, "Fix: sendButton selector + add-note
+// transition wait" section) via a read-only re-inspection of the real "Add a note?" dialog
+// (main-account session), stopping before any actual send.
+//
+// Before clicking "Add a note": the dialog shows two buttons, "Add a note"
+// (`aria-label="Add a note"`) and "Send without a note" (`aria-label="Send without a
+// note"`); no textarea is present yet.
+//
+// After clicking "Add a note": a `<textarea id="custom-message" name="message">` appears
+// (confirmed to match the existing `noteTextarea` selector unchanged, no fix needed there),
+// and the button set changes to "Write with AI", "Cancel" (`aria-label="Cancel adding a
+// note"`), and a "Send" button whose VISIBLE TEXT is literally "Send" but whose
+// `aria-label` is "Send invitation". This is the root cause of the reported "Send button
+// not found on connect dialog" bug: the old `sendButton` selector's
+// `button:has-text("Send invitation")` alternative matches on visible text content, and
+// this button's visible text is just "Send" — "Send invitation" is only its aria-label —
+// so that alternative could never match. It has been removed. The remaining
+// `button[aria-label^="Send " i]` alternative already matches "Send invitation" correctly
+// (confirmed live), so it is kept, and a redundant exact-match alternative is added for
+// extra resilience against future copy drift. `button:has-text("Send now")` is kept as a
+// last-resort text fallback in case LinkedIn shows different copy elsewhere.
 export const SELECTORS = {
   resultCard: 'div[role="listitem"]',
   profileLink: 'a[href*="/in/"]',
@@ -128,7 +144,8 @@ export const SELECTORS = {
   connectMenuItem: '[role="menu"] [role="menuitem"]:has-text("Connect")',
   addNoteButton: 'button[aria-label*="add a note" i], button:has-text("Add a note")',
   noteTextarea: '#custom-message, textarea[name="message"]',
-  sendButton: 'button[aria-label^="Send " i], button:has-text("Send invitation"), button:has-text("Send now")',
+  sendButton:
+    'button[aria-label="Send invitation" i], button[aria-label^="Send " i], button:has-text("Send now")',
 } as const;
 
 // How long to wait for the profile-header "More" overflow menu to actually render after
@@ -152,6 +169,36 @@ async function waitForConnectMenu(page: Pick<Page, 'locator'>): Promise<void> {
     .catch(() => {
       // Timed out waiting for the More menu to render. Don't throw — let the caller's
       // existing `.count()` check run and take the normal "not found" failure path.
+    });
+}
+
+// How long to wait for the "Add a note?" dialog's post-click transition to actually render
+// after clicking "Add a note" — the note `<textarea>` appearing and the button set
+// switching from "Add a note"/"Send without a note" to "Write with AI"/"Cancel"/"Send" —
+// before checking for the note textarea and/or the send button. Same rationale and pattern
+// as `waitForConnectMenu` above and `waitForFormControls` in src/mcp/linkedin-apply.ts:
+// `Locator.click()` only auto-waits for the clicked element ("Add a note") itself to be
+// actionable, not for whatever the click triggers afterward (the dialog re-rendering its
+// textarea and button set), and `Locator.count()` is a synchronous snapshot with no retry —
+// so without this wait, the very next `.count()` checks on `noteTextarea`/`sendButton` race
+// the transition and can incorrectly see 0 elements that would appear a moment later,
+// reporting "Send button not found on connect dialog" prematurely (this was confirmed live
+// to be a real contributing factor to that bug, alongside the `sendButton` selector fix
+// above). If the transition doesn't render within the timeout, we swallow the error and
+// fall through to the existing `.count()` checks below, which then correctly resolve to the
+// existing failure paths — never throws.
+const NOTE_TRANSITION_TIMEOUT_MS = 8000;
+
+async function waitForNoteDialogTransition(page: Pick<Page, 'locator'>): Promise<void> {
+  const anySelector = [SELECTORS.noteTextarea, SELECTORS.sendButton].join(', ');
+  await page
+    .locator(anySelector)
+    .first()
+    .waitFor({ state: 'visible', timeout: NOTE_TRANSITION_TIMEOUT_MS })
+    .catch(() => {
+      // Timed out waiting for the note textarea / new button set to render. Don't throw —
+      // let the caller's existing `.count()` checks run and take the normal "not found"
+      // failure paths.
     });
 }
 
@@ -350,6 +397,7 @@ export async function connectSend(
     const addNoteButtonLocator = page.locator(SELECTORS.addNoteButton);
     if ((await addNoteButtonLocator.count()) > 0) {
       await addNoteButtonLocator.first().click();
+      await waitForNoteDialogTransition(page);
       const noteInputLocator = page.locator(SELECTORS.noteTextarea);
       if ((await noteInputLocator.count()) > 0) {
         await noteInputLocator.first().fill(note);
