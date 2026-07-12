@@ -6,6 +6,7 @@ import {
   extractNameAndHeadline,
   pickButtonShapedIndex,
   SELECTORS,
+  BROWSER_VIEWPORT,
 } from '../src/mcp/connect.js';
 import { openDb } from '../src/db.js';
 import type Database from 'better-sqlite3';
@@ -303,6 +304,14 @@ describe('findLinkedinProfile control flow', () => {
         headline: 'Senior Human Resource Recruiter',
       },
     ]);
+    // Regression test for the viewport bug: a standalone Playwright script that
+    // live-verified these exact selectors explicitly set `{ width: 1440, height: 2400 }` on
+    // `newContext()`, while this file's `newContext()` call passed no viewport at all,
+    // silently falling back to Playwright's 1280×720 default. Assert the same live-verified
+    // viewport is now passed here too.
+    expect(browser.newContext).toHaveBeenCalledWith(
+      expect.objectContaining({ viewport: BROWSER_VIEWPORT })
+    );
   });
 
   it('extracts the correct name/headline/url from a card with MORE than 2 profile links, never reading beyond index 1', async () => {
@@ -530,6 +539,12 @@ describe('connectSend control flow', () => {
     expect(addNoteButton.click).toHaveBeenCalledTimes(1);
     expect(noteInput.fill).toHaveBeenCalledWith('Hi, would love to connect!');
     expect(sendButton.click).toHaveBeenCalledTimes(1);
+    // Regression test for the viewport bug (see findLinkedinProfile's matching assertion
+    // above): connectSend's `newContext()` call must also pass the same live-verified
+    // viewport, not silently fall back to Playwright's 1280×720 default.
+    expect(browser.newContext).toHaveBeenCalledWith(
+      expect.objectContaining({ viewport: BROWSER_VIEWPORT })
+    );
   });
 
   it('falls through to the normal "Connect menu item not found" failure when waitForConnectMenu times out after the More click', async () => {

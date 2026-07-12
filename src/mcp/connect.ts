@@ -22,6 +22,30 @@ const MAIN_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-main-state.j
 const DEFAULT_MAX_LINKEDIN_SEARCHES_PER_DAY = 20;
 const DEFAULT_MAX_CONNECTS_PER_DAY = 10;
 
+// Explicit viewport for every Playwright browser context this MCP creates. Without this,
+// Playwright defaults to a 1280×720 context. A separate standalone Playwright script used to
+// live-verify this file's selectors (people-search resultCard/profileLink/name/headline,
+// profile-header moreButton/connectMenuItem, and the "Add a note?" dialog's
+// addNoteButton/noteTextarea/sendButton — see the SELECTORS comments above and
+// .superpowers/sdd/task-6-connect-fix-report.md) explicitly set `{ width: 1440, height: 2400
+// }` on `newContext()`, while this file's `newContext()` calls passed no viewport at all,
+// silently falling back to the 1280×720 default. That mismatch is the prime suspect for the
+// live-reported "Send button not found on connect dialog" failure: the tall 2400px viewport
+// used during verification means the "Add a note?" dialog's Send button was already within
+// the initial layout viewport, whereas the much-shorter default 720px viewport can put that
+// same button below the fold. Note that `Locator.count()` (used throughout this file's
+// `.count() === 0` checks) does NOT depend on visibility or scroll position — it counts DOM
+// matches regardless — so this fix does not change the semantics of any `.count()` check;
+// it targets a different mechanism, whatever LinkedIn's dialog does differently at a smaller
+// viewport (e.g. deferring/never mounting certain content until it would be scrolled into
+// view, or a responsive layout change), consistent with the click() failing downstream of a
+// `.count() > 0` check passing. This exact viewport was the one already live-verified to work
+// end-to-end (short of the final "Send" click) in this session's prior investigations, so it
+// is reused here for consistency rather than an untested new size — including for
+// `findLinkedinProfile`, whose people-search scraping selectors were also only ever
+// live-verified at this same larger viewport, never at the default.
+export const BROWSER_VIEWPORT = { width: 1440, height: 2400 };
+
 /** LinkedIn's hard cap on connection-request note length. */
 export const MAX_NOTE_LENGTH = 300;
 
@@ -264,7 +288,10 @@ export async function findLinkedinProfile(
   let browser;
   try {
     browser = await browserLauncher.launch({ headless: true });
-    const context = await browser.newContext({ storageState: MAIN_STATE_PATH });
+    const context = await browser.newContext({
+      storageState: MAIN_STATE_PATH,
+      viewport: BROWSER_VIEWPORT,
+    });
     const page = await context.newPage();
 
     const keywords = `${company} ${role_hint ?? 'recruiter hiring manager talent acquisition'}`;
@@ -361,7 +388,10 @@ export async function connectSend(
   let browser;
   try {
     browser = await browserLauncher.launch({ headless: true });
-    const context = await browser.newContext({ storageState: MAIN_STATE_PATH });
+    const context = await browser.newContext({
+      storageState: MAIN_STATE_PATH,
+      viewport: BROWSER_VIEWPORT,
+    });
     const page = await context.newPage();
     await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
