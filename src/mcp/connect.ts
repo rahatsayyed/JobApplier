@@ -61,20 +61,69 @@ export function validateNoteLength(note: string): { ok: boolean; length: number 
   return { ok: length > 0 && length <= MAX_NOTE_LENGTH, length };
 }
 
-// Best-effort LinkedIn people-search / profile DOM selectors. LinkedIn's markup changes
-// and isn't publicly stable, so these are a starting point and were not confirmed against
-// a live page (see Step 5 of this task's brief, deliberately deferred to a
-// human-supervised live test, mirroring Task 3's same deferral for Easy Apply selectors).
-const SELECTORS = {
-  resultCard: '.reusable-search__result-container, li.reusable-search__result-container',
-  profileLink: 'a.app-aware-link[href*="/in/"]',
-  name: 'span[aria-hidden="true"]',
-  headline: '.entity-result__primary-subtitle',
-  connectButton: 'button[aria-label*="Connect" i]',
-  addNoteButton: 'button[aria-label*="Add a note" i]',
+// LinkedIn people-search / profile DOM selectors.
+//
+// resultCard/profileLink/name/headline were LIVE-VERIFIED (see
+// .superpowers/sdd/task-6-connect-fix-report.md) against a real people-search results page
+// (`https://www.linkedin.com/search/results/people/?keywords=...`, main-account session) —
+// the old `.reusable-search__result-container` class selector matched ZERO of the page's
+// 10 real result cards. LinkedIn now renders each result as a `<div role="listitem">`
+// inside a `<div role="list">`, with fully obfuscated/hashed CSS classes elsewhere — the
+// ARIA roles are the stable anchor, same pattern as the `<footer>` tag found for Easy
+// Apply's buttons. `a.app-aware-link[href*="/in/"]` (the old profileLink selector) also
+// matched ZERO elements live; the generic `a[href*="/in/"]` does match.
+//
+// Within one result card there are (per live inspection) TWO `a[href*="/in/"]` links
+// pointing at the same profile: an outer wrapper link whose `textContent` concatenates
+// the name plus connection-degree badge plus headline plus location plus mutual-connection
+// names (an accessibility/click-target artifact), and a second, inner link whose
+// `textContent` is just the clean visible name. `.nth(1)` of that locator was confirmed
+// clean across all 10 live results. The headline has no dedicated stable selector either;
+// it was confirmed to always be the `<span>` immediately following the LAST `<span>` whose
+// text matches the connection-degree bullet (`• 1st`/`• 2nd`/`• 3rd+`) — that degree badge
+// itself renders as two adjacent duplicate spans (visible + accessibility mirror), so we
+// take the span after the *last* match, not the first.
+//
+// connectButton/addNoteButton/noteTextarea/sendButton are UNVERIFIED live: the live-tested
+// profile in this session showed "Follow" + a "More" overflow menu as its primary actions,
+// with no visible "Connect" button in the top-level DOM (LinkedIn appears to tuck Connect
+// inside that overflow menu for at least some 2nd-degree profiles) — and opening/clicking
+// that overflow menu was out of scope for a read-only inspection (may trigger real UI
+// state). Per the Easy Apply fix's lesson, aria-label exact-match strings are the most
+// likely to have rotted, so these use `aria-label` prefix/substring matching plus a
+// text-based fallback rather than a bare `aria-label*="Connect"` (which was the OLD,
+// unverified selector) — but treat all four as best-guess, not confirmed.
+export const SELECTORS = {
+  resultCard: 'div[role="listitem"]',
+  profileLink: 'a[href*="/in/"]',
+  connectButton: 'button[aria-label^="Invite" i], button:has-text("Connect")',
+  addNoteButton: 'button[aria-label*="add a note" i], button:has-text("Add a note")',
   noteTextarea: '#custom-message, textarea[name="message"]',
-  sendButton: 'button[aria-label*="Send" i], button[aria-label*="Send now" i]',
+  sendButton: 'button[aria-label^="Send " i], button:has-text("Send invitation"), button:has-text("Send now")',
 } as const;
+
+/**
+ * Pure: extracts the clean visible name/headline text from a result card's collected
+ * profile-link texts and span texts, per the live-verified DOM pattern documented above.
+ * Exported for unit testing without a live Playwright page.
+ */
+export function extractNameAndHeadline(
+  profileLinkTexts: string[],
+  spanTexts: string[]
+): { name: string; headline: string } {
+  const name = (profileLinkTexts[1] ?? profileLinkTexts[0] ?? '').trim();
+
+  let lastDegreeIdx = -1;
+  spanTexts.forEach((text, idx) => {
+    if (/^•\s*(1st|2nd|3rd)/.test(text.trim())) lastDegreeIdx = idx;
+  });
+  const headline =
+    lastDegreeIdx !== -1 && lastDegreeIdx + 1 < spanTexts.length
+      ? spanTexts[lastDegreeIdx + 1].trim()
+      : '';
+
+  return { name, headline };
+}
 
 export async function findLinkedinProfile(
   { company, role_hint }: { company: string; role_hint?: string },
@@ -113,16 +162,34 @@ export async function findLinkedinProfile(
       { timeout: 30000, waitUntil: 'domcontentloaded' }
     );
 
-    const resultEls = await page.$$(SELECTORS.resultCard);
+    // Locators (not ElementHandles) throughout: a Locator re-resolves its selector at the
+    // moment of each action/read, so it survives LinkedIn's dynamic re-renders. An
+    // ElementHandle instead pins to one DOM node captured at query time, which can detach
+    // before a later read/click fires — see linkedin-apply.ts's identical fix.
+    const resultCardsLocator = page.locator(SELECTORS.resultCard);
+    const cardCount = await resultCardsLocator.count();
     const candidates: ProfileCandidate[] = [];
-    for (const el of resultEls.slice(0, 3)) {
-      const linkEl = await el.$(SELECTORS.profileLink);
-      const nameEl = await el.$(SELECTORS.name);
-      const headlineEl = await el.$(SELECTORS.headline);
 
-      const profile_url = linkEl ? (await linkEl.getAttribute('href')) ?? '' : '';
-      const name = nameEl ? ((await nameEl.textContent()) ?? '').trim() : '';
-      const headline = headlineEl ? ((await headlineEl.textContent()) ?? '').trim() : '';
+    for (let i = 0; i < Math.min(cardCount, 3); i++) {
+      const card = resultCardsLocator.nth(i);
+      const profileLinksLocator = card.locator(SELECTORS.profileLink);
+      const linkCount = await profileLinksLocator.count();
+
+      const profileLinkTexts: string[] = [];
+      for (let j = 0; j < linkCount; j++) {
+        profileLinkTexts.push(((await profileLinksLocator.nth(j).textContent()) ?? '').trim());
+      }
+      // The clean-name link is the SECOND `a[href*="/in/"]` match within a card (live
+      // finding above); fall back to the first if only one link is present.
+      const nameLinkIndex = linkCount > 1 ? 1 : 0;
+      const profile_url =
+        linkCount > 0 ? ((await profileLinksLocator.nth(nameLinkIndex).getAttribute('href')) ?? '') : '';
+
+      const spanTexts = await card
+        .locator('span')
+        .evaluateAll((els) => els.map((el) => (el.textContent ?? '').trim()).filter(Boolean));
+
+      const { name, headline } = extractNameAndHeadline(profileLinkTexts, spanTexts);
 
       if (profile_url) {
         candidates.push({ profile_url, name, headline });
@@ -181,26 +248,27 @@ export async function connectSend(
     const page = await context.newPage();
     await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
-    const connectButton = await page.$(SELECTORS.connectButton);
-    if (!connectButton) {
+    // Locator API throughout (see findLinkedinProfile above for the same rationale).
+    const connectButtonLocator = page.locator(SELECTORS.connectButton);
+    if ((await connectButtonLocator.count()) === 0) {
       return { status: 'failed', reason: 'Connect button not found on profile' };
     }
-    await connectButton.click();
+    await connectButtonLocator.first().click();
 
-    const addNoteButton = await page.$(SELECTORS.addNoteButton);
-    if (addNoteButton) {
-      await addNoteButton.click();
-      const noteInput = await page.$(SELECTORS.noteTextarea);
-      if (noteInput) {
-        await noteInput.fill(note);
+    const addNoteButtonLocator = page.locator(SELECTORS.addNoteButton);
+    if ((await addNoteButtonLocator.count()) > 0) {
+      await addNoteButtonLocator.first().click();
+      const noteInputLocator = page.locator(SELECTORS.noteTextarea);
+      if ((await noteInputLocator.count()) > 0) {
+        await noteInputLocator.first().fill(note);
       }
     }
 
-    const sendButton = await page.$(SELECTORS.sendButton);
-    if (!sendButton) {
+    const sendButtonLocator = page.locator(SELECTORS.sendButton);
+    if ((await sendButtonLocator.count()) === 0) {
       return { status: 'failed', reason: 'Send button not found on connect dialog' };
     }
-    await sendButton.click();
+    await sendButtonLocator.first().click();
 
     saveConnection(database, {
       job_id: job_id ?? null,

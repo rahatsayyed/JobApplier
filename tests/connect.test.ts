@@ -3,9 +3,77 @@ import {
   validateNoteLength,
   findLinkedinProfile,
   connectSend,
+  extractNameAndHeadline,
+  SELECTORS,
 } from '../src/mcp/connect.js';
 import { openDb } from '../src/db.js';
 import type Database from 'better-sqlite3';
+
+/**
+ * A minimal fake Playwright element: `click`/`fill` are spies so tests can assert
+ * whether a connect/note/send action was ever attempted.
+ */
+function makeFakeElement() {
+  return {
+    click: vi.fn().mockResolvedValue(undefined),
+    fill: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+/**
+ * A minimal fake Playwright `Locator` wrapping zero-or-one fake element(s) — mirrors the
+ * shape used in tests/linkedin-apply.test.ts for its Locator conversion.
+ */
+function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
+  const locator: any = {
+    count: vi.fn().mockResolvedValue(el ? 1 : 0),
+    click: vi.fn(async () => {
+      if (!el) throw new Error('no element matched by locator');
+      return el.click();
+    }),
+    fill: vi.fn(async (value: string) => {
+      if (!el) throw new Error('no element matched by locator');
+      return el.fill(value);
+    }),
+  };
+  locator.first = vi.fn(() => locator);
+  return locator;
+}
+
+/**
+ * A fake "result card" locator representing `page.locator(SELECTORS.resultCard)`, backed
+ * by an array of card descriptors. Each card exposes `.locator(selector)` for the nested
+ * profile-link / span lookups `findLinkedinProfile` performs on it.
+ */
+function makeFakeResultCardsLocator(
+  cards: Array<{ linkTexts: string[]; linkHrefs: string[]; spanTexts: string[] }>
+) {
+  const cardsLocator: any = {
+    count: vi.fn().mockResolvedValue(cards.length),
+    nth: vi.fn((i: number) => {
+      const card = cards[i];
+      return {
+        locator: vi.fn((selector: string) => {
+          if (selector === 'span') {
+            return {
+              evaluateAll: vi.fn().mockResolvedValue(card.spanTexts),
+            };
+          }
+          // profileLink selector
+          const linksLocator: any = {
+            count: vi.fn().mockResolvedValue(card.linkTexts.length),
+            nth: vi.fn((j: number) => ({
+              textContent: vi.fn().mockResolvedValue(card.linkTexts[j]),
+              getAttribute: vi.fn().mockResolvedValue(card.linkHrefs[j]),
+            })),
+          };
+          return linksLocator;
+        }),
+      };
+    }),
+  };
+  return cardsLocator;
+}
 
 describe('validateNoteLength', () => {
   it('accepts a note at or under the 300-character LinkedIn cap', () => {
@@ -30,6 +98,59 @@ describe('validateNoteLength', () => {
   });
 });
 
+describe('SELECTORS', () => {
+  // Pure string assertions on the selector VALUES — proof that the old, live-confirmed-dead
+  // selectors are gone, not proof the new ones resolve on a real page (only the live
+  // inspection in .superpowers/sdd/task-6-connect-fix-report.md can confirm that).
+  it('no longer relies on the obsolete reusable-search__result-container class for resultCard', () => {
+    expect(SELECTORS.resultCard).not.toContain('reusable-search__result-container');
+    expect(SELECTORS.resultCard).toContain('role="listitem"');
+  });
+
+  it('no longer relies on the obsolete app-aware-link class for profileLink', () => {
+    expect(SELECTORS.profileLink).not.toContain('app-aware-link');
+  });
+});
+
+describe('extractNameAndHeadline', () => {
+  // Fixtures below are taken verbatim from a live people-search inspection (see
+  // .superpowers/sdd/task-6-connect-fix-report.md) — real link/span text captured from
+  // `https://www.linkedin.com/search/results/people/?keywords=InfoVision%20recruiter`.
+  it('extracts the clean name from the second profileLink match, ignoring the concatenated wrapper link', () => {
+    const linkTexts = [
+      'Sundarraj Ganesha Sundarraj Ganesha  • 2ndTalent Acquisition Specialist | End-to-End Recruitment...',
+      'Sundarraj Ganesha',
+      'Ankit Ambardar',
+      'Nikhil V.',
+    ];
+    const spanTexts = [
+      '• 2nd',
+      '• 2nd',
+      'Talent Acquisition Specialist | End-to-End Recruitment | Delivering Talent Solutions',
+      'Bengaluru, Karnataka, India',
+    ];
+
+    const { name, headline } = extractNameAndHeadline(linkTexts, spanTexts);
+
+    expect(name).toBe('Sundarraj Ganesha');
+    expect(headline).toBe('Talent Acquisition Specialist | End-to-End Recruitment | Delivering Talent Solutions');
+  });
+
+  it('falls back to the first link when only one profileLink match is present', () => {
+    const { name } = extractNameAndHeadline(['Jordan Lee'], []);
+    expect(name).toBe('Jordan Lee');
+  });
+
+  it('returns an empty headline when no connection-degree span is found', () => {
+    const { headline } = extractNameAndHeadline(['A', 'B'], ['Some unrelated span text']);
+    expect(headline).toBe('');
+  });
+
+  it('handles no matches at all without throwing', () => {
+    expect(extractNameAndHeadline([], [])).toEqual({ name: '', headline: '' });
+  });
+});
+
 describe('findLinkedinProfile control flow', () => {
   let db: Database.Database;
 
@@ -51,6 +172,68 @@ describe('findLinkedinProfile control flow', () => {
     // The rate-limit gate must be checked BEFORE any Playwright action — launch()
     // should never be invoked once the limit is already exhausted.
     expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('returns candidates extracted via the Locator-based resultCard/profileLink flow', async () => {
+    // Shaped after the live DOM pattern: two `a[href*="/in/"]` matches per card (a
+    // concatenated wrapper link, then the clean name link), plus span texts holding the
+    // connection-degree badge and headline.
+    const cardsLocator = makeFakeResultCardsLocator([
+      {
+        linkTexts: [
+          'Sundarraj Ganesha Sundarraj Ganesha  • 2ndTalent Acquisition Specialist...',
+          'Sundarraj Ganesha',
+        ],
+        linkHrefs: [
+          'https://www.linkedin.com/in/sundarraj-ganesha-93113815a/',
+          'https://www.linkedin.com/in/sundarraj-ganesha-93113815a/',
+        ],
+        spanTexts: ['• 2nd', '• 2nd', 'Talent Acquisition Specialist', 'Bengaluru, Karnataka, India'],
+      },
+      {
+        linkTexts: ['Nivetha SB Nivetha SB  • 2ndSenior Human Resource Recruiter...', 'Nivetha SB'],
+        linkHrefs: [
+          'https://www.linkedin.com/in/nivetha-sb-322a08139/',
+          'https://www.linkedin.com/in/nivetha-sb-322a08139/',
+        ],
+        spanTexts: ['• 2nd', '• 2nd', 'Senior Human Resource Recruiter', 'Chennai, Tamil Nadu, India'],
+      },
+    ]);
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.resultCard) return cardsLocator;
+        return makeFakeLocator(null);
+      }),
+    };
+
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = {
+      newContext: vi.fn().mockResolvedValue(context),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const fakeChromium = { launch };
+
+    const result = await findLinkedinProfile(
+      { company: 'InfoVision' },
+      { db, chromium: fakeChromium }
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.candidates).toEqual([
+      {
+        profile_url: 'https://www.linkedin.com/in/sundarraj-ganesha-93113815a/',
+        name: 'Sundarraj Ganesha',
+        headline: 'Talent Acquisition Specialist',
+      },
+      {
+        profile_url: 'https://www.linkedin.com/in/nivetha-sb-322a08139/',
+        name: 'Nivetha SB',
+        headline: 'Senior Human Resource Recruiter',
+      },
+    ]);
   });
 });
 
@@ -87,5 +270,55 @@ describe('connectSend control flow', () => {
     expect(result.status).toBe('failed');
     expect(result.reason).toMatch(/300-character/);
     expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('returns failed and never clicks send when no Connect button is found on the profile', async () => {
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation(() => makeFakeLocator(null)),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Connect button not found/);
+  });
+
+  it('clicks connect, adds a note, and clicks send via the Locator API on the happy path', async () => {
+    const connectButton = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.connectButton) return makeFakeLocator(connectButton);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(connectButton.click).toHaveBeenCalledTimes(1);
+    expect(addNoteButton.click).toHaveBeenCalledTimes(1);
+    expect(noteInput.fill).toHaveBeenCalledWith('Hi, would love to connect!');
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
   });
 });
