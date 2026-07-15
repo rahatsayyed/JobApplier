@@ -1,10 +1,15 @@
 {
-  "years_experience": 0,
+  "years_experience": 3.5,
   "authorized_to_work": true,
-  "requires_sponsorship": false,
-  "willing_to_relocate": false,
-  "notice_period_days": 0,
-  "expected_salary": "",
-  "phone": "",
-  "linkedin_profile_url": ""
+  "requires_sponsorship": true,
+  "willing_to_relocate": true,
+  "notice_period_days": 45,
+  "expected_salary": "25 LPA",
+  "phone": "9075459597",
+  "linkedin_profile_url": "https://www.linkedin.com/in/rahatsayyed/",
+  "custom": {
+    "What is your current CTC?": "7 LPA",
+    "Are you comfortable working in an onsite setting?": true,
+    "Do you have experience with building products from scratch using agentic AI?": true
+  }
 }

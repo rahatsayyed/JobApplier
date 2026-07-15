@@ -198,12 +198,33 @@ Steps, for each targeted job:
 1. Look up the job's `apply_url`. If it's a LinkedIn Easy Apply posting, dispatch to
    `linkedin-apply.apply_easy_apply({job_id})`. Otherwise (Greenhouse/Lever/Workday/Ashby or other
    external ATS), dispatch to `external-apply.apply_external({job_id})`.
-2. Each call returns one of: `submitted`, `manual_review` (an unanswerable screening question or
-   missing required field — never a guessed submission), or `rate_limited` (daily
+2. Each call returns one of: `submitted`, `manual_review` (a genuinely unrecoverable case —
+   missing burner/main session, no Easy Apply button, no submit control found — never a guessed
+   submission), `needs_answer` (a screening question `apply_easy_apply` can't answer from
+   `config/easy-apply-answers.json` — see step 2a below), or `rate_limited` (daily
    `MAX_APPLIES_PER_DAY` cap reached — report it, do not retry). `apply_easy_apply` and
    `apply_external` share the SAME daily counter, so an apply of either kind can trip this.
+2a. On `needs_answer` (the result includes the exact `question` text verbatim from the
+    posting):
+    - Determine a truthful value for that question from the candidate's actual, documented
+      background (the base resume, or an answer already present in
+      `config/easy-apply-answers.json`). **Never invent a plausible-sounding number or fact** —
+      if you cannot verify the value truthfully, ask the user for it (Telegram if active, else
+      chat) rather than guessing.
+    - Add it to `config/easy-apply-answers.json` under the `custom` object, keyed by the
+      question text **verbatim** (matching is case/whitespace-insensitive and tolerates a
+      trailing `*`, but the key should still read like the real question for future reuse),
+      e.g. `"custom": { "What is your current CTC?": "18 LPA" }`.
+    - `config/easy-apply-answers.json` is re-read from disk on every `apply_easy_apply` call
+      (`loadAnswers()` calls `readFileSync` fresh each time), so no MCP reconnect is needed for
+      this specific edit — you can retry the apply immediately after writing the `custom` entry.
+      (An MCP reconnect is only needed if `linkedin-apply.ts`'s own source changes.)
+    - Still inform the user (Telegram if active, else chat) what question blocked the apply, what
+      value you added and where it came from (resume / existing config / user-provided), before
+      retrying — this is real personal data going into a real application, not a silent action.
 3. Report results per job to Telegram per the "Communication" section: submitted / needs manual
-   review / rate-limited, with job title + company for each.
+   review / needs an answer (with the question) / rate-limited, with job title + company for
+   each.
 
 Do not call `linkedin-apply` or `external-apply` tools directly yourself for this flow if a
 dedicated subagent exists for the stage — otherwise call them directly, since Applying is

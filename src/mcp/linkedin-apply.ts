@@ -31,6 +31,11 @@ export interface EasyApplyAnswers {
   expected_salary: string;
   phone: string;
   linkedin_profile_url: string;
+  // Free-form fallback for screening questions that don't fit the fixed fields above,
+  // keyed by the exact question text as it appears on the posting (matched case- and
+  // whitespace-insensitively — see resolveAnswer). Populated by the orchestrating agent
+  // in response to a `needs_answer` result; see CLAUDE.md's "Applying (Phase 2)" section.
+  custom?: Record<string, AnswerValue>;
 }
 
 export type AnswerValue = string | number | boolean;
@@ -43,20 +48,37 @@ const QUESTION_PATTERNS: Array<{ pattern: RegExp; key: keyof EasyApplyAnswers }>
   { pattern: /relocat/i, key: 'willing_to_relocate' },
   { pattern: /notice period/i, key: 'notice_period_days' },
   { pattern: /salary/i, key: 'expected_salary' },
+  // "expected CTC" is India-market phrasing for the same question as "expected salary".
+  // Deliberately requires "expected" adjacent to "CTC" so a distinct question like
+  // "current CTC" (which has no corresponding answer in the config) still falls through
+  // to null/manual_review rather than being answered with the wrong figure.
+  { pattern: /expected.{0,15}ctc/i, key: 'expected_salary' },
   { pattern: /phone/i, key: 'phone' },
   { pattern: /linkedin.{0,15}(profile|url)/i, key: 'linkedin_profile_url' },
 ];
 
+function normalizeQuestion(question: string): string {
+  return question.trim().toLowerCase().replace(/\*+$/, '').trim();
+}
+
 /**
  * Pure: matches a screening question's text against known patterns and returns the
  * corresponding value from the answers config, or null if the question is unrecognized.
- * Callers MUST treat a null return as "unanswerable" and abort to manual_review rather
- * than guessing or submitting with a blank/default value.
+ * Callers MUST treat a null return as "unanswerable" and abort (surfacing the question via
+ * a `needs_answer` result) rather than guessing or submitting with a blank/default value.
  */
 export function resolveAnswer(question: string, answers: EasyApplyAnswers): AnswerValue | null {
   for (const { pattern, key } of QUESTION_PATTERNS) {
     if (pattern.test(question)) {
       return answers[key];
+    }
+  }
+  if (answers.custom) {
+    const normalized = normalizeQuestion(question);
+    for (const [key, value] of Object.entries(answers.custom)) {
+      if (normalizeQuestion(key) === normalized) {
+        return value;
+      }
     }
   }
   return null;
@@ -68,15 +90,20 @@ function loadAnswers(): EasyApplyAnswers {
 
 export interface ApplyEasyApplyResult {
   job_id: string;
-  status: 'submitted' | 'manual_review' | 'failed' | 'rate_limited';
+  status: 'submitted' | 'manual_review' | 'failed' | 'rate_limited' | 'needs_answer';
   reason?: string;
+  // Set only when status is 'needs_answer': the exact screening-question text, verbatim
+  // from the posting, for the caller to answer and add to
+  // `config/easy-apply-answers.json`'s `custom` map (see CLAUDE.md).
+  question?: string;
 }
 
 function recordAndReturn(
   database: BetterSqlite3.Database,
   jobId: string,
-  status: 'submitted' | 'manual_review' | 'failed',
-  reason?: string
+  status: 'submitted' | 'manual_review' | 'failed' | 'needs_answer',
+  reason?: string,
+  question?: string
 ): ApplyEasyApplyResult {
   saveApplication(database, {
     job_id: jobId,
@@ -87,7 +114,7 @@ function recordAndReturn(
     reason: reason ?? null,
     applied_at: status === 'submitted' ? new Date().toISOString() : null,
   });
-  return { job_id: jobId, status, reason };
+  return { job_id: jobId, status, reason, question };
 }
 
 // Best-effort LinkedIn Easy Apply DOM selectors. LinkedIn's markup changes and isn't
@@ -112,6 +139,29 @@ export const SELECTORS = {
   reviewButton: 'footer button:has-text("Review")',
   submitButton: 'footer button:has-text("Submit")',
   resumeUpload: 'input[type="file"]',
+  // Newer multi-page apply flow ("Contact info" step): a standalone phone-number
+  // input outside any `.jobs-easy-apply-form-section__grouping`/`.fb-dash-form-element`
+  // container, so the question-grouping loop above never sees or fills it. Live-verified
+  // 2026-07-15 against a real posting (`docs/phase2-known-issues.md`).
+  phoneInput: 'input[type="tel"]',
+  // Same newer flow's "Resume" step: no `<input type="file">` exists in the DOM until
+  // this button is clicked, which opens a native OS file-chooser dialog rather than
+  // revealing a hidden input. Live-verified 2026-07-15.
+  resumeUploadButton: 'button:has-text("Upload resume")',
+  // Same newer flow's "Additional Questions" step: standalone text questions carry the
+  // question text verbatim in `aria-label` (not inside formGrouping/label at all), so
+  // this is a direct, reliable match rather than needing a wrapping container.
+  ariaLabeledTextInput: 'input[aria-label]:not([type="file"]):not([type="tel"])',
+  // Yes/No screening questions render as an ARIA radiogroup, with the question text in
+  // a `<p>` immediately preceding the fieldset, and each option's own visible text
+  // ("Yes"/"No") inside its `[role="radio"]` container.
+  radioGroup: 'fieldset[role="radiogroup"]',
+  radioOption: '[role="radio"]',
+  // Live-verified 2026-07-15: a submit click can silently no-op (LinkedIn swallowed the
+  // click with no error and no application was actually recorded on a real attempt). The
+  // underlying job page shows this text once a submission has genuinely gone through, so
+  // it's used as a positive confirmation rather than trusting the click alone.
+  submissionConfirmation: 'text=Application submitted',
 } as const;
 
 const MAX_FORM_STEPS = 10;
@@ -223,7 +273,52 @@ export async function applyEasyApply(
     await easyApplyButtonLocator.first().click();
     await waitForFormControls(page);
 
+    const prepared = database
+      .prepare('SELECT resume_path FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(job_id) as { resume_path: string } | undefined;
+
     for (let step = 0; step < MAX_FORM_STEPS; step++) {
+      // Newer "Contact info" step: fill the standalone phone input directly, since it
+      // falls outside formGrouping and is invisible to the question-label loop below.
+      const phoneInputLocator = page.locator(SELECTORS.phoneInput);
+      if ((await phoneInputLocator.count()) > 0) {
+        const currentPhoneValue = await phoneInputLocator.first().inputValue();
+        if (!currentPhoneValue) {
+          await phoneInputLocator.first().fill(String(answers.phone));
+        }
+      }
+
+      // Newer "Resume" step: clicking this button opens a native file-chooser dialog
+      // (no pre-existing `<input type="file">` to target with `setInputFiles`), so it
+      // must be handled with `page.waitForEvent('filechooser')` at click time.
+      const resumeUploadButtonLocator = page.locator(SELECTORS.resumeUploadButton);
+      if ((await resumeUploadButtonLocator.count()) > 0) {
+        if (!prepared?.resume_path) {
+          return recordAndReturn(
+            database,
+            job_id,
+            'manual_review',
+            'resume upload required but no prepared resume found for this job'
+          );
+        }
+        const fileChooserPromise = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+        await resumeUploadButtonLocator.first().click();
+        const chooser = await fileChooserPromise;
+        if (chooser) {
+          await chooser.setFiles(prepared.resume_path);
+          // Upload is asynchronous (a visible "Uploading" indicator appears, then an
+          // "Upload resume" button re-renders while it's in flight). Clicking Next before
+          // this resolves either no-ops against a disabled button or, worse, re-triggers
+          // a second upload on the next loop iteration because the button reappeared.
+          // Wait for the indicator to clear rather than guessing at a fixed delay.
+          await page
+            .getByText('Uploading', { exact: true })
+            .first()
+            .waitFor({ state: 'hidden', timeout: 15000 })
+            .catch(() => {});
+        }
+      }
+
       const groupingLocator = page.locator(SELECTORS.formGrouping);
       const groupingCount = await groupingLocator.count();
       for (let i = 0; i < groupingCount; i++) {
@@ -236,19 +331,98 @@ export async function applyEasyApply(
         const answer = resolveAnswer(questionText, answers);
         if (answer === null) {
           // Real, verifiable early-return before any submit action: an unrecognized
-          // screening question means we cannot answer truthfully, so abort here rather
-          // than guessing or clicking further.
+          // screening question means we cannot answer truthfully, so abort here and
+          // surface the question to the caller rather than guessing or clicking further.
           return recordAndReturn(
             database,
             job_id,
-            'manual_review',
-            `unanswerable screening question: "${questionText}"`
+            'needs_answer',
+            `unanswerable screening question: "${questionText}"`,
+            questionText
           );
         }
 
         const inputLocator = grouping.locator(SELECTORS.textInput);
         if ((await inputLocator.count()) > 0) {
           await inputLocator.first().fill(String(answer));
+        }
+      }
+
+      // Newer "Additional Questions" step: standalone text inputs outside any
+      // formGrouping container, carrying the question verbatim in `aria-label`.
+      const ariaLabeledInputLocator = page.locator(SELECTORS.ariaLabeledTextInput);
+      const ariaLabeledInputCount = await ariaLabeledInputLocator.count();
+      for (let i = 0; i < ariaLabeledInputCount; i++) {
+        const input = ariaLabeledInputLocator.nth(i);
+        const questionText = (await input.getAttribute('aria-label')) ?? '';
+        if (!questionText) continue;
+        const currentValue = await input.inputValue();
+        if (currentValue) continue;
+
+        const answer = resolveAnswer(questionText, answers);
+        if (answer === null) {
+          return recordAndReturn(
+            database,
+            job_id,
+            'needs_answer',
+            `unanswerable screening question: "${questionText}"`,
+            questionText
+          );
+        }
+        await input.fill(String(answer));
+
+        // Some numeric-style fields (observed on CTC/salary questions) silently reject a
+        // unit-suffixed value like "25 LPA" with an inline "Invalid input" error — but that
+        // validation only renders on blur, not immediately after `.fill()`. Blur first, then
+        // retry once with just the leading numeric portion if it's flagged invalid; this
+        // reformats the already-truthful answer, it doesn't invent a new figure.
+        await input.blur();
+        const isInvalid = await input.evaluate((el) => {
+          const wrapper = el.parentElement?.parentElement;
+          return wrapper ? /invalid input/i.test(wrapper.textContent ?? '') : false;
+        });
+        if (isInvalid) {
+          const numericOnly = String(answer).replace(/[^0-9.]/g, '');
+          if (numericOnly) {
+            await input.fill(numericOnly);
+            await input.blur();
+          }
+        }
+      }
+
+      // Same step: Yes/No screening questions rendered as an ARIA radiogroup. The
+      // question text lives in the `<p>` immediately preceding the fieldset, not inside
+      // it, so it must be read from the parent rather than the fieldset's own subtree.
+      const radioGroupLocator = page.locator(SELECTORS.radioGroup);
+      const radioGroupCount = await radioGroupLocator.count();
+      for (let i = 0; i < radioGroupCount; i++) {
+        const radioGroup = radioGroupLocator.nth(i);
+        const alreadyAnswered = await radioGroup
+          .locator(SELECTORS.radioOption)
+          .evaluateAll((els) => els.some((el) => el.getAttribute('aria-checked') === 'true'));
+        if (alreadyAnswered) continue;
+
+        const questionText = (
+          await radioGroup.evaluate((el) => el.previousElementSibling?.textContent ?? '')
+        ).trim();
+        if (!questionText) continue;
+
+        const answer = resolveAnswer(questionText, answers);
+        if (typeof answer !== 'boolean') {
+          // Either genuinely unanswerable (null) or answered by a non-boolean config
+          // value that can't be mapped to a Yes/No choice — both are unsafe to guess.
+          return recordAndReturn(
+            database,
+            job_id,
+            'needs_answer',
+            `unanswerable screening question: "${questionText}"`,
+            questionText
+          );
+        }
+        const targetText = answer ? 'Yes' : 'No';
+        const optionLocator = radioGroup.locator(SELECTORS.radioOption).filter({ hasText: targetText });
+        if ((await optionLocator.count()) > 0) {
+          await optionLocator.first().click();
         }
       }
 
@@ -275,10 +449,10 @@ export async function applyEasyApply(
       await waitForFormControls(page);
     }
 
+    // Fallback for the older single-page flow, where a plain `<input type="file">` is
+    // already present in the DOM (as opposed to the newer flow's click-to-open-chooser
+    // button, handled per-step in the loop above).
     const resumeUploadCount = await page.locator(SELECTORS.resumeUpload).count();
-    const prepared = database
-      .prepare('SELECT resume_path FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
-      .get(job_id) as { resume_path: string } | undefined;
     if (resumeUploadCount > 0 && prepared?.resume_path) {
       await page.setInputFiles(SELECTORS.resumeUpload, prepared.resume_path);
     }
@@ -288,6 +462,24 @@ export async function applyEasyApply(
       return recordAndReturn(database, job_id, 'manual_review', 'submit button not found on final step');
     }
     await finalSubmitButtonLocator.first().click();
+
+    // Don't trust the click alone — confirm the application actually went through
+    // before reporting success (see SELECTORS.submissionConfirmation).
+    const confirmed = await page
+      .locator(SELECTORS.submissionConfirmation)
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!confirmed) {
+      return recordAndReturn(
+        database,
+        job_id,
+        'manual_review',
+        'clicked submit but could not confirm the application was actually recorded — verify manually on LinkedIn'
+      );
+    }
 
     return recordAndReturn(database, job_id, 'submitted');
   } catch (err) {

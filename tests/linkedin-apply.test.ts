@@ -52,9 +52,26 @@ describe('resolveAnswer', () => {
     );
   });
 
+  it('matches "expected CTC" but not "current CTC" (no config value for the latter)', () => {
+    expect(resolveAnswer('What is your expected CTC?', answers)).toBe('25 LPA');
+    expect(resolveAnswer('What is your current CTC?', answers)).toBeNull();
+  });
+
   it('returns null for unrecognized questions', () => {
     expect(resolveAnswer('What is your favorite color?', answers)).toBeNull();
     expect(resolveAnswer('Describe a time you overcame a challenge at work.', answers)).toBeNull();
+  });
+
+  it('falls back to the custom map for questions not covered by the fixed fields', () => {
+    const withCustom: EasyApplyAnswers = {
+      ...answers,
+      custom: { 'What is your current CTC?': '18 LPA' },
+    };
+    expect(resolveAnswer('What is your current CTC?', withCustom)).toBe('18 LPA');
+    // Match is case- and whitespace-insensitive, and tolerates a trailing '*' (as
+    // rendered on the posting for required fields) that isn't part of the stored key.
+    expect(resolveAnswer('what is your current ctc?*', withCustom)).toBe('18 LPA');
+    expect(resolveAnswer('Some other unrelated question?', withCustom)).toBeNull();
   });
 });
 
@@ -201,7 +218,7 @@ describe('applyEasyApply control flow', () => {
     expect(row).toBeUndefined();
   });
 
-  it('returns manual_review and never clicks submit when a screening question is unanswerable', async () => {
+  it('returns needs_answer and never clicks submit when a screening question is unanswerable', async () => {
     saveJob(db, {
       id: 'job-mr-1',
       source: 'linkedin',
@@ -246,11 +263,12 @@ describe('applyEasyApply control flow', () => {
       { db, chromium: fakeChromium }
     );
 
-    expect(result.status).toBe('manual_review');
+    expect(result.status).toBe('needs_answer');
     expect(result.reason).toMatch(/unanswerable screening question/);
+    expect(result.question).toBe('What is your favorite color?');
     // The easy-apply button click is expected (it happens before the screening
     // questions are read), but the submit button must never be clicked once an
-    // unanswerable question forces an early return to manual_review.
+    // unanswerable question forces an early return.
     expect(easyApplyButton.click).toHaveBeenCalledTimes(1);
     expect(submitButton.click).not.toHaveBeenCalled();
     expect(nextButton.click).not.toHaveBeenCalled();
@@ -345,5 +363,85 @@ describe('applyEasyApply control flow', () => {
     expect(result.reason).toMatch(/could not find a next\/review\/submit control/);
     // The Easy Apply click itself must still have happened before the timed-out wait.
     expect(easyApplyButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Builds a minimal page mock for the "submit button found immediately" happy path
+   * (no form groupings, no aria-label questions, no radio groups), parameterized on
+   * whether the post-click confirmation text ever appears. Live-verified 2026-07-15:
+   * a submit click can silently no-op on LinkedIn's end with no thrown error and no
+   * application actually recorded, which is exactly the gap these two tests cover —
+   * every other test's fake `waitFor` resolves instantly, so none of them exercised
+   * whether a real confirmation check gates the `submitted` status.
+   */
+  function makeSubmitConfirmationPage(confirmationAppears: boolean) {
+    const easyApplyButton = makeFakeElement();
+    const submitButton = makeFakeElement();
+    const confirmationLocator = {
+      first: vi.fn(() => ({
+        waitFor: confirmationAppears
+          ? vi.fn().mockResolvedValue(undefined)
+          : vi.fn().mockRejectedValue(new Error('Timeout 10000ms exceeded')),
+      })),
+    };
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector.includes('Easy Apply')) return makeFakeLocator(easyApplyButton);
+        if (selector === SELECTORS.submissionConfirmation) return confirmationLocator;
+        if (selector.includes('Submit')) return makeFakeLocator(submitButton);
+        return makeFakeLocator(null);
+      }),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = {
+      newContext: vi.fn().mockResolvedValue(context),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    return { launch: vi.fn().mockResolvedValue(browser), submitButton };
+  }
+
+  it('returns submitted only once the post-click confirmation text actually appears', async () => {
+    saveJob(db, {
+      id: 'job-submitted-1',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/4',
+      apply_url: 'https://linkedin.com/jobs/view/4',
+      description: 'React role',
+    });
+
+    const { launch, submitButton } = makeSubmitConfirmationPage(true);
+
+    const result = await applyEasyApply({ job_id: 'job-submitted-1' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('submitted');
+    expect(submitButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns manual_review (not submitted) when the submit click cannot be confirmed', async () => {
+    // This is the regression test for the false-positive bug: a submit click that
+    // silently no-ops must never be reported as `submitted`.
+    saveJob(db, {
+      id: 'job-unconfirmed-1',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/5',
+      apply_url: 'https://linkedin.com/jobs/view/5',
+      description: 'React role',
+    });
+
+    const { launch, submitButton } = makeSubmitConfirmationPage(false);
+
+    const result = await applyEasyApply({ job_id: 'job-unconfirmed-1' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/could not confirm the application was actually recorded/);
+    // The click still happens — it's the unverifiable *outcome* that's unsafe to trust.
+    expect(submitButton.click).toHaveBeenCalledTimes(1);
   });
 });
