@@ -445,3 +445,155 @@ describe('applyEasyApply control flow', () => {
     expect(submitButton.click).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * A fake locator representing the "any clickable control" query the hybrid fallback
+ * issues when a primary selector misses (`page.locator('button, [role="button"], a[role="button"]')`):
+ * `evaluateAll` returns the given candidate texts, `filter({ hasText })` resolves to the
+ * matching fake element (or nothing, if the text isn't in `elementsByText`).
+ */
+function makeFakeClickableLocator(
+  candidates: string[],
+  elementsByText: Record<string, ReturnType<typeof makeFakeElement>> = {}
+): any {
+  return {
+    evaluateAll: vi.fn().mockResolvedValue(candidates),
+    filter: vi.fn(({ hasText }: { hasText: string }) => makeFakeLocator(elementsByText[hasText] ?? null)),
+  };
+}
+
+describe('applyEasyApply hybrid fallback (option 3)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('escalates to the Claude fallback and clicks the control it chooses when the Easy Apply selector misses', async () => {
+    saveJob(db, {
+      id: 'job-hybrid-1',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/6',
+      apply_url: 'https://linkedin.com/jobs/view/6',
+      description: 'React role',
+    });
+
+    const fallbackEasyApplyButton = makeFakeElement();
+    // First call (Easy Apply button escalation) matches; every later call (next/review
+    // control escalation) finds nothing, so the run still ends in manual_review — this
+    // test only asserts that the FIRST escalation was used and clicked.
+    const runClaude = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify({ matchedText: 'Easy Apply' }))
+      .mockResolvedValue(JSON.stringify({ matchedText: null }));
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector.includes('[role="button"]')) {
+          return makeFakeClickableLocator(['Sign in', 'Easy Apply'], { 'Easy Apply': fallbackEasyApplyButton });
+        }
+        // The primary Easy Apply selector (and everything else) misses.
+        return makeFakeLocator(null);
+      }),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyEasyApply(
+      { job_id: 'job-hybrid-1' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(fallbackEasyApplyButton.click).toHaveBeenCalledTimes(1);
+    // Got past the Easy Apply step via the fallback; only failed later on the
+    // next/review/submit control (also escalated, also found nothing real to click).
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/next\/review\/submit/);
+  });
+
+  it('returns manual_review (Easy Apply button not found) when the fallback also finds no match', async () => {
+    saveJob(db, {
+      id: 'job-hybrid-2',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/7',
+      apply_url: 'https://linkedin.com/jobs/view/7',
+      description: 'React role',
+    });
+
+    const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ matchedText: null }));
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector.includes('[role="button"]')) return makeFakeClickableLocator(['Sign in']);
+        return makeFakeLocator(null);
+      }),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyEasyApply(
+      { job_id: 'job-hybrid-2' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/Easy Apply button not found/);
+    expect(runClaude).toHaveBeenCalled();
+  });
+
+  it('uses the Claude answer-topic fallback to resolve a rephrased screening question instead of giving up with needs_answer', async () => {
+    saveJob(db, {
+      id: 'job-hybrid-3',
+      source: 'linkedin',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://linkedin.com/jobs/view/8',
+      apply_url: 'https://linkedin.com/jobs/view/8',
+      description: 'React role',
+    });
+
+    const easyApplyButton = makeFakeElement();
+    // Deliberately doesn't contain any QUESTION_PATTERNS keyword ("salary"/"ctc"/etc.) so
+    // the fast, free resolveAnswer() genuinely returns null and the fallback is exercised.
+    const rephrasedLabel = makeFakeElement({
+      textContent: vi.fn().mockResolvedValue('Kindly state your compensation ask'),
+    });
+    const input = makeFakeElement();
+    const grouping = makeFakeGroupingLocator({ label: rephrasedLabel, input });
+
+    const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ matchedKey: 'expected_salary' }));
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector.includes('[role="button"]')) return makeFakeClickableLocator([]);
+        if (selector.includes('Easy Apply')) return makeFakeLocator(easyApplyButton);
+        if (selector.includes('jobs-easy-apply-form-section__grouping')) return makeFakeGroupingsLocator([grouping]);
+        return makeFakeLocator(null);
+      }),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyEasyApply(
+      { job_id: 'job-hybrid-3' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(result.status).not.toBe('needs_answer');
+    // '25 LPA' is the already-truthful expected_salary value from config — never a
+    // fabricated new figure.
+    expect(input.fill).toHaveBeenCalledWith('25 LPA');
+  });
+});

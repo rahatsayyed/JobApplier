@@ -230,6 +230,35 @@ Do not call `linkedin-apply` or `external-apply` tools directly yourself for thi
 dedicated subagent exists for the stage — otherwise call them directly, since Applying is
 single-job-at-a-time and doesn't need the multi-stage pipeline "Running the hunt" uses.
 
+### Hybrid Claude fallback (Easy Apply, opt-in)
+
+`linkedin-apply.ts`'s hardcoded Playwright selectors are the fast, free default path and run
+first on every step. LinkedIn's DOM is not stable the way Greenhouse/Lever/Workday/Ashby's is,
+so selector rot happens; rather than dead-ending at `manual_review`/`needs_answer` on every
+selector miss, a bounded Claude escalation can kick in — only on failure, never on every step:
+- **Control click miss** (Easy Apply button, or Next/Review/Submit not found): escalates with
+  the real, currently-visible button/link texts on the page and picks one — or refuses if none
+  plausibly match. Never invents text that isn't actually on the page.
+- **Unanswerable screening question**: escalates with the question text and the candidate's
+  existing truthful answer topics (the fixed fields + the `custom` map), asking only whether
+  the question is a *rephrasing* of one already answered. Never invents a new value — if the
+  question asks for genuinely new information, it still falls through to `needs_answer` (step
+  2a above).
+
+This project has no separate Anthropic API key/billing — the user has a Claude subscription,
+not API credits — so this fallback shells out to the `claude` CLI in headless print mode,
+invoking one of two project-level custom slash commands rather than an ad hoc inline prompt:
+`.claude/commands/easy-apply-control-fallback.md` (control-click escalation) and
+`.claude/commands/easy-apply-answer-fallback.md` (screening-question escalation). Keeping the
+task, output contract, and "never invent" rules in those files means Claude already knows the
+exact steps on every invocation instead of the caller re-deriving them in a fresh prompt each
+time. Each call authenticates via the same Claude Code subscription session (not a metered API
+key) and is a single, isolated, non-agentic invocation — no follow-up turns, no tool use.
+
+**Off by default.** Enable with `EASY_APPLY_HYBRID_FALLBACK=true` (env var) if you want this
+escalation path live; without it, selector/answer misses behave exactly as before (immediate
+`manual_review`/`needs_answer`, no extra `claude` invocations).
+
 ## Connecting (Phase 2, human-gated)
 
 For a matched job (with or without a sent cold email):
@@ -254,26 +283,12 @@ For a matched job (with or without a sent cold email):
 
 ## Resume tailoring rules
 
-When tailoring the base resume JSON for a specific job, follow these rules:
-
-1. Return the SAME JSON schema/shape as the input base resume — same top-level keys, same
-   nested structure. Do not add or remove fields.
-2. Rewrite experience bullet points to start with a strong action verb (e.g. "Built", "Led",
-   "Reduced", "Designed", "Automated") instead of weak openers like "Responsible for" or
-   "Worked on".
-3. Quantify bullets with numbers ONLY where the original resume already supports that number
-   (e.g. team size, percentage improvement, user count). Never invent a metric that isn't
-   already present in some form in the base resume.
-4. Mirror the job description's exact keywords and technology names wherever the candidate
-   genuinely has that skill (e.g. if the JD says "React.js" and the resume says "React", you
-   may write "React.js" to match; do not add a technology the candidate has never used).
-5. Reorder the skills list so skills mentioned in the job description appear first, most
-   relevant to least relevant.
-6. NEVER fabricate: company names, job titles held, employment dates, degrees, or metrics that
-   have no basis in the base resume. Tailoring is about emphasis and wording, not invention.
-7. Adjust the `jobTitle`/headline and `summary` fields (if present in the schema) to speak
-   directly to the target role, using truthful language about the candidate's actual
-   background.
+Resume tailoring (schema preservation, no fabrication, keyword mirroring, one-page trim with an
+~85%-full target, and a mandatory humanizer pass with no em dashes) is fully specified in the
+`tailor-resume` skill (`.claude/skills/tailor-resume/SKILL.md`) — that skill is the single
+source of truth. Any flow that needs a tailored resume (the hunt pipeline's `outreach-preparer`
+stage, or an ad hoc single-job request) should invoke that skill rather than re-deriving these
+rules inline, so a future change only needs to happen in one place.
 
 ## Safety
 

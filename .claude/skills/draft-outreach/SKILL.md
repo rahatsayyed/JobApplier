@@ -45,6 +45,22 @@ Produce ONE final, ready-to-send cold outreach email (subject + body) for a spec
 1. Invoke the `the-humanizer` skill on the final `body` text from Step B (treat it as an email; let the skill auto-detect content type if needed).
 2. Replace `body` with the humanizer's rewritten output.
 3. Do not run the humanizer on the `subject` line.
+4. Never use an em dash (—) anywhere in `body` — rewrite with a comma or period instead. This is enforced by the humanizer's universal rules too, but call it out explicitly here since it's easy to reintroduce one in a later edit pass.
+5. **Any edit made to `body` after this step (a caller-requested wording change, an added footer, a corrected fact) is not final until it goes back through the humanizer.** Layering edits on top of an already-humanized draft without re-running Step C is how AI-sounding phrasing or a stray em dash creeps back in — treat every substantive rewrite of `body`, not just the first one, as needing a Step C pass.
+
+## Step D — Contact footer (if the candidate's profile has any of these links)
+
+Append a short footer to `body`, after the closing line, with whichever of these the candidate's profile/config actually has (skip any that are missing — never invent a link):
+
+```
+Portfolio: <site>
+GitHub: @<handle>
+LinkedIn: @<handle>
+Resume: <hosted resume link, e.g. FlowCV>
+```
+
+- These are plain URLs/handles in the plain-text `body`. When the caller sends the email via an HTML-capable channel (e.g. Gmail's `htmlBody`), render each line's URL as a hyperlink (`<a href="...">`) — the caller building the HTML version is responsible for that, this skill just needs to supply the underlying values in the footer.
+- The footer counts toward the 180-word body limit; keep the rest of the body tight enough to leave room for it.
 
 ## Output format
 
@@ -56,6 +72,6 @@ Output ONLY the following STRICT JSON object, with no extra text before or after
 
 Rules for the output:
 - `subject` and `body` must be plain strings.
-- `body` must contain the final, humanized email text (plain text, paragraphs separated by `\n\n`, no HTML).
+- `body` must contain the final, humanized email text including the Step D footer if applicable (plain text, paragraphs separated by `\n\n`, no HTML).
 - Do not add any keys other than `subject` and `body`.
 - Do not wrap the JSON in ```json fences. Output raw JSON only.

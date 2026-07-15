@@ -15,6 +15,10 @@
     "github": {
       "url": "https://github.com/rahatsayyed",
       "label": "github.com/rahatsayyed"
+    },
+    "flowcv": {
+      "url": "https://flowcv.com/resume/w0f4aim4wh",
+      "label": "flowcv.com/resume/w0f4aim4wh"
     }
   },
   "summary": "Software Engineer with 3+ years of experience in frontend architecture, contract-driven API design, AI-integrated systems and blockchain; architected a system-wide state management refactor resulting in improved loading by 11 seconds, and optimized deployment workflows decreasing development build time by ~10 minutes per cycle.",

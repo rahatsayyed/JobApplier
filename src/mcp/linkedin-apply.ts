@@ -8,6 +8,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, getJob, saveApplication } from '../db.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
+import {
+  resolveControlWithFallback,
+  resolveAnswerTopicWithFallback,
+  type FallbackDeps,
+  type KnownAnswerTopic,
+} from '../lib/domFallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -86,6 +92,83 @@ export function resolveAnswer(question: string, answers: EasyApplyAnswers): Answ
 
 function loadAnswers(): EasyApplyAnswers {
   return JSON.parse(readFileSync(ANSWERS_CONFIG_PATH, 'utf8'));
+}
+
+/** Human-readable descriptions of the fixed answer fields, for the Claude fallback prompt. */
+const ANSWER_TOPIC_DESCRIPTIONS: Record<Exclude<keyof EasyApplyAnswers, 'custom'>, string> = {
+  years_experience: "How many years of relevant work experience the candidate has",
+  authorized_to_work: "Whether the candidate is authorized to work in the job's country without sponsorship",
+  requires_sponsorship: 'Whether the candidate will require visa/work sponsorship',
+  willing_to_relocate: 'Whether the candidate is willing to relocate for this role',
+  notice_period_days: "The candidate's notice period, in days",
+  expected_salary: "The candidate's expected salary or CTC",
+  phone: "The candidate's phone number",
+  linkedin_profile_url: "The candidate's LinkedIn profile URL",
+};
+
+function buildAnswerTopics(answers: EasyApplyAnswers): KnownAnswerTopic[] {
+  const topics: KnownAnswerTopic[] = (
+    Object.entries(ANSWER_TOPIC_DESCRIPTIONS) as [Exclude<keyof EasyApplyAnswers, 'custom'>, string][]
+  ).map(([key, description]) => ({ key, description, value: answers[key] }));
+  if (answers.custom) {
+    for (const [key, value] of Object.entries(answers.custom)) {
+      topics.push({
+        key: `custom:${key}`,
+        description: `A screening question the candidate already answered verbatim: ${JSON.stringify(key)}`,
+        value,
+      });
+    }
+  }
+  return topics;
+}
+
+/**
+ * Hybrid resolution: try the free, instant pattern/exact-match resolver first (the common
+ * case). Only when that returns null AND the hybrid fallback is enabled for this call do we
+ * pay for a bounded Claude classification to check whether the question is a rephrasing of
+ * an answer topic the candidate already has a truthful value for (see domFallback.ts) —
+ * never a fabricated new value.
+ */
+async function resolveAnswerHybrid(
+  question: string,
+  answers: EasyApplyAnswers,
+  fallback: { enabled: boolean; deps?: FallbackDeps }
+): Promise<AnswerValue | null> {
+  const direct = resolveAnswer(question, answers);
+  if (direct !== null || !fallback.enabled) return direct;
+  return resolveAnswerTopicWithFallback(question, buildAnswerTopics(answers), fallback.deps);
+}
+
+/**
+ * Clicks the element matched by `selector`. If nothing matches (a selector-rot case — the
+ * common failure mode against LinkedIn's unstable DOM) and the hybrid fallback is enabled,
+ * escalates to a bounded Claude call over the real, currently-visible button/link texts,
+ * clicking only if Claude's choice is verbatim one of them. Returns whether a click happened.
+ */
+async function findAndClickControl(
+  page: Pick<Page, 'locator'>,
+  selector: string,
+  intent: string,
+  fallback: { enabled: boolean; deps?: FallbackDeps }
+): Promise<boolean> {
+  const primaryLocator = page.locator(selector);
+  if ((await primaryLocator.count()) > 0) {
+    await primaryLocator.first().click();
+    return true;
+  }
+  if (!fallback.enabled) return false;
+
+  const clickableLocator = page.locator('button, [role="button"], a[role="button"]');
+  const candidates = await clickableLocator.evaluateAll((els) =>
+    els.map((el) => el.textContent?.trim()).filter((t): t is string => !!t)
+  );
+  const chosenText = await resolveControlWithFallback(candidates, intent, fallback.deps);
+  if (!chosenText) return false;
+
+  const fallbackLocator = clickableLocator.filter({ hasText: chosenText });
+  if ((await fallbackLocator.count()) === 0) return false;
+  await fallbackLocator.first().click();
+  return true;
 }
 
 export interface ApplyEasyApplyResult {
@@ -203,6 +286,15 @@ export interface ApplyEasyApplyDeps {
   maxAppliesPerDay?: number;
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
+  /**
+   * Hybrid Claude fallback for selector-miss/unanswerable-question escalation (see
+   * domFallback.ts). Off by default unless explicitly enabled here or via
+   * `EASY_APPLY_HYBRID_FALLBACK=true` — this keeps the fast/free selector path as the only
+   * thing that runs unless hybrid mode is deliberately turned on, and keeps tests hermetic
+   * (no real API calls) unless a test explicitly injects a fallback client.
+   */
+  fallback?: FallbackDeps;
+  fallbackEnabled?: boolean;
 }
 
 export async function applyEasyApply(
@@ -213,6 +305,10 @@ export async function applyEasyApply(
   const browserLauncher = deps.chromium ?? chromium;
   const maxPerDay =
     deps.maxAppliesPerDay ?? Number(process.env.MAX_APPLIES_PER_DAY ?? DEFAULT_MAX_APPLIES_PER_DAY);
+  const fallback = {
+    enabled: deps.fallbackEnabled ?? (Boolean(deps.fallback) || process.env.EASY_APPLY_HYBRID_FALLBACK === 'true'),
+    deps: deps.fallback,
+  };
 
   // Cheap, pure, non-browser pre-flight checks run BEFORE the rate-limit gate below, so a
   // pre-flight rejection (missing job, bad answers config, missing burner session) never
@@ -261,8 +357,13 @@ export async function applyEasyApply(
     // of LinkedIn's Easy Apply modal. An ElementHandle instead pins to one DOM node
     // captured at query time, which can detach before a later `.click()`/`.fill()`
     // fires — causing "Element is not attached to the DOM" failures.
-    const easyApplyButtonLocator = page.locator(SELECTORS.easyApplyButton);
-    if ((await easyApplyButtonLocator.count()) === 0) {
+    const clickedEasyApply = await findAndClickControl(
+      page,
+      SELECTORS.easyApplyButton,
+      'Start the job application (an "Easy Apply" button)',
+      fallback
+    );
+    if (!clickedEasyApply) {
       return recordAndReturn(
         database,
         job_id,
@@ -270,7 +371,6 @@ export async function applyEasyApply(
         'Easy Apply button not found (posting may not support Easy Apply)'
       );
     }
-    await easyApplyButtonLocator.first().click();
     await waitForFormControls(page);
 
     const prepared = database
@@ -328,7 +428,7 @@ export async function applyEasyApply(
           (await labelLocator.count()) > 0 ? ((await labelLocator.first().textContent()) ?? '').trim() : '';
         if (!questionText) continue;
 
-        const answer = resolveAnswer(questionText, answers);
+        const answer = await resolveAnswerHybrid(questionText, answers, fallback);
         if (answer === null) {
           // Real, verifiable early-return before any submit action: an unrecognized
           // screening question means we cannot answer truthfully, so abort here and
@@ -359,7 +459,7 @@ export async function applyEasyApply(
         const currentValue = await input.inputValue();
         if (currentValue) continue;
 
-        const answer = resolveAnswer(questionText, answers);
+        const answer = await resolveAnswerHybrid(questionText, answers, fallback);
         if (answer === null) {
           return recordAndReturn(
             database,
@@ -407,7 +507,7 @@ export async function applyEasyApply(
         ).trim();
         if (!questionText) continue;
 
-        const answer = resolveAnswer(questionText, answers);
+        const answer = await resolveAnswerHybrid(questionText, answers, fallback);
         if (typeof answer !== 'boolean') {
           // Either genuinely unanswerable (null) or answered by a non-boolean config
           // value that can't be mapped to a Yes/No choice — both are unsafe to guess.
@@ -434,12 +534,22 @@ export async function applyEasyApply(
       const reviewButtonLocator = page.locator(SELECTORS.reviewButton);
       const reviewButtonCount = nextButtonCount > 0 ? 0 : await reviewButtonLocator.count();
       if (nextButtonCount === 0 && reviewButtonCount === 0) {
-        return recordAndReturn(
-          database,
-          job_id,
-          'manual_review',
-          'could not find a next/review/submit control on the Easy Apply form'
+        const clickedFallbackNav = await findAndClickControl(
+          page,
+          `${SELECTORS.nextButton}, ${SELECTORS.reviewButton}`,
+          'Advance to the next step of the Easy Apply form (a "Next", "Continue", or "Review" button)',
+          fallback
         );
+        if (!clickedFallbackNav) {
+          return recordAndReturn(
+            database,
+            job_id,
+            'manual_review',
+            'could not find a next/review/submit control on the Easy Apply form'
+          );
+        }
+        await waitForFormControls(page);
+        continue;
       }
       if (nextButtonCount > 0) {
         await nextButtonLocator.first().click();
@@ -457,11 +567,15 @@ export async function applyEasyApply(
       await page.setInputFiles(SELECTORS.resumeUpload, prepared.resume_path);
     }
 
-    const finalSubmitButtonLocator = page.locator(SELECTORS.submitButton);
-    if ((await finalSubmitButtonLocator.count()) === 0) {
+    const clickedFinalSubmit = await findAndClickControl(
+      page,
+      SELECTORS.submitButton,
+      'Submit the completed Easy Apply application (a "Submit application" button)',
+      fallback
+    );
+    if (!clickedFinalSubmit) {
       return recordAndReturn(database, job_id, 'manual_review', 'submit button not found on final step');
     }
-    await finalSubmitButtonLocator.first().click();
 
     // Don't trust the click alone — confirm the application actually went through
     // before reporting success (see SELECTORS.submissionConfirmation).
