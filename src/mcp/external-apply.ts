@@ -1,16 +1,60 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, getJob, saveApplication } from '../db.js';
 import { getBaseResume } from '../resume.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
+import { resolveControlWithFallback, type FallbackDeps } from '../lib/domFallback.js';
 import type { FieldMap } from '../ats/types.js';
 import * as greenhouse from '../ats/greenhouse.js';
 import * as lever from '../ats/lever.js';
 import * as workday from '../ats/workday.js';
 import * as ashby from '../ats/ashby.js';
+
+// Best-effort, NOT live-verified selectors (unlike linkedin-apply.ts's
+// SELECTORS.submissionConfirmation, which was confirmed live against a real posting).
+// There is no single proven post-submit signal across Greenhouse/Lever/Workday/Ashby in this
+// codebase — this is a defensible heuristic guess at common confirmation copy, not a
+// guarantee. Treat any 'submitted' result gated on this as lower-confidence than
+// linkedin-apply.ts's equivalent until a real posting confirms it.
+export const SELECTORS = {
+  submissionConfirmation:
+    'text=/thank you|application (received|submitted)|successfully submitted|application complete/i',
+} as const;
+
+/**
+ * Clicks the element matched by `selector`. If nothing matches (a selector-rot case) and the
+ * hybrid fallback is enabled, escalates to a bounded Claude call over the real, currently-
+ * visible button/link texts, clicking only if Claude's choice is verbatim one of them.
+ * Returns whether a click happened. Mirrors linkedin-apply.ts's `findAndClickControl`.
+ */
+async function findAndClickControl(
+  page: Pick<Page, 'locator'>,
+  selector: string,
+  intent: string,
+  fallback: { enabled: boolean; deps?: FallbackDeps }
+): Promise<boolean> {
+  const primaryLocator = page.locator(selector);
+  if ((await primaryLocator.count()) > 0) {
+    await primaryLocator.first().click();
+    return true;
+  }
+  if (!fallback.enabled) return false;
+
+  const clickableLocator = page.locator('button, [role="button"], a[role="button"]');
+  const candidates = await clickableLocator.evaluateAll((els) =>
+    els.map((el) => el.textContent?.trim()).filter((t): t is string => !!t)
+  );
+  const chosenText = await resolveControlWithFallback(candidates, intent, fallback.deps);
+  if (!chosenText) return false;
+
+  const fallbackLocator = clickableLocator.filter({ hasText: chosenText });
+  if ((await fallbackLocator.count()) === 0) return false;
+  await fallbackLocator.first().click();
+  return true;
+}
 
 // Must match linkedin-apply.ts's own DEFAULT_MAX_APPLIES_PER_DAY — see the shared-counter
 // rationale on the `checkAndIncrement` call below.
@@ -85,6 +129,16 @@ export interface ApplyExternalDeps {
   maxAppliesPerDay?: number;
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
+  /**
+   * Hybrid Claude fallback for submit-button-selector-miss escalation only (see
+   * domFallback.ts and linkedin-apply.ts's identical pattern). Off by default unless
+   * explicitly enabled here or via `EXTERNAL_APPLY_HYBRID_FALLBACK=true`. Required-field
+   * selectors (name/email/resumeUpload) are NOT covered — Greenhouse/Lever/Workday/Ashby's
+   * field IDs are documented as far more stable than LinkedIn's, and matching a label to an
+   * input is different work this fallback doesn't do.
+   */
+  fallback?: FallbackDeps;
+  fallbackEnabled?: boolean;
 }
 
 function recordAndReturn(
@@ -110,6 +164,11 @@ export async function applyExternal(
 ): Promise<ApplyExternalResult> {
   const database = deps.db ?? db;
   const browserLauncher = deps.chromium ?? chromium;
+  const fallback = {
+    enabled:
+      deps.fallbackEnabled ?? (Boolean(deps.fallback) || process.env.EXTERNAL_APPLY_HYBRID_FALLBACK === 'true'),
+    deps: deps.fallback,
+  };
 
   const job = getJob(database, job_id);
   if (!job || !job.apply_url) {
@@ -200,8 +259,13 @@ export async function applyExternal(
 
     await page.setInputFiles(ats.fieldMap.resumeUpload, prepared.resume_path);
 
-    const submitEl = await page.$(ats.fieldMap.submitButton);
-    if (!submitEl) {
+    const clickedSubmit = await findAndClickControl(
+      page,
+      ats.fieldMap.submitButton,
+      'Submit the completed job application form',
+      fallback
+    );
+    if (!clickedSubmit) {
       return recordAndReturn(
         database,
         job_id,
@@ -210,7 +274,29 @@ export async function applyExternal(
         `submit button not found on page (selector: ${ats.fieldMap.submitButton})`
       );
     }
-    await submitEl.click();
+
+    // Don't trust the click alone — the same false-positive class of bug fixed in
+    // linkedin-apply.ts this session (a submit click can silently no-op with no thrown
+    // error). Unlike that file's live-verified confirmation text, SELECTORS.submissionConfirmation
+    // here is a best-effort heuristic (see its comment above) — but "unproven" is still safer
+    // than "unchecked": if it can't be confirmed within the timeout, report manual_review
+    // rather than a guessed 'submitted'.
+    const confirmed = await page
+      .locator(SELECTORS.submissionConfirmation)
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!confirmed) {
+      return recordAndReturn(
+        database,
+        job_id,
+        ats.platform,
+        'manual_review',
+        'clicked submit but could not confirm the application was actually recorded — verify manually'
+      );
+    }
 
     return recordAndReturn(database, job_id, ats.platform, 'submitted');
   } catch (err) {
@@ -235,7 +321,8 @@ server.registerTool(
       'Apply directly to a Greenhouse/Lever/Workday/Ashby-hosted job posting using its apply_url, ' +
       'filling in the tailored resume and cover letter prepared for that job. Gated by the same daily ' +
       'MAX_APPLIES_PER_DAY limit shared with apply_easy_apply. Falls back to manual_review if the ATS ' +
-      'is unsupported or a required field cannot be located.',
+      'is unsupported, a required field cannot be located, the submit control cannot be found, or the ' +
+      'submission cannot be confirmed after clicking submit.',
     inputSchema: {
       job_id: z.string(),
     },

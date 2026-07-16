@@ -3,7 +3,7 @@ import { detect as detectGreenhouse, fieldMap as greenhouseFieldMap } from '../s
 import { detect as detectLever, fieldMap as leverFieldMap } from '../src/ats/lever.js';
 import { detect as detectWorkday, fieldMap as workdayFieldMap } from '../src/ats/workday.js';
 import { detect as detectAshby, fieldMap as ashbyFieldMap } from '../src/ats/ashby.js';
-import { detectAts, splitName, applyExternal } from '../src/mcp/external-apply.js';
+import { detectAts, splitName, applyExternal, SELECTORS } from '../src/mcp/external-apply.js';
 import { openDb, saveJob, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
@@ -268,5 +268,212 @@ describe('applyExternal rate limiting (Finding 1)', () => {
       .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
       .get('easy_apply') as { count: number } | undefined;
     expect(row).toBeUndefined();
+  });
+});
+
+/**
+ * A minimal fake Playwright `Page` covering both APIs applyExternal uses: `page.$()`
+ * (ElementHandle, for the required-field checks/fills, all treated as present by default so
+ * these tests can focus on the submit-button/confirmation/fallback behavior) and
+ * `page.locator()` (for the submit button, the post-submit confirmation text, and the hybrid
+ * fallback's real-clickable-candidates query).
+ */
+function makeFakeExternalApplyPage({
+  submitButtonSelector,
+  submitButtonFound = true,
+  confirmationAppears = true,
+  clickableCandidates = [] as string[],
+  clickableElementsByText = {} as Record<string, { click: ReturnType<typeof vi.fn> }>,
+}: {
+  submitButtonSelector: string;
+  submitButtonFound?: boolean;
+  confirmationAppears?: boolean;
+  clickableCandidates?: string[];
+  clickableElementsByText?: Record<string, { click: ReturnType<typeof vi.fn> }>;
+}) {
+  const submitButton = { click: vi.fn().mockResolvedValue(undefined) };
+
+  const page = {
+    goto: vi.fn().mockResolvedValue(undefined),
+    $: vi.fn().mockResolvedValue({}), // every required-field/optional-field lookup "found"
+    fill: vi.fn().mockResolvedValue(undefined),
+    setInputFiles: vi.fn().mockResolvedValue(undefined),
+    locator: vi.fn().mockImplementation((selector: string) => {
+      if (selector === submitButtonSelector) {
+        return {
+          count: vi.fn().mockResolvedValue(submitButtonFound ? 1 : 0),
+          first: vi.fn(() => submitButton),
+        };
+      }
+      if (selector.includes('[role="button"]')) {
+        return {
+          evaluateAll: vi.fn().mockResolvedValue(clickableCandidates),
+          filter: vi.fn(({ hasText }: { hasText: string }) => ({
+            count: vi.fn().mockResolvedValue(clickableElementsByText[hasText] ? 1 : 0),
+            first: vi.fn(() => clickableElementsByText[hasText]),
+          })),
+        };
+      }
+      if (selector === SELECTORS.submissionConfirmation) {
+        return {
+          first: vi.fn(() => ({
+            waitFor: confirmationAppears
+              ? vi.fn().mockResolvedValue(undefined)
+              : vi.fn().mockRejectedValue(new Error('Timeout 10000ms exceeded')),
+          })),
+        };
+      }
+      return { count: vi.fn().mockResolvedValue(0), first: vi.fn(() => ({})) };
+    }),
+  };
+
+  return { page, submitButton };
+}
+
+describe('applyExternal submission confirmation (parity with linkedin-apply.ts false-positive fix)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  function seedApplicableJob(jobId: string) {
+    saveJob(db, {
+      id: jobId,
+      source: 'greenhouse',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://boards.greenhouse.io/acme/jobs/123',
+      apply_url: 'https://boards.greenhouse.io/acme/jobs/123',
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: jobId,
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+  }
+
+  it('returns submitted only once the post-click confirmation text actually appears', async () => {
+    seedApplicableJob('job-ext-submitted-1');
+    const { page, submitButton } = makeFakeExternalApplyPage({
+      submitButtonSelector: greenhouseFieldMap.submitButton,
+      confirmationAppears: true,
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyExternal({ job_id: 'job-ext-submitted-1' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('submitted');
+    expect(submitButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns manual_review (not submitted) when the submit click cannot be confirmed', async () => {
+    // Regression test for the same false-positive class of bug fixed in linkedin-apply.ts:
+    // a submit click can silently no-op, so the click alone must never be trusted.
+    seedApplicableJob('job-ext-unconfirmed-1');
+    const { page, submitButton } = makeFakeExternalApplyPage({
+      submitButtonSelector: greenhouseFieldMap.submitButton,
+      confirmationAppears: false,
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyExternal({ job_id: 'job-ext-unconfirmed-1' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/could not confirm the application was actually recorded/);
+    expect(submitButton.click).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('applyExternal hybrid fallback (submit-button escalation only)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  function seedApplicableJob(jobId: string) {
+    saveJob(db, {
+      id: jobId,
+      source: 'greenhouse',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://boards.greenhouse.io/acme/jobs/123',
+      apply_url: 'https://boards.greenhouse.io/acme/jobs/123',
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: jobId,
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+  }
+
+  it('escalates to the Claude fallback and clicks + confirms the control it chooses when the submit selector misses', async () => {
+    seedApplicableJob('job-ext-hybrid-1');
+    const fallbackSubmitButton = { click: vi.fn().mockResolvedValue(undefined) };
+    const { page } = makeFakeExternalApplyPage({
+      submitButtonSelector: greenhouseFieldMap.submitButton,
+      submitButtonFound: false,
+      confirmationAppears: true,
+      clickableCandidates: ['Save for later', 'Submit application'],
+      clickableElementsByText: { 'Submit application': fallbackSubmitButton },
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ matchedText: 'Submit application' }));
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-hybrid-1' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(fallbackSubmitButton.click).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('submitted');
+  });
+
+  it('returns manual_review (submit button not found) when the fallback also finds no match', async () => {
+    seedApplicableJob('job-ext-hybrid-2');
+    const { page } = makeFakeExternalApplyPage({
+      submitButtonSelector: greenhouseFieldMap.submitButton,
+      submitButtonFound: false,
+      clickableCandidates: ['Save for later'],
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ matchedText: null }));
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-hybrid-2' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/submit button not found/);
+    expect(runClaude).toHaveBeenCalled();
+  });
+
+  it('never invokes the fallback client when hybrid mode is not enabled (default off)', async () => {
+    seedApplicableJob('job-ext-hybrid-3');
+    const { page } = makeFakeExternalApplyPage({
+      submitButtonSelector: greenhouseFieldMap.submitButton,
+      submitButtonFound: false,
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    // No fallbackEnabled, no injected fallback client — must behave exactly as before this
+    // change: immediate manual_review, no escalation attempted.
+    const result = await applyExternal({ job_id: 'job-ext-hybrid-3' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/submit button not found/);
   });
 });

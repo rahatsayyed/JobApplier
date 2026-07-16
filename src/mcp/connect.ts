@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, saveConnection } from '../db.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
+import { resolveControlWithFallback, type FallbackDeps } from '../lib/domFallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -79,6 +80,65 @@ export interface ConnectDeps {
   maxConnectsPerDay?: number;
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
+  /**
+   * Hybrid Claude fallback for selector-miss escalation (see domFallback.ts and
+   * src/mcp/linkedin-apply.ts's identical pattern). Off by default unless explicitly
+   * enabled here or via `CONNECT_HYBRID_FALLBACK=true` — this keeps the fast/free
+   * selector path as the only thing that runs unless hybrid mode is deliberately turned
+   * on, and keeps tests hermetic (no real `claude` CLI invocations) unless a test
+   * explicitly injects a fallback client.
+   */
+  fallback?: FallbackDeps;
+  fallbackEnabled?: boolean;
+}
+
+/**
+ * Escalates to a bounded Claude call over the real, currently-visible control texts
+ * matching `candidateSelector`, clicking only if Claude's choice is verbatim one of them.
+ * Returns whether a click happened. This is the escalation half only — callers that have
+ * a simple "selector missing" primary check should use `findAndClickControl` below; the
+ * More-button flow calls this directly because its primary-path logic (picking the
+ * button-shaped match via `pickButtonShapedIndex`) isn't a plain `count() > 0` check.
+ */
+async function escalateClick(
+  page: Pick<Page, 'locator'>,
+  intent: string,
+  fallback: { enabled: boolean; deps?: FallbackDeps },
+  candidateSelector = 'button, [role="button"], a[role="button"]'
+): Promise<boolean> {
+  const clickableLocator = page.locator(candidateSelector);
+  const candidates = await clickableLocator.evaluateAll((els) =>
+    els.map((el) => el.textContent?.trim()).filter((t): t is string => !!t)
+  );
+  const chosenText = await resolveControlWithFallback(candidates, intent, fallback.deps);
+  if (!chosenText) return false;
+
+  const fallbackLocator = clickableLocator.filter({ hasText: chosenText });
+  if ((await fallbackLocator.count()) === 0) return false;
+  await fallbackLocator.first().click();
+  return true;
+}
+
+/**
+ * Clicks the element matched by `selector`. If nothing matches (a selector-rot case) and
+ * the hybrid fallback is enabled, escalates via `escalateClick` over `candidateSelector`
+ * (defaults to generic clickable controls; pass `'[role="menu"] [role="menuitem"]'` for
+ * the Connect menu item). Mirrors src/mcp/linkedin-apply.ts's `findAndClickControl`.
+ */
+async function findAndClickControl(
+  page: Pick<Page, 'locator'>,
+  selector: string,
+  intent: string,
+  fallback: { enabled: boolean; deps?: FallbackDeps },
+  candidateSelector?: string
+): Promise<boolean> {
+  const primaryLocator = page.locator(selector);
+  if ((await primaryLocator.count()) > 0) {
+    await primaryLocator.first().click();
+    return true;
+  }
+  if (!fallback.enabled) return false;
+  return escalateClick(page, intent, fallback, candidateSelector);
 }
 
 /**
@@ -370,6 +430,10 @@ export async function connectSend(
   const browserLauncher = deps.chromium ?? chromium;
   const maxPerDay =
     deps.maxConnectsPerDay ?? Number(process.env.MAX_CONNECTS_PER_DAY ?? DEFAULT_MAX_CONNECTS_PER_DAY);
+  const fallback = {
+    enabled: deps.fallbackEnabled ?? (Boolean(deps.fallback) || process.env.CONNECT_HYBRID_FALLBACK === 'true'),
+    deps: deps.fallback,
+  };
 
   // Cheap, pure, non-browser pre-flight checks run BEFORE the rate-limit gate below, so a
   // pre-flight rejection (invalid note length, missing main session) never burns a quota
@@ -411,28 +475,55 @@ export async function connectSend(
     // matches multiple elements on a real profile (post "…more" toggles etc.) — filter to
     // the button-shaped one via bounding-box heights (see pickButtonShapedIndex above).
     const moreButtonsLocator = page.locator(SELECTORS.moreButton);
-    if ((await moreButtonsLocator.count()) === 0) {
-      return { status: 'failed', reason: 'More button not found on profile' };
+    const moreButtonCount = await moreButtonsLocator.count();
+    let moreButtonIndex = -1;
+    if (moreButtonCount > 0) {
+      const moreButtonBoxes = await moreButtonsLocator.evaluateAll((els) =>
+        els.map((el) => ({ height: el.getBoundingClientRect().height }))
+      );
+      moreButtonIndex = pickButtonShapedIndex(moreButtonBoxes);
     }
-    const moreButtonBoxes = await moreButtonsLocator.evaluateAll((els) =>
-      els.map((el) => ({ height: el.getBoundingClientRect().height }))
-    );
-    const moreButtonIndex = pickButtonShapedIndex(moreButtonBoxes);
-    if (moreButtonIndex === -1) {
-      return { status: 'failed', reason: 'no button-shaped More button found on profile' };
+
+    if (moreButtonIndex !== -1) {
+      await moreButtonsLocator.nth(moreButtonIndex).click();
+    } else {
+      // The button-shaped-filter primary path found nothing usable — escalate directly
+      // (this primary check isn't a plain `count() > 0`, so it can't go through
+      // findAndClickControl's shared miss-handling).
+      const clickedMore =
+        fallback.enabled &&
+        (await escalateClick(
+          page,
+          'Open the profile-header overflow menu that contains "Connect" (a button-shaped ' +
+            '"More" control, not a small post "…more" text toggle)',
+          fallback
+        ));
+      if (!clickedMore) {
+        return {
+          status: 'failed',
+          reason:
+            moreButtonCount === 0
+              ? 'More button not found on profile'
+              : 'no button-shaped More button found on profile',
+        };
+      }
     }
-    await moreButtonsLocator.nth(moreButtonIndex).click();
     await waitForConnectMenu(page);
 
     // Step 2: the "More" click opens a dropdown/overflow menu; find and click its
     // "Connect" menu item (scoped to `[role="menu"]` so this never matches the unrelated
     // "Invite X to connect" buttons rendered in "People you may know" carousel cards
     // elsewhere on the page).
-    const connectMenuItemLocator = page.locator(SELECTORS.connectMenuItem);
-    if ((await connectMenuItemLocator.count()) === 0) {
+    const clickedConnectMenuItem = await findAndClickControl(
+      page,
+      SELECTORS.connectMenuItem,
+      'Click "Connect" inside the currently open profile overflow menu',
+      fallback,
+      '[role="menu"] [role="menuitem"]'
+    );
+    if (!clickedConnectMenuItem) {
       return { status: 'failed', reason: 'Connect menu item not found after opening More menu' };
     }
-    await connectMenuItemLocator.first().click();
 
     const addNoteButtonLocator = page.locator(SELECTORS.addNoteButton);
     if ((await addNoteButtonLocator.count()) > 0) {
@@ -444,11 +535,43 @@ export async function connectSend(
       }
     }
 
-    const sendButtonLocator = page.locator(SELECTORS.sendButton);
-    if ((await sendButtonLocator.count()) === 0) {
+    const clickedSend = await findAndClickControl(
+      page,
+      SELECTORS.sendButton,
+      'Send the LinkedIn connection request from the currently open invite dialog (a ' +
+        '"Send"/"Send invitation" button)',
+      fallback
+    );
+    if (!clickedSend) {
       return { status: 'failed', reason: 'Send button not found on connect dialog' };
     }
-    await sendButtonLocator.first().click();
+
+    // Don't trust the click alone — linkedin-apply.ts's Easy Apply submit button was found
+    // to silently no-op under this exact same "click and immediately report success"
+    // pattern (see its submissionConfirmation fix). UNLIKE this file's
+    // moreButton/connectMenuItem/sendButton selectors (which ARE live-verified per the
+    // comments above), there is no already-live-verified confirmation signal for a
+    // genuinely-sent connection request — sending a real request to verify one requires
+    // explicit human approval this fix doesn't have. This is a best-effort heuristic only:
+    // LinkedIn's invite dialog should dismiss itself once the send actually goes through,
+    // so we wait for the just-clicked Send button to disappear from the DOM. If it's
+    // still there after a bounded wait, treat the click as unconfirmed rather than
+    // reporting a false 'sent'. TODO: live-verify this signal (or find a more specific one,
+    // e.g. a toast/snackbar) the same way submissionConfirmation was live-verified.
+    const confirmed = await page
+      .locator(SELECTORS.sendButton)
+      .first()
+      .waitFor({ state: 'hidden', timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!confirmed) {
+      return {
+        status: 'failed',
+        reason:
+          'clicked Send but could not confirm the connection request was actually recorded — verify manually on LinkedIn',
+      };
+    }
 
     saveConnection(database, {
       job_id: job_id ?? null,

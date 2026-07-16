@@ -709,6 +709,174 @@ describe('connectSend control flow', () => {
   });
 });
 
+/**
+ * Builds a minimal page mock for the connect happy path (More → Connect → Send),
+ * parameterized on whether the sendButton locator ever reports `hidden` after the click —
+ * mirrors tests/linkedin-apply.test.ts's `makeSubmitConfirmationPage` for the identical
+ * false-positive-risk pattern: a click is only trusted once a bounded post-click check
+ * confirms it, never on its own.
+ */
+function makeSendConfirmationPage(confirmationAppears: boolean) {
+  const moreButton = makeFakeElement();
+  const connectMenuItem = makeFakeElement();
+  const sendButton = makeFakeElement();
+
+  const sendButtonLocator: any = {
+    count: vi.fn().mockResolvedValue(1),
+    first: vi.fn(() => ({
+      click: vi.fn(async () => sendButton.click()),
+      waitFor: confirmationAppears
+        ? vi.fn().mockResolvedValue(undefined)
+        : vi.fn().mockRejectedValue(new Error('Timeout 10000ms exceeded')),
+    })),
+  };
+
+  const page = {
+    goto: vi.fn().mockResolvedValue(undefined),
+    locator: vi.fn().mockImplementation((selector: string) => {
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+      if (selector === SELECTORS.sendButton) return sendButtonLocator;
+      return makeFakeLocator(null);
+    }),
+  };
+  const context = { newPage: vi.fn().mockResolvedValue(page) };
+  const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+  return { launch: vi.fn().mockResolvedValue(browser), sendButton };
+}
+
+describe('connectSend post-click confirmation (false-positive regression)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('returns sent only once the send button actually disappears after the click', async () => {
+    const { launch, sendButton } = makeSendConfirmationPage(true);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns failed (not sent) when the send click cannot be confirmed', async () => {
+    // Regression test for the same false-positive-risk pattern fixed in
+    // linkedin-apply.ts's applyEasyApply: a Send click that silently no-ops must never be
+    // reported as 'sent'.
+    const { launch, sendButton } = makeSendConfirmationPage(false);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/could not confirm the connection request was actually recorded/);
+    // The click still happens — it's the unverifiable *outcome* that's unsafe to trust.
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A fake locator representing the "any clickable control" query the hybrid fallback
+ * issues when a primary selector misses — mirrors tests/linkedin-apply.test.ts's
+ * `makeFakeClickableLocator`.
+ */
+function makeFakeClickableLocator(
+  candidates: string[],
+  elementsByText: Record<string, ReturnType<typeof makeFakeElement>> = {}
+): any {
+  return {
+    evaluateAll: vi.fn().mockResolvedValue(candidates),
+    filter: vi.fn(({ hasText }: { hasText: string }) => makeFakeLocator(elementsByText[hasText] ?? null)),
+  };
+}
+
+describe('connectSend hybrid fallback (option 3)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('escalates to the Claude fallback and clicks the control it chooses when no button-shaped More button is found', async () => {
+    const fallbackMoreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    // First call (More button escalation) matches; later calls (none expected here, since
+    // Connect menu item and Send both resolve via their primary selectors) would find
+    // nothing if invoked.
+    const runClaude = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify({ matchedText: 'More' }))
+      .mockResolvedValue(JSON.stringify({ matchedText: null }));
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([], []); // none found at all
+        if (selector.includes('[role="button"]')) {
+          return makeFakeClickableLocator(['Follow', 'More'], { More: fallbackMoreButton });
+        }
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(fallbackMoreButton.click).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('sent');
+  });
+
+  it('escalates to the Claude fallback for the Connect menu item when its selector misses', async () => {
+    const moreButton = makeFakeElement();
+    const fallbackConnectItem = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ matchedText: 'Connect' }));
+
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(null); // primary misses
+        if (selector === '[role="menu"] [role="menuitem"]') {
+          return makeFakeClickableLocator(['Send profile in a message', 'Connect'], {
+            Connect: fallbackConnectItem,
+          });
+        }
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, fallbackEnabled: true, fallback: { runClaude } }
+    );
+
+    expect(fallbackConnectItem.click).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('sent');
+  });
+});
+
 describe('recordConnectionStatus (Finding 3: drafted/skipped bookkeeping)', () => {
   let db: Database.Database;
 

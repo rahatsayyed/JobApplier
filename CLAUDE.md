@@ -199,11 +199,16 @@ Steps, for each targeted job:
    `linkedin-apply.apply_easy_apply({job_id})`. Otherwise (Greenhouse/Lever/Workday/Ashby or other
    external ATS), dispatch to `external-apply.apply_external({job_id})`.
 2. Each call returns one of: `submitted`, `manual_review` (a genuinely unrecoverable case —
-   missing burner/main session, no Easy Apply button, no submit control found — never a guessed
-   submission), `needs_answer` (a screening question `apply_easy_apply` can't answer from
-   `config/easy-apply-answers.json` — see step 2a below), or `rate_limited` (daily
-   `MAX_APPLIES_PER_DAY` cap reached — report it, do not retry). `apply_easy_apply` and
-   `apply_external` share the SAME daily counter, so an apply of either kind can trip this.
+   missing burner/main session, no Easy Apply button, no submit control found, or a submit
+   click that couldn't be confirmed — never a guessed submission), `needs_answer` (a screening
+   question `apply_easy_apply` can't answer from `config/easy-apply-answers.json` — see step 2a
+   below), or `rate_limited` (daily `MAX_APPLIES_PER_DAY` cap reached — report it, do not
+   retry). `apply_easy_apply` and `apply_external` share the SAME daily counter, so an apply of
+   either kind can trip this. `apply_external` also returns `manual_review` if it clicked
+   submit but couldn't confirm the application was recorded (the same false-positive class of
+   bug fixed in `apply_easy_apply` — a click can silently no-op) — its confirmation check is a
+   best-effort heuristic (common confirmation copy), NOT live-verified against a real
+   Greenhouse/Lever/Workday/Ashby posting yet, unlike `apply_easy_apply`'s.
 2a. On `needs_answer` (the result includes the exact `question` text verbatim from the
     posting):
     - Determine a truthful value for that question from the candidate's actual, documented
@@ -230,34 +235,45 @@ Do not call `linkedin-apply` or `external-apply` tools directly yourself for thi
 dedicated subagent exists for the stage — otherwise call them directly, since Applying is
 single-job-at-a-time and doesn't need the multi-stage pipeline "Running the hunt" uses.
 
-### Hybrid Claude fallback (Easy Apply, opt-in)
+### Hybrid Claude fallback (Easy Apply + external ATS, opt-in)
 
-`linkedin-apply.ts`'s hardcoded Playwright selectors are the fast, free default path and run
-first on every step. LinkedIn's DOM is not stable the way Greenhouse/Lever/Workday/Ashby's is,
-so selector rot happens; rather than dead-ending at `manual_review`/`needs_answer` on every
-selector miss, a bounded Claude escalation can kick in — only on failure, never on every step:
-- **Control click miss** (Easy Apply button, or Next/Review/Submit not found): escalates with
-  the real, currently-visible button/link texts on the page and picks one — or refuses if none
-  plausibly match. Never invents text that isn't actually on the page.
-- **Unanswerable screening question**: escalates with the question text and the candidate's
+Hardcoded Playwright selectors are the fast, free default path and run first on every step, in
+both `linkedin-apply.ts` and `external-apply.ts`. LinkedIn's DOM is not stable the way
+Greenhouse/Lever/Workday/Ashby's is, so selector rot happens there most; rather than
+dead-ending at `manual_review`/`needs_answer` on every selector miss, a bounded Claude
+escalation can kick in — only on failure, never on every step:
+- **Control click miss** — `linkedin-apply.ts`: Easy Apply button, or Next/Review/Submit not
+  found. `external-apply.ts`: submit button not found (required-field selectors —
+  name/email/resumeUpload — are NOT covered; those platforms' field IDs are documented as far
+  more stable than LinkedIn's, and finding the right field is different work than picking a
+  button to click). Escalates with the real, currently-visible button/link texts on the page
+  and picks one — or refuses if none plausibly match. Never invents text that isn't actually on
+  the page.
+- **Unanswerable screening question** (`linkedin-apply.ts` only — external ATS forms in this
+  codebase have no dynamic Q&A schema): escalates with the question text and the candidate's
   existing truthful answer topics (the fixed fields + the `custom` map), asking only whether
   the question is a *rephrasing* of one already answered. Never invents a new value — if the
   question asks for genuinely new information, it still falls through to `needs_answer` (step
   2a above).
 
+Opt-in per file, off by default: `EASY_APPLY_HYBRID_FALLBACK=true` for `linkedin-apply.ts`,
+`EXTERNAL_APPLY_HYBRID_FALLBACK=true` for `external-apply.ts` — these are independent toggles,
+not shared.
+
 This project has no separate Anthropic API key/billing — the user has a Claude subscription,
 not API credits — so this fallback shells out to the `claude` CLI in headless print mode,
 invoking one of two project-level custom slash commands rather than an ad hoc inline prompt:
-`.claude/commands/easy-apply-control-fallback.md` (control-click escalation) and
-`.claude/commands/easy-apply-answer-fallback.md` (screening-question escalation). Keeping the
-task, output contract, and "never invent" rules in those files means Claude already knows the
-exact steps on every invocation instead of the caller re-deriving them in a fresh prompt each
-time. Each call authenticates via the same Claude Code subscription session (not a metered API
-key) and is a single, isolated, non-agentic invocation — no follow-up turns, no tool use.
+`.claude/commands/easy-apply-control-fallback.md` (control-click escalation, shared by both
+files) and `.claude/commands/easy-apply-answer-fallback.md` (screening-question escalation,
+`linkedin-apply.ts` only). Keeping the task, output contract, and "never invent" rules in those
+files means Claude already knows the exact steps on every invocation instead of the caller
+re-deriving them in a fresh prompt each time. Each call authenticates via the same Claude Code
+subscription session (not a metered API key) and is a single, isolated, non-agentic invocation
+— no follow-up turns, no tool use.
 
-**Off by default.** Enable with `EASY_APPLY_HYBRID_FALLBACK=true` (env var) if you want this
-escalation path live; without it, selector/answer misses behave exactly as before (immediate
-`manual_review`/`needs_answer`, no extra `claude` invocations).
+None of `external-apply.ts`'s new confirmation-check/fallback behavior has been live-tested
+against a real Greenhouse/Lever/Workday/Ashby posting yet — same caveat as the rest of Phase
+2's untested-live gaps (see "Connecting" below for the equivalent `connect.ts` caveat).
 
 ## Connecting (Phase 2, human-gated)
 
@@ -280,6 +296,22 @@ For a matched job (with or without a sent cold email):
      to mark the connection `status='skipped'` in the DB, then move on; do not send.
 5. If `connect_send` reports `rate_limited` (daily `MAX_CONNECTS_PER_DAY` cap reached), report
    that to Telegram and stop — do not retry later in the same run.
+
+### `connect_send` reliability
+
+`connect_send` now verifies its final Send click actually went through (waits for the invite
+dialog to dismiss) before reporting `sent` — a click that silently no-ops now correctly returns
+`failed` instead of a false `sent`, the same false-positive class of bug fixed in
+`apply_easy_apply`. **This confirmation signal is best-effort, NOT live-verified** — unlike
+this file's already-live-verified moreButton/connectMenuItem/sendButton selectors, sending a
+real request to verify it requires explicit human approval that hasn't been given yet. The
+next real, approved `connect_send` should be watched to confirm the heuristic actually fires,
+and ideally identify a more specific signal (e.g. exact toast/snackbar text) the way
+`linkedin-apply.ts`'s submission confirmation was live-verified.
+
+`connect_send`'s own selector-miss points (More button, Connect menu item, Send button) can
+also escalate to the same bounded Claude fallback described above, gated by
+`CONNECT_HYBRID_FALLBACK=true` (off by default, independent of the other two flags).
 
 ## Resume tailoring rules
 
