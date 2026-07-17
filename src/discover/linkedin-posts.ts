@@ -1,5 +1,14 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium, type Browser } from 'playwright';
+import type BetterSqlite3 from 'better-sqlite3';
 import type { Job } from '../db.js';
+import { openDb, isSeen, saveJob } from '../db.js';
 import { loadDiscoverConfig, type DiscoverLinkedInConfig, type ParseResult } from './linkedin-jobs.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, '../..');
+const BURNER_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-burner-state.json');
 
 export { loadDiscoverConfig };
 export type { DiscoverLinkedInConfig, ParseResult };
@@ -69,4 +78,64 @@ export function parseLinkedInPostCards(rawCards: RawPostCard[]): ParseResult {
   }
 
   return { jobs, found: rawCards.length, parsed, skipped };
+}
+
+export interface LinkedInPostsDeps {
+  /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
+  chromium?: { launch: typeof chromium.launch };
+  /** Injectable db handle, for testing without touching data.sqlite. */
+  db?: BetterSqlite3.Database;
+  /** Injectable config, for testing without touching config/discover-linkedin.json. */
+  configOverride?: DiscoverLinkedInConfig;
+}
+
+const POST_CARD_SELECTOR = '.feed-shared-update-v2, .reusable-search__result-container';
+
+export async function fetchLinkedInPosts(
+  params: { role?: string; geo?: string },
+  deps: LinkedInPostsDeps = {}
+): Promise<Job[]> {
+  const config = deps.configOverride ?? loadDiscoverConfig();
+  const role = params.role ?? config.posts.role;
+  const geo = params.geo ?? config.posts.geo;
+  const db = deps.db ?? openDb('data.sqlite');
+  const browserLauncher = deps.chromium ?? chromium;
+
+  let browser: Browser | undefined;
+  try {
+    browser = await browserLauncher.launch({ headless: true });
+    const context = await browser.newContext({ storageState: BURNER_STATE_PATH });
+    const page = await context.newPage();
+    const searchUrl = buildLinkedInPostSearchUrl(role, geo);
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(POST_CARD_SELECTOR, { timeout: 15000 });
+
+    const rawCards: RawPostCard[] = await page.locator(POST_CARD_SELECTOR).evaluateAll((nodes: Element[]) =>
+      nodes.map((n) => {
+        const textEl = n.querySelector('.feed-shared-update-v2__description, .update-components-text');
+        const linkEl = n.querySelector('a[href*="urn:li:activity"]') as HTMLAnchorElement | null;
+        const authorEl = n.querySelector('.update-components-actor__name, .entity-result__title-text');
+        return {
+          textContent: textEl?.textContent ?? null,
+          hrefRaw: linkEl?.href ?? null,
+          authorText: authorEl?.textContent ?? null,
+        };
+      })
+    );
+
+    const capped = rawCards.slice(0, config.posts.limit);
+    const { jobs, found, parsed, skipped } = parseLinkedInPostCards(capped);
+    console.error(`[discover] linkedin_posts: ${parsed}/${found} parsed, ${skipped} skipped (malformed)`);
+
+    const newJobs = jobs.filter((job) => !isSeen(db, job.id));
+    for (const job of newJobs) {
+      saveJob(db, job);
+    }
+    return newJobs;
+  } catch (err) {
+    console.error('[discover] linkedin_posts: fetch failed:', err instanceof Error ? err.message : err);
+    return [];
+  } finally {
+    await browser?.close();
+  }
 }

@@ -104,3 +104,71 @@ describe('parseLinkedInPostCards', () => {
     expect(result.jobs[0].id).toBe('li-post:3333333333333333333');
   });
 });
+
+import { vi } from 'vitest';
+import { fetchLinkedInPosts } from '../src/discover/linkedin-posts.js';
+import { openDb, isSeen } from '../src/db.js';
+
+function makeFakePostPage(rawCards: RawPostCard[]) {
+  const locator = {
+    evaluateAll: vi.fn().mockResolvedValue(rawCards),
+  };
+  return {
+    goto: vi.fn().mockResolvedValue(undefined),
+    waitForSelector: vi.fn().mockResolvedValue(undefined),
+    locator: vi.fn().mockReturnValue(locator),
+  };
+}
+
+describe('fetchLinkedInPosts', () => {
+  it('scrapes hiring-post cards, dedups against the db, and returns only new ones', async () => {
+    const db = openDb(':memory:');
+    const rawCards: RawPostCard[] = [
+      {
+        textContent: "We're hiring a Backend Engineer",
+        hrefRaw: 'https://www.linkedin.com/feed/update/urn:li:activity:4444444444444444444/',
+        authorText: 'Recruiter A',
+      },
+    ];
+    const page = makeFakePostPage(rawCards);
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchLinkedInPosts({ role: 'backend engineer', geo: 'in' }, { chromium: chromiumStub, db });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe('li-post:4444444444444444444');
+    expect(isSeen(db, 'li-post:4444444444444444444')).toBe(true);
+  });
+
+  it('falls back to config.posts.role/geo when params are omitted', async () => {
+    const db = openDb(':memory:');
+    const page = makeFakePostPage([]);
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+    const configOverride = { jobs: { search_url: 'https://example.com', limit: 5 }, posts: { role: 'devops engineer', geo: 'in', limit: 5 } };
+
+    await fetchLinkedInPosts({}, { chromium: chromiumStub, db, configOverride });
+
+    expect(page.goto).toHaveBeenCalledWith(expect.stringContaining('devops+engineer'), expect.anything());
+  });
+
+  it('returns an empty array (not a throw) if the page fails to load', async () => {
+    const db = openDb(':memory:');
+    const page = {
+      goto: vi.fn().mockRejectedValue(new Error('net::ERR_CONNECTION_RESET')),
+      waitForSelector: vi.fn(),
+      locator: vi.fn(),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchLinkedInPosts({}, { chromium: chromiumStub, db });
+
+    expect(jobs).toEqual([]);
+    expect(browser.close).toHaveBeenCalled();
+  });
+});
