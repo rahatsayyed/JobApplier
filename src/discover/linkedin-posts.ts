@@ -1,9 +1,9 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser } from 'playwright';
 import type BetterSqlite3 from 'better-sqlite3';
-import type { Job } from '../db.js';
-import { openDb, isSeen, saveJob } from '../db.js';
+import { openDb, isSeen, saveJob, type Job } from '../db.js';
 import { loadDiscoverConfig, type DiscoverLinkedInConfig, type ParseResult } from './linkedin-jobs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,13 +31,12 @@ export function isHiringIntent(text: string): boolean {
 }
 
 export function buildLinkedInPostSearchUrl(role: string, geo: string): string {
-  const keywords = `(hiring OR "we're hiring" OR "we are hiring" OR "join our team") (${role})`;
+  const keywords = `(hiring OR "we're hiring" OR "we are hiring" OR "join our team") (${role}) ${geo}`;
   const params = new URLSearchParams({
     keywords,
     origin: 'GLOBAL_SEARCH_HEADER',
     sortBy: '"date_posted"',
   });
-  void geo; // geo is not part of LinkedIn's content-search URL today; kept as a param for parity with fetchLinkedInPosts and future use
   return `https://www.linkedin.com/search/results/content/?${params.toString()}`;
 }
 
@@ -87,6 +86,8 @@ export interface LinkedInPostsDeps {
   db?: BetterSqlite3.Database;
   /** Injectable config, for testing without touching config/discover-linkedin.json. */
   configOverride?: DiscoverLinkedInConfig;
+  /** Injectable burner session state path, for testing without touching the real secrets file. */
+  burnerStatePath?: string;
 }
 
 const POST_CARD_SELECTOR = '.feed-shared-update-v2, .reusable-search__result-container';
@@ -100,11 +101,17 @@ export async function fetchLinkedInPosts(
   const geo = params.geo ?? config.posts.geo;
   const db = deps.db ?? openDb('data.sqlite');
   const browserLauncher = deps.chromium ?? chromium;
+  const burnerStatePath = deps.burnerStatePath ?? BURNER_STATE_PATH;
+
+  if (!existsSync(burnerStatePath)) {
+    console.error(`[discover] linkedin_posts: burner session state not found at ${burnerStatePath}`);
+    return [];
+  }
 
   let browser: Browser | undefined;
   try {
     browser = await browserLauncher.launch({ headless: true });
-    const context = await browser.newContext({ storageState: BURNER_STATE_PATH });
+    const context = await browser.newContext({ storageState: burnerStatePath });
     const page = await context.newPage();
     const searchUrl = buildLinkedInPostSearchUrl(role, geo);
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });

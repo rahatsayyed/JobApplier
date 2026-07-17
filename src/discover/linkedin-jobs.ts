@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser } from 'playwright';
@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
 
 const CONFIG_PATH = path.join(projectRoot, 'config', 'discover-linkedin.json');
+const BURNER_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-burner-state.json');
 
 export interface DiscoverLinkedInConfig {
   jobs: { search_url: string; limit: number };
@@ -75,8 +76,6 @@ export function parseLinkedInJobCards(rawCards: RawJobCard[]): ParseResult {
   return { jobs, found: rawCards.length, parsed, skipped };
 }
 
-const BURNER_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-burner-state.json');
-
 export interface LinkedInJobsDeps {
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
@@ -84,6 +83,8 @@ export interface LinkedInJobsDeps {
   db?: BetterSqlite3.Database;
   /** Injectable config, for testing without touching config/discover-linkedin.json. */
   configOverride?: DiscoverLinkedInConfig;
+  /** Injectable burner session state path, for testing without touching the real secrets file. */
+  burnerStatePath?: string;
 }
 
 const JOB_CARD_SELECTOR = '.job-card-container, .jobs-search-results__list-item';
@@ -92,11 +93,24 @@ export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Jo
   const config = deps.configOverride ?? loadDiscoverConfig();
   const db = deps.db ?? openDb('data.sqlite');
   const browserLauncher = deps.chromium ?? chromium;
+  const burnerStatePath = deps.burnerStatePath ?? BURNER_STATE_PATH;
+
+  if (config.jobs.search_url.startsWith('REPLACE_WITH_')) {
+    console.error(
+      "[discover] linkedin_jobs: config/discover-linkedin.json's jobs.search_url is still the placeholder — replace it with a real LinkedIn job search URL before running this"
+    );
+    return [];
+  }
+
+  if (!existsSync(burnerStatePath)) {
+    console.error(`[discover] linkedin_jobs: burner session state not found at ${burnerStatePath}`);
+    return [];
+  }
 
   let browser: Browser | undefined;
   try {
     browser = await browserLauncher.launch({ headless: true });
-    const context = await browser.newContext({ storageState: BURNER_STATE_PATH });
+    const context = await browser.newContext({ storageState: burnerStatePath });
     const page = await context.newPage();
     await page.goto(config.jobs.search_url, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector(JOB_CARD_SELECTOR, { timeout: 15000 });

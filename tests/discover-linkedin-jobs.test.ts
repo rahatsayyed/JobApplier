@@ -136,6 +136,8 @@ function makeFakePage(rawCards: RawJobCard[]) {
 }
 
 describe('fetchLinkedInJobs', () => {
+  const realConfigOverride = { jobs: { search_url: 'https://example.com/jobs', limit: 25 }, posts: { role: 'x', geo: 'in', limit: 25 } };
+
   it('scrapes cards, dedups against the db, and returns only new jobs', async () => {
     const db = openDb(':memory:');
     const rawCards: RawJobCard[] = [
@@ -146,7 +148,7 @@ describe('fetchLinkedInJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db });
+    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db, configOverride: realConfigOverride });
 
     expect(jobs).toHaveLength(1);
     expect(jobs[0].id).toBe('li-job:999999999');
@@ -174,7 +176,7 @@ describe('fetchLinkedInJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db });
+    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db, configOverride: realConfigOverride });
 
     expect(jobs).toHaveLength(0);
   });
@@ -209,9 +211,38 @@ describe('fetchLinkedInJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db });
+    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db, configOverride: realConfigOverride });
 
     expect(jobs).toEqual([]);
     expect(browser.close).toHaveBeenCalled();
+  });
+
+  it('returns [] and never launches a browser when the burner session state file is missing', async () => {
+    const db = openDb(':memory:');
+    const chromiumStub = { launch: vi.fn() };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: realConfigOverride,
+      burnerStatePath: '/nonexistent/path/to/burner-state.json',
+    });
+
+    expect(jobs).toEqual([]);
+    expect(chromiumStub.launch).not.toHaveBeenCalled();
+  });
+
+  it('returns [] and never launches a browser when jobs.search_url is still the placeholder', async () => {
+    const db = openDb(':memory:');
+    const chromiumStub = { launch: vi.fn() };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: { jobs: { search_url: 'REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL', limit: 25 }, posts: { role: 'x', geo: 'in', limit: 25 } },
+    });
+
+    expect(jobs).toEqual([]);
+    expect(chromiumStub.launch).not.toHaveBeenCalled();
   });
 });

@@ -37,6 +37,8 @@ describe('buildLinkedInPostSearchUrl', () => {
     expect(url).toContain('linkedin.com/search/results/content/');
     expect(url).toContain('full+stack+developer');
     expect(decodeURIComponent(url)).toContain('date_posted');
+    const keywords = new URL(url).searchParams.get('keywords');
+    expect(keywords).toContain(' in');
   });
 });
 
@@ -170,5 +172,18 @@ describe('fetchLinkedInPosts', () => {
 
     expect(jobs).toEqual([]);
     expect(browser.close).toHaveBeenCalled();
+  });
+
+  it('returns [] and never launches a browser when the burner session state file is missing', async () => {
+    const db = openDb(':memory:');
+    const chromiumStub = { launch: vi.fn() };
+
+    const jobs = await fetchLinkedInPosts(
+      { role: 'backend engineer', geo: 'in' },
+      { chromium: chromiumStub, db, burnerStatePath: '/nonexistent/path/to/burner-state.json' }
+    );
+
+    expect(jobs).toEqual([]);
+    expect(chromiumStub.launch).not.toHaveBeenCalled();
   });
 });
