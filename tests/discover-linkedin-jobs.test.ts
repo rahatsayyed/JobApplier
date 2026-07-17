@@ -94,6 +94,21 @@ describe('parseLinkedInJobCards', () => {
     expect(result.jobs[0].id).toBe('li-job:222');
   });
 
+  it('skips a card with a title but no href, distinctly from the no-title case', () => {
+    const rawCards: RawJobCard[] = [
+      { titleText: 'Has Title No Href', companyText: 'Acme', hrefRaw: null, snippetText: null, easyApply: false },
+      { titleText: 'Good Job', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/view/222/', snippetText: null, easyApply: false },
+    ];
+
+    const result = parseLinkedInJobCards(rawCards);
+
+    expect(result.found).toBe(2);
+    expect(result.parsed).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0].id).toBe('li-job:222');
+  });
+
   it('skips a card whose href has no extractable job id', () => {
     const rawCards: RawJobCard[] = [
       { titleText: 'Mystery Job', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/search/?keywords=x', snippetText: null, easyApply: false },
