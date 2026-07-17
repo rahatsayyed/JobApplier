@@ -12,7 +12,8 @@
     "mcp:email": "tsx src/mcp/email.ts",
     "mcp:sqlite": "tsx src/mcp/sqlite.ts",
     "mcp:apply": "tsx src/mcp/apply.ts",
-    "mcp:connect": "tsx src/mcp/connect.ts"
+    "mcp:connect": "tsx src/mcp/connect.ts",
+    "mcp:discover": "tsx src/mcp/discover.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
