@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
-  extractActivityUrn,
+  buildSyntheticPostId,
   isHiringIntent,
   parseLinkedInPostCards,
   buildLinkedInPostSearchUrl,
@@ -23,15 +23,28 @@ describe('POST_CARD_SELECTOR', () => {
   });
 });
 
-describe('extractActivityUrn', () => {
-  it('extracts the activity id from a permalink href', () => {
-    expect(
-      extractActivityUrn('https://www.linkedin.com/feed/update/urn:li:activity:7123456789012345678/')
-    ).toBe('7123456789012345678');
+describe('buildSyntheticPostId', () => {
+  it('is deterministic for the same profileUrl and text', () => {
+    const id1 = buildSyntheticPostId('https://www.linkedin.com/in/jane-recruiter/', "We're hiring!");
+    const id2 = buildSyntheticPostId('https://www.linkedin.com/in/jane-recruiter/', "We're hiring!");
+    expect(id1).toBe(id2);
   });
 
-  it('returns null when there is no activity urn', () => {
-    expect(extractActivityUrn('https://www.linkedin.com/in/someone/')).toBeNull();
+  it('produces a different id for a different profileUrl', () => {
+    const id1 = buildSyntheticPostId('https://www.linkedin.com/in/jane-recruiter/', "We're hiring!");
+    const id2 = buildSyntheticPostId('https://www.linkedin.com/in/other-recruiter/', "We're hiring!");
+    expect(id1).not.toBe(id2);
+  });
+
+  it('produces a different id for different text', () => {
+    const id1 = buildSyntheticPostId('https://www.linkedin.com/in/jane-recruiter/', "We're hiring!");
+    const id2 = buildSyntheticPostId('https://www.linkedin.com/in/jane-recruiter/', 'Different text');
+    expect(id1).not.toBe(id2);
+  });
+
+  it('is prefixed with li-post:', () => {
+    const id = buildSyntheticPostId('https://www.linkedin.com/in/jane-recruiter/', "We're hiring!");
+    expect(id).toMatch(/^li-post:/);
   });
 });
 
@@ -60,28 +73,31 @@ describe('buildLinkedInPostSearchUrl', () => {
 
 describe('parseLinkedInPostCards', () => {
   it('parses a hiring-intent card into a Job', () => {
+    const profileUrl = 'https://www.linkedin.com/in/jane-recruiter/';
+    const text = "We're hiring a Senior React Developer, remote, India.";
     const rawCards: RawPostCard[] = [
       {
-        textContent: "We're hiring a Senior React Developer, remote, India.",
-        hrefRaw: 'https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111/',
+        textContent: text,
+        profileUrl,
         authorText: 'Jane Recruiter',
       },
     ];
 
     const result = parseLinkedInPostCards(rawCards);
+    const expectedId = buildSyntheticPostId(profileUrl, text);
 
     expect(result.found).toBe(1);
     expect(result.parsed).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.jobs).toEqual([
       {
-        id: 'li-post:1111111111111111111',
+        id: expectedId,
         source: 'linkedin-posts',
         title: 'Jane Recruiter',
         company: '',
-        url: 'https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111/',
-        apply_url: 'https://www.linkedin.com/feed/update/urn:li:activity:1111111111111111111/',
-        description: "We're hiring a Senior React Developer, remote, India.",
+        url: profileUrl,
+        apply_url: profileUrl,
+        description: text,
       },
     ]);
   });
@@ -90,7 +106,7 @@ describe('parseLinkedInPostCards', () => {
     const rawCards: RawPostCard[] = [
       {
         textContent: 'Just got a new certification, excited!',
-        hrefRaw: 'https://www.linkedin.com/feed/update/urn:li:activity:2222222222222222222/',
+        profileUrl: 'https://www.linkedin.com/in/someone/',
         authorText: 'Someone',
       },
     ];
@@ -103,23 +119,26 @@ describe('parseLinkedInPostCards', () => {
     expect(result.jobs).toHaveLength(0);
   });
 
-  it('skips a malformed card (no href) without failing the rest of the page', () => {
+  it('skips a malformed card (no profileUrl) without failing the rest of the page', () => {
+    const profileUrl = 'https://www.linkedin.com/in/other-recruiter/';
+    const text = "We're hiring a Backend Engineer";
     const rawCards: RawPostCard[] = [
-      { textContent: "We're hiring!", hrefRaw: null, authorText: 'Someone' },
+      { textContent: "We're hiring!", profileUrl: null, authorText: 'Someone' },
       {
-        textContent: "We're hiring a Backend Engineer",
-        hrefRaw: 'https://www.linkedin.com/feed/update/urn:li:activity:3333333333333333333/',
+        textContent: text,
+        profileUrl,
         authorText: 'Other Recruiter',
       },
     ];
 
     const result = parseLinkedInPostCards(rawCards);
+    const expectedId = buildSyntheticPostId(profileUrl, text);
 
     expect(result.found).toBe(2);
     expect(result.parsed).toBe(1);
     expect(result.skipped).toBe(1);
     expect(result.jobs).toHaveLength(1);
-    expect(result.jobs[0].id).toBe('li-post:3333333333333333333');
+    expect(result.jobs[0].id).toBe(expectedId);
   });
 });
 
@@ -141,10 +160,12 @@ function makeFakePostPage(rawCards: RawPostCard[]) {
 describe('fetchLinkedInPosts', () => {
   it('scrapes hiring-post cards, dedups against the db, and returns only new ones', async () => {
     const db = openDb(':memory:');
+    const profileUrl = 'https://www.linkedin.com/in/recruiter-a/';
+    const text = "We're hiring a Backend Engineer";
     const rawCards: RawPostCard[] = [
       {
-        textContent: "We're hiring a Backend Engineer",
-        hrefRaw: 'https://www.linkedin.com/feed/update/urn:li:activity:4444444444444444444/',
+        textContent: text,
+        profileUrl,
         authorText: 'Recruiter A',
       },
     ];
@@ -154,10 +175,11 @@ describe('fetchLinkedInPosts', () => {
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
     const jobs = await fetchLinkedInPosts({ role: 'backend engineer', geo: 'in' }, { chromium: chromiumStub, db });
+    const expectedId = buildSyntheticPostId(profileUrl, text);
 
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].id).toBe('li-post:4444444444444444444');
-    expect(isSeen(db, 'li-post:4444444444444444444')).toBe(true);
+    expect(jobs[0].id).toBe(expectedId);
+    expect(isSeen(db, expectedId)).toBe(true);
   });
 
   it('falls back to config.posts.role/geo when params are omitted', async () => {

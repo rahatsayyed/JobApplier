@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { chromium, type Browser } from 'playwright';
 import type BetterSqlite3 from 'better-sqlite3';
 import { openDb, isSeen, saveJob, type Job } from '../db.js';
@@ -13,15 +14,19 @@ const BURNER_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-burner-sta
 export { loadDiscoverConfig };
 export type { DiscoverLinkedInConfig, ParseResult };
 
+/**
+ * `url`/`apply_url` on the produced Job point to the author's profile — LinkedIn's
+ * content-search results expose no direct permalink to the individual post.
+ */
 export interface RawPostCard {
   textContent: string | null;
-  hrefRaw: string | null;
+  profileUrl: string | null;
   authorText: string | null;
 }
 
-export function extractActivityUrn(href: string): string | null {
-  const match = href.match(/urn:li:activity:(\d+)/);
-  return match ? match[1] : null;
+export function buildSyntheticPostId(profileUrl: string, text: string): string {
+  const hash = createHash('sha256').update(profileUrl + text.slice(0, 100)).digest('hex').slice(0, 16);
+  return `li-post:${hash}`;
 }
 
 const HIRING_KEYWORDS = /\b(hiring|we're hiring|we are hiring|join our team|open position|looking for)\b/i;
@@ -47,23 +52,19 @@ export function parseLinkedInPostCards(rawCards: RawPostCard[]): ParseResult {
 
   for (const card of rawCards) {
     try {
-      if (!card.textContent || !card.hrefRaw) {
-        throw new Error('missing text or href');
-      }
-      const urn = extractActivityUrn(card.hrefRaw);
-      if (!urn) {
-        throw new Error('could not extract activity urn from href');
+      if (!card.textContent || !card.profileUrl) {
+        throw new Error('missing text or profileUrl');
       }
       if (!isHiringIntent(card.textContent)) {
         continue; // not malformed, just not a hiring post — silently excluded, not counted as skipped
       }
       jobs.push({
-        id: `li-post:${urn}`,
+        id: buildSyntheticPostId(card.profileUrl, card.textContent),
         source: 'linkedin-posts',
         title: (card.authorText ?? 'LinkedIn hiring post').trim(),
         company: '',
-        url: card.hrefRaw,
-        apply_url: card.hrefRaw,
+        url: card.profileUrl,
+        apply_url: card.profileUrl,
         description: card.textContent.trim(),
       });
       parsed++;
@@ -119,12 +120,13 @@ export async function fetchLinkedInPosts(
 
     const rawCards: RawPostCard[] = await page.locator(POST_CARD_SELECTOR).evaluateAll((nodes: Element[]) =>
       nodes.map((n) => {
-        const linkEl = n.querySelector('a[href*="urn:li:activity"]') as HTMLAnchorElement | null;
-        const authorEl = n.querySelector('a[href*="/in/"]');
+        const profileLink = Array.from(n.querySelectorAll('a')).find((a) =>
+          /\/in\/[^/]+\/?/.test((a as HTMLAnchorElement).href)
+        ) as HTMLAnchorElement | undefined;
         return {
           textContent: n.textContent ?? null,
-          hrefRaw: linkEl?.href ?? null,
-          authorText: authorEl?.textContent ?? null,
+          profileUrl: profileLink?.href ?? null,
+          authorText: profileLink?.textContent ?? null,
         };
       })
     );

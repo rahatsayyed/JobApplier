@@ -90,7 +90,7 @@ Params optional — falls back to `config/discover-linkedin.json`'s `posts.role`
 2. Build a LinkedIn content-search query from `role`/`geo` (reusing the hiring-keyword phrasing already in `serper.ts`'s `buildQueries`), sorted by latest.
 3. Scrape post cards up to `posts.limit`.
 4. Parse via `parseLinkedInPostCards(html)` (pure function — see §8).
-5. Extract each post's activity URN from its permalink (`urn:li:activity:<id>`) → `id: li-post:<id>`.
+5. Derive each post's ID from a content-based hash (`buildSyntheticPostId(profileUrl, text)`, sha256 of the author's profile URL + first 100 chars of post text, truncated) → `id: li-post:<hash>`. This is a fallback from the originally-planned activity-URN extraction: live testing confirmed LinkedIn's content-search results page exposes no anchor containing `urn:li:activity` (or any other post permalink) anywhere in the card DOM — every anchor in a real card is a profile link, company link, hashtag link, or safety-redirect link. `url`/`apply_url` on the produced `Job` point to the author's profile URL instead of a post permalink, since none exists.
 6. Filter via `isSeen`/`saveJob`.
 7. Return only new jobs as `Job[]`.
 
@@ -99,7 +99,7 @@ Params optional — falls back to `config/discover-linkedin.json`'s `posts.role`
 Both tools reuse the exact `isSeen`/`saveJob` mechanism every existing source already relies on — no new dedup logic. The only new thing is the ID scheme:
 
 - LinkedIn jobs → `li-job:<linkedin-job-id>` (extracted from the job's own URL).
-- LinkedIn posts → `li-post:<activity-urn>` (extracted from the post's permalink).
+- LinkedIn posts → `li-post:<content-hash>` (sha256 of the author's profile URL + post text, truncated to 16 hex chars) — not an activity URN, since LinkedIn's content-search results expose no post permalink in the DOM (discovered via live testing; see §6).
 
 No cross-source dedup is needed: IDs are prefixed per source (`li-job:`, `li-post:`, vs. existing `dork:`, `adzuna:`, etc.), so occasional overlap between LinkedIn's own jobs and posts search (or with the Serper dork results) is a tolerated duplicate — the same situation that already exists across Adzuna/Remotive/RemoteOK today.
 
