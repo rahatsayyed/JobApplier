@@ -9,10 +9,16 @@ Phase 2 adds opt-in LinkedIn Easy Apply (burner account), external ATS apply (Gr
 Workday/Ashby), and human-approved LinkedIn connection requests (main account) on top of the
 Phase 1 pipeline. It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`,
 `contacts`, `gmail`, `apply`, `connect`) and skills (`match-jobs`, `draft-outreach`,
-`draft-connect-note`). `apply` is one MCP server exposing one tool per platform —
-`apply.linkedin`, `apply.greenhouse`, `apply.lever`, `apply.workday`, `apply.ashby` — backed by
-`src/apply/linkedin.ts` (Easy Apply, burner account) and `src/apply/external.ts` (the
-other four, auto-detected from `apply_url` with a platform-match safety check).
+`draft-connect-note`). `apply` is one MCP server exposing both a per-platform tool for each
+target — `apply.linkedin`, `apply.greenhouse`, `apply.lever`, `apply.workday`, `apply.ashby` —
+and a single `apply.auto({apply_url, job_id})` router tool that inspects `apply_url` and
+internally dispatches to the matching platform tool, so callers don't have to pick a tool by
+name. The router does not reimplement platform logic — it's a thin dispatcher over the same
+per-platform tools, so there is one source of truth per platform, not two. Prefer `apply.auto`
+for the common case; call a specific `apply.<platform>` tool directly only when you need to
+force a platform or debug one in isolation. Both are backed by `src/apply/linkedin.ts` (Easy
+Apply, burner account) and `src/apply/external.ts` (the other four, auto-detected from
+`apply_url` with a platform-match safety check).
 
 The orchestrating session does not call the `job-fetch`/`contacts`/`resume`/`gmail` tools
 directly for the hunt pipeline — it dispatches one subagent per pipeline stage (defined in
