@@ -1,6 +1,3 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
 import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { existsSync, readFileSync } from 'node:fs';
@@ -603,34 +600,3 @@ export async function applyEasyApply(
   }
 }
 
-const server = new McpServer({ name: 'linkedin-apply', version: '0.1.0' });
-
-server.registerTool(
-  'apply_easy_apply',
-  {
-    description:
-      'Applies to a LinkedIn job posting via Easy Apply using the burner account session. ' +
-      'Gated by a daily MAX_APPLIES_PER_DAY limit. Falls back to manual_review if the burner ' +
-      'session is missing, the posting has no Easy Apply button, or a screening question cannot ' +
-      'be answered from config/easy-apply-answers.json.',
-    inputSchema: {
-      job_id: z.string(),
-    },
-  },
-  async ({ job_id }) => {
-    const result = await applyEasyApply({ job_id });
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  }
-);
-
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-}
-
-if (process.env.VITEST !== 'true') {
-  main().catch((err) => {
-    console.error('[linkedin-apply] fatal error:', err);
-    process.exit(1);
-  });
-}

@@ -1,6 +1,3 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
 import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, getJob, saveApplication } from '../db.js';
@@ -159,7 +156,7 @@ function recordAndReturn(
 }
 
 export async function applyExternal(
-  { job_id }: { job_id: string },
+  { job_id, expected_platform }: { job_id: string; expected_platform?: string },
   deps: ApplyExternalDeps = {}
 ): Promise<ApplyExternalResult> {
   const database = deps.db ?? db;
@@ -192,6 +189,20 @@ export async function applyExternal(
   const ats = detectAts(job.apply_url);
   if (!ats) {
     return recordAndReturn(database, job_id, null, 'manual_review', 'unsupported ATS platform');
+  }
+
+  // Safety check for the per-platform tool split (apply.greenhouse/lever/workday/ashby): a
+  // job's apply_url can drift from what the caller expects (e.g. a Greenhouse posting that
+  // redirects through a Lever-branded domain). Refuse rather than silently applying through
+  // the wrong platform's tool.
+  if (expected_platform && ats.platform !== expected_platform) {
+    return recordAndReturn(
+      database,
+      job_id,
+      ats.platform,
+      'manual_review',
+      `expected platform "${expected_platform}" but apply_url resolved to "${ats.platform}"`
+    );
   }
 
   const applicant = getBaseResume();
@@ -312,35 +323,3 @@ export async function applyExternal(
   }
 }
 
-const server = new McpServer({ name: 'external-apply', version: '0.1.0' });
-
-server.registerTool(
-  'apply_external',
-  {
-    description:
-      'Apply directly to a Greenhouse/Lever/Workday/Ashby-hosted job posting using its apply_url, ' +
-      'filling in the tailored resume and cover letter prepared for that job. Gated by the same daily ' +
-      'MAX_APPLIES_PER_DAY limit shared with apply_easy_apply. Falls back to manual_review if the ATS ' +
-      'is unsupported, a required field cannot be located, the submit control cannot be found, or the ' +
-      'submission cannot be confirmed after clicking submit.',
-    inputSchema: {
-      job_id: z.string(),
-    },
-  },
-  async ({ job_id }) => {
-    const result = await applyExternal({ job_id });
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  }
-);
-
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-}
-
-if (process.env.VITEST !== 'true') {
-  main().catch((err) => {
-    console.error('[external-apply] fatal error:', err);
-    process.exit(1);
-  });
-}

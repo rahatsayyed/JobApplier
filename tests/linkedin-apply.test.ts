@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveAnswer, applyEasyApply, SELECTORS, type EasyApplyAnswers } from '../src/mcp/linkedin-apply.js';
+import { resolveAnswer, applyEasyApply, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
 import { openDb, saveJob } from '../src/db.js';
 import type Database from 'better-sqlite3';
 

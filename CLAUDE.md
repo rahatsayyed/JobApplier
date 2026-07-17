@@ -8,8 +8,11 @@ the hiring company, drafts a cold outreach email, and sends it — within strict
 Phase 2 adds opt-in LinkedIn Easy Apply (burner account), external ATS apply (Greenhouse/Lever/
 Workday/Ashby), and human-approved LinkedIn connection requests (main account) on top of the
 Phase 1 pipeline. It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`,
-`contacts`, `gmail`, `linkedin-apply`, `external-apply`, `connect`) and skills (`match-jobs`,
-`draft-outreach`, `draft-connect-note`).
+`contacts`, `gmail`, `apply`, `connect`) and skills (`match-jobs`, `draft-outreach`,
+`draft-connect-note`). `apply` is one MCP server exposing one tool per platform —
+`apply.linkedin`, `apply.greenhouse`, `apply.lever`, `apply.workday`, `apply.ashby` — backed by
+`src/mcp/linkedin-apply.ts` (Easy Apply, burner account) and `src/mcp/external-apply.ts` (the
+other four, auto-detected from `apply_url` with a platform-match safety check).
 
 The orchestrating session does not call the `job-fetch`/`contacts`/`resume`/`gmail` tools
 directly for the hunt pipeline — it dispatches one subagent per pipeline stage (defined in
@@ -195,20 +198,25 @@ limits below.
 
 Steps, for each targeted job:
 
-1. Look up the job's `apply_url`. If it's a LinkedIn Easy Apply posting, dispatch to
-   `linkedin-apply.apply_easy_apply({job_id})`. Otherwise (Greenhouse/Lever/Workday/Ashby or other
-   external ATS), dispatch to `external-apply.apply_external({job_id})`.
+1. Look up the job's `apply_url` and pick the matching `apply` tool from its domain: LinkedIn
+   Easy Apply → `apply.linkedin({job_id})`; `greenhouse.io` → `apply.greenhouse({job_id})`;
+   `lever.co` → `apply.lever({job_id})`; a Workday domain → `apply.workday({job_id})`;
+   `ashbyhq.com` → `apply.ashby({job_id})`. Each of the four external-ATS tools also
+   re-detects the platform from `apply_url` itself and refuses with `manual_review` if it
+   doesn't match the tool you called (e.g. you called `apply.lever` but the URL resolved to
+   Greenhouse) — so a wrong guess fails safe instead of applying through the wrong flow.
 2. Each call returns one of: `submitted`, `manual_review` (a genuinely unrecoverable case —
-   missing burner/main session, no Easy Apply button, no submit control found, or a submit
-   click that couldn't be confirmed — never a guessed submission), `needs_answer` (a screening
-   question `apply_easy_apply` can't answer from `config/easy-apply-answers.json` — see step 2a
-   below), or `rate_limited` (daily `MAX_APPLIES_PER_DAY` cap reached — report it, do not
-   retry). `apply_easy_apply` and `apply_external` share the SAME daily counter, so an apply of
-   either kind can trip this. `apply_external` also returns `manual_review` if it clicked
-   submit but couldn't confirm the application was recorded (the same false-positive class of
-   bug fixed in `apply_easy_apply` — a click can silently no-op) — its confirmation check is a
-   best-effort heuristic (common confirmation copy), NOT live-verified against a real
-   Greenhouse/Lever/Workday/Ashby posting yet, unlike `apply_easy_apply`'s.
+   missing burner/main session, no Easy Apply button, no submit control found, a platform
+   mismatch per above, or a submit click that couldn't be confirmed — never a guessed
+   submission), `needs_answer` (a screening question `apply.linkedin` can't answer from
+   `config/easy-apply-answers.json` — see step 2a below), or `rate_limited` (daily
+   `MAX_APPLIES_PER_DAY` cap reached — report it, do not retry). All five `apply` tools share
+   the SAME daily counter, so an apply of any kind can trip this. The four external-ATS tools
+   also return `manual_review` if they clicked submit but couldn't confirm the application was
+   recorded (the same false-positive class of bug fixed in `apply.linkedin`'s flow — a click can
+   silently no-op) — that confirmation check is a best-effort heuristic (common confirmation
+   copy), NOT live-verified against a real Greenhouse/Lever/Workday/Ashby posting yet, unlike
+   `apply.linkedin`'s.
 2a. On `needs_answer` (the result includes the exact `question` text verbatim from the
     posting):
     - Determine a truthful value for that question from the candidate's actual, documented
@@ -220,7 +228,7 @@ Steps, for each targeted job:
       question text **verbatim** (matching is case/whitespace-insensitive and tolerates a
       trailing `*`, but the key should still read like the real question for future reuse),
       e.g. `"custom": { "What is your current CTC?": "18 LPA" }`.
-    - `config/easy-apply-answers.json` is re-read from disk on every `apply_easy_apply` call
+    - `config/easy-apply-answers.json` is re-read from disk on every `apply.linkedin` call
       (`loadAnswers()` calls `readFileSync` fresh each time), so no MCP reconnect is needed for
       this specific edit — you can retry the apply immediately after writing the `custom` entry.
       (An MCP reconnect is only needed if `linkedin-apply.ts`'s own source changes.)
@@ -231,9 +239,9 @@ Steps, for each targeted job:
    review / needs an answer (with the question) / rate-limited, with job title + company for
    each.
 
-Do not call `linkedin-apply` or `external-apply` tools directly yourself for this flow if a
-dedicated subagent exists for the stage — otherwise call them directly, since Applying is
-single-job-at-a-time and doesn't need the multi-stage pipeline "Running the hunt" uses.
+Do not call the `apply` tools directly yourself for this flow if a dedicated subagent exists for
+the stage — otherwise call them directly, since Applying is single-job-at-a-time and doesn't need
+the multi-stage pipeline "Running the hunt" uses.
 
 ### Hybrid Claude fallback (Easy Apply + external ATS, opt-in)
 
@@ -302,7 +310,7 @@ For a matched job (with or without a sent cold email):
 `connect_send` now verifies its final Send click actually went through (waits for the invite
 dialog to dismiss) before reporting `sent` — a click that silently no-ops now correctly returns
 `failed` instead of a false `sent`, the same false-positive class of bug fixed in
-`apply_easy_apply`. **This confirmation signal is best-effort, NOT live-verified** — unlike
+`apply.linkedin`. **This confirmation signal is best-effort, NOT live-verified** — unlike
 this file's already-live-verified moreButton/connectMenuItem/sendButton selectors, sending a
 real request to verify it requires explicit human approval that hasn't been given yet. The
 next real, approved `connect_send` should be watched to confirm the heuristic actually fires,
@@ -336,6 +344,6 @@ rules inline, so a future change only needs to happen in one place.
    failure and continue with the next job rather than aborting the whole run.
 5. Never call `connect_send` without a `send` approval reply logged in the same conversation.
 6. Never use the burner account's session for `connect`/`find_linkedin_profile`, and never use
-   the main account's session for `apply_easy_apply`.
+   the main account's session for `apply.linkedin`.
 7. Respect `MAX_APPLIES_PER_DAY` / `MAX_CONNECTS_PER_DAY` — stop and report "limit reached" rather
    than erroring or retrying.

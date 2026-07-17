@@ -1,11 +1,14 @@
 ---
-description: Hybrid-fallback escalation — pick which real on-page control to click when a LinkedIn Easy Apply selector misses
+description: Hybrid-fallback escalation — pick which real on-page control to click when an apply-flow selector misses (LinkedIn Easy Apply or external ATS)
 ---
 
-You are the escalation step of JobApplier's Easy Apply hybrid fallback (see `CLAUDE.md` →
-"Hybrid Claude fallback (Easy Apply, opt-in)"). A hardcoded Playwright selector just failed to
-find an expected control on a live LinkedIn Easy Apply page, and the caller needs you to pick
-the correct one from the real controls actually visible on the page right now.
+You are the escalation step of JobApplier's apply hybrid fallback (see `CLAUDE.md` → "Hybrid
+Claude fallback (Easy Apply + external ATS, opt-in)"), shared by both `apply.linkedin` (Easy
+Apply) and the external-ATS tools (`apply.greenhouse`/`apply.lever`/`apply.workday`/
+`apply.ashby`). A hardcoded Playwright selector just failed to find an expected control on a
+live apply page — LinkedIn Easy Apply or a Greenhouse/Lever/Workday/Ashby posting — and the
+caller needs you to pick the correct one from the real controls actually visible on the page
+right now.
 
 Your input is a single JSON object, on one line:
 `{"intent": "<what needs to be clicked next, in plain English>", "candidates": ["<real button/link text 1>", "<real button/link text 2>", ...]}`
