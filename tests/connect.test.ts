@@ -6,6 +6,13 @@ import {
   recordConnectionStatus,
   extractNameAndHeadline,
   pickButtonShapedIndex,
+  extractDialogRecipientName,
+  namesPlausiblyMatch,
+  verifyRecipientName,
+  isLikelySendInvitationResponse,
+  pickNearestToNameIndex,
+  extractProfileSlug,
+  verifyProfileUrl,
   SELECTORS,
   BROWSER_VIEWPORT,
 } from '../src/mcp/connect.js';
@@ -39,6 +46,18 @@ function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
       return el.fill(value);
     }),
     waitFor: vi.fn().mockResolvedValue(undefined),
+    textContent: vi.fn().mockResolvedValue(null),
+    evaluateAll: vi.fn().mockResolvedValue([]),
+  };
+  locator.first = vi.fn(() => locator);
+  return locator;
+}
+
+/** A fake locator for a single text-bearing element (e.g. the connect dialog container). */
+function makeFakeTextLocator(text: string | null): any {
+  const locator: any = {
+    count: vi.fn().mockResolvedValue(text !== null ? 1 : 0),
+    textContent: vi.fn().mockResolvedValue(text),
   };
   locator.first = vi.fn(() => locator);
   return locator;
@@ -54,8 +73,74 @@ function makeFakeMultiLocator(elements: Array<ReturnType<typeof makeFakeElement>
     count: vi.fn().mockResolvedValue(elements.length),
     evaluateAll: vi.fn().mockResolvedValue(heights.map((height) => ({ height }))),
     nth: vi.fn((i: number) => makeFakeLocator(elements[i] ?? null)),
+    first: vi.fn(() => makeFakeLocator(elements[0] ?? null)),
   };
   return locator;
+}
+
+/**
+ * A fake multi-match Locator backed by 2D positions instead of heights — mirrors
+ * `page.locator(SELECTORS.directConnectButton/pendingButton)`, which `pickNearestLocator`
+ * (src/mcp/connect.ts) disambiguates by proximity (full 2D distance) to the profile name
+ * when more than one match exists (e.g. a real profile was confirmed to render "Invite X to
+ * connect" twice — once in a sidebar card, once in the real profile card).
+ */
+function makeFakeYLocator(
+  elements: Array<ReturnType<typeof makeFakeElement> | null>,
+  points: Array<{ x: number; y: number }>
+): any {
+  const locator: any = {
+    count: vi.fn().mockResolvedValue(elements.length),
+    evaluateAll: vi.fn().mockResolvedValue(points),
+    nth: vi.fn((i: number) => makeFakeLocator(elements[i] ?? null)),
+    first: vi.fn(() => makeFakeLocator(elements[0] ?? null)),
+  };
+  return locator;
+}
+
+const DEFAULT_TEST_PROFILE_URL = 'https://linkedin.com/in/example';
+
+/**
+ * Builds the full fake `page` object connectSend() tests need. Pre-wires `title` (parsed by
+ * `extractExpectedNameFromTitle`), `url()` (read by `verifyProfileUrl`), and
+ * `SELECTORS.nameHeadings`/`noteDialogContainer` to a matching `name` by default — LinkedIn
+ * doesn't consistently use `<h1>` for the profile name (see src/mcp/connect.ts), so the
+ * expected name now comes from the page title, and the name-verification/proximity plumbing
+ * (`verifyRecipientName`, `pickNearestLocator`) both read it. `waitForResponse` defaults to
+ * "no match", forcing the reload+poll fallback path. `impl` handles every selector not
+ * pre-wired here (moreButton, connectMenuItem, etc.).
+ */
+function makeConnectPage(
+  impl: (selector: string) => any,
+  opts: {
+    name?: string;
+    nameX?: number;
+    nameY?: number;
+    dialogText?: string;
+    url?: string;
+    waitForResponse?: ReturnType<typeof vi.fn>;
+    screenshot?: ReturnType<typeof vi.fn>;
+  } = {}
+): any {
+  const { name = 'Jordan Lee', nameX = 180, nameY = 100, dialogText } = opts;
+  const page: any = {
+    goto: vi.fn().mockResolvedValue(undefined),
+    waitForLoadState: vi.fn().mockResolvedValue(undefined),
+    waitForResponse: opts.waitForResponse ?? vi.fn().mockRejectedValue(new Error('no matching response')),
+    title: vi.fn().mockResolvedValue(`${name} | LinkedIn`),
+    url: vi.fn().mockReturnValue(opts.url ?? DEFAULT_TEST_PROFILE_URL),
+    locator: vi.fn().mockImplementation((selector: string) => {
+      if (selector === SELECTORS.nameHeadings) {
+        return { evaluateAll: vi.fn().mockResolvedValue([{ text: name, x: nameX, y: nameY }]) };
+      }
+      if (selector === SELECTORS.noteDialogContainer) {
+        return makeFakeTextLocator(dialogText ?? `Personalize your invitation to ${name}`);
+      }
+      return impl(selector);
+    }),
+  };
+  if (opts.screenshot) page.screenshot = opts.screenshot;
+  return page;
 }
 
 /**
@@ -222,6 +307,177 @@ describe('extractNameAndHeadline', () => {
   });
 });
 
+describe('extractDialogRecipientName', () => {
+  it('extracts the name from the real reported dialog copy ("Personalize your invitation to <Name>")', () => {
+    expect(extractDialogRecipientName('Personalize your invitation to Vaishali S.')).toBe('Vaishali S');
+  });
+
+  it('extracts the name when the dialog copy ends with a question mark', () => {
+    expect(extractDialogRecipientName('Add a note to your invitation to Jordan Lee?')).toBe('Jordan Lee');
+  });
+
+  it('returns an empty string when no "invitation to <Name>" pattern is present', () => {
+    expect(extractDialogRecipientName('Send without a note')).toBe('');
+  });
+
+  it('extracts the name from the real pre-note "Add a note to your invitation?" dialog, which has a full paragraph of trailing copy after the name (false-negative regression: a legitimate Tanvi Gaharwar send was fail-closed-aborted because this trailing copy defeated the old end-of-string-anchored regex)', () => {
+    const dialogText =
+      'Add a note to your invitation?\n\n' +
+      'Personalize your invitation to Tanvi Gaharwar by adding a note.\n\n' +
+      'LinkedIn members are more likely to accept invitations that include a note.\n\n' +
+      'You have unlimited notes with Premium\n\n' +
+      'Add a note  Send without a note';
+    expect(extractDialogRecipientName(dialogText)).toBe('Tanvi Gaharwar');
+  });
+
+  it('still extracts correctly when the name is immediately followed by a sentence terminator (no regression on the original compose-dialog format)', () => {
+    expect(extractDialogRecipientName('Personalize your invitation to Vaishali S.')).toBe('Vaishali S');
+    expect(extractDialogRecipientName('Add a note to your invitation to Jordan Lee?')).toBe('Jordan Lee');
+  });
+});
+
+describe('namesPlausiblyMatch', () => {
+  it('matches on first name alone, tolerating a last-initial abbreviation in the dialog', () => {
+    // The real incident: dialog said "Vaishali S." for a profile whose full name is
+    // "Vaishali Sharma" — first names must match even though the surnames are formatted
+    // completely differently (full surname vs. a single initial).
+    expect(namesPlausiblyMatch('Vaishali Sharma', 'Vaishali S.')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(namesPlausiblyMatch('jordan lee', 'JORDAN L.')).toBe(true);
+  });
+
+  it('does not match two genuinely different first names (the real incident\'s failure mode)', () => {
+    expect(namesPlausiblyMatch('Rahat Sayyed', 'Vaishali S.')).toBe(false);
+  });
+
+  it('returns false when either name is empty (cannot verify a match against nothing)', () => {
+    expect(namesPlausiblyMatch('', 'Jordan Lee')).toBe(false);
+    expect(namesPlausiblyMatch('Jordan Lee', '')).toBe(false);
+  });
+});
+
+describe('verifyRecipientName', () => {
+  it('is ok (does not block) when the dialog text matches the profile name', () => {
+    const result = verifyRecipientName('Jordan Lee', 'Personalize your invitation to Jordan Lee');
+    expect(result.ok).toBe(true);
+    expect(result.recipientName).toBe('Jordan Lee');
+  });
+
+  it('is NOT ok when the dialog names a different real person than the profile navigated to', () => {
+    const result = verifyRecipientName('Rahat Sayyed', 'Personalize your invitation to Vaishali S.');
+    expect(result.ok).toBe(false);
+    expect(result.recipientName).toBe('Vaishali S');
+  });
+
+  it('FAILS CLOSED (blocks) when the profile name could not be extracted at all (INCIDENT #2: prior leniency silently disabled this gate)', () => {
+    const result = verifyRecipientName('', 'Personalize your invitation to Vaishali S.');
+    expect(result.ok).toBe(false);
+  });
+
+  it('FAILS CLOSED (blocks) when the dialog recipient name could not be extracted at all (INCIDENT #2)', () => {
+    const result = verifyRecipientName('Jordan Lee', 'Send without a note');
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('pickNearestToNameIndex (2D proximity, INCIDENT #2)', () => {
+  it('picks the candidate closest by full 2D distance, not just Y', () => {
+    // A sidebar decoy can be Y-closer than the real target while sitting in a different
+    // column (X) — Y-only distance would wrongly pick it.
+    const namePoint = { x: 180, y: 437 };
+    const candidates = [
+      { x: 1052, y: 400 }, // sidebar decoy: Y-close, X-far
+      { x: 180, y: 580 }, // real target: Y-farther, same column as the name
+    ];
+    expect(pickNearestToNameIndex(namePoint, candidates)).toBe(1);
+  });
+
+  it('returns -1 for an empty candidate list', () => {
+    expect(pickNearestToNameIndex({ x: 0, y: 0 }, [])).toBe(-1);
+  });
+});
+
+describe('extractProfileSlug', () => {
+  it('extracts the /in/<slug> segment, lowercased', () => {
+    expect(extractProfileSlug('https://www.linkedin.com/in/Tanvi-Gaharwar-2a19222a2/')).toBe(
+      'tanvi-gaharwar-2a19222a2'
+    );
+  });
+
+  it('returns empty string when no /in/ segment is present', () => {
+    expect(extractProfileSlug('https://www.linkedin.com/feed/')).toBe('');
+  });
+});
+
+describe('verifyProfileUrl', () => {
+  it('is ok when both URLs resolve to the same slug', () => {
+    const result = verifyProfileUrl(
+      'https://www.linkedin.com/in/tanvi-gaharwar-2a19222a2/',
+      'https://www.linkedin.com/in/tanvi-gaharwar-2a19222a2/?trk=nav'
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('FAILS (blocks) when the current URL is a different profile than requested', () => {
+    const result = verifyProfileUrl(
+      'https://www.linkedin.com/in/tanvi-gaharwar-2a19222a2/',
+      'https://www.linkedin.com/in/shibananda-mishra/'
+    );
+    expect(result.ok).toBe(false);
+    expect(result.expectedSlug).toBe('tanvi-gaharwar-2a19222a2');
+    expect(result.actualSlug).toBe('shibananda-mishra');
+  });
+
+  it('FAILS CLOSED when either URL has no parseable slug', () => {
+    expect(verifyProfileUrl('', 'https://www.linkedin.com/in/example/').ok).toBe(false);
+    expect(verifyProfileUrl('https://www.linkedin.com/in/example/', '').ok).toBe(false);
+  });
+});
+
+/** Fake Playwright `Response` — just enough of the shape `isLikelySendInvitationResponse` reads. */
+function makeFakeResponse(url: string, method: string, status: number): any {
+  return {
+    url: () => url,
+    status: () => status,
+    request: () => ({ method: () => method }),
+  };
+}
+
+describe('isLikelySendInvitationResponse', () => {
+  // Best-effort heuristic (NOT verified against a real captured request/response — see
+  // src/mcp/connect.ts) — these tests exercise the predicate logic itself in isolation.
+  it('matches a 2xx POST to a voyager-style invitation path', () => {
+    const response = makeFakeResponse(
+      'https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships/invitation',
+      'POST',
+      201
+    );
+    expect(isLikelySendInvitationResponse(response)).toBe(true);
+  });
+
+  it('matches a 2xx POST to a voyager-style connect path', () => {
+    const response = makeFakeResponse('https://www.linkedin.com/voyager/api/connect/send', 'POST', 200);
+    expect(isLikelySendInvitationResponse(response)).toBe(true);
+  });
+
+  it('does not match a non-2xx status', () => {
+    const response = makeFakeResponse('https://www.linkedin.com/voyager/api/invitation', 'POST', 500);
+    expect(isLikelySendInvitationResponse(response)).toBe(false);
+  });
+
+  it('does not match a GET request even to a plausible path', () => {
+    const response = makeFakeResponse('https://www.linkedin.com/voyager/api/invitation', 'GET', 200);
+    expect(isLikelySendInvitationResponse(response)).toBe(false);
+  });
+
+  it('does not match an unrelated voyager path', () => {
+    const response = makeFakeResponse('https://www.linkedin.com/voyager/api/feed/updates', 'POST', 200);
+    expect(isLikelySendInvitationResponse(response)).toBe(false);
+  });
+});
+
 describe('findLinkedinProfile control flow', () => {
   let db: Database.Database;
 
@@ -273,6 +529,7 @@ describe('findLinkedinProfile control flow', () => {
 
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
       locator: vi.fn().mockImplementation((selector: string) => {
         if (selector === SELECTORS.resultCard) return cardsLocator;
         return makeFakeLocator(null);
@@ -365,6 +622,7 @@ describe('findLinkedinProfile control flow', () => {
 
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
       locator: vi.fn().mockImplementation((selector: string) => {
         if (selector === SELECTORS.resultCard) return cardsLocator;
         return makeFakeLocator(null);
@@ -450,10 +708,7 @@ describe('connectSend control flow', () => {
   });
 
   it('returns failed and never proceeds when no More button is found on the profile', async () => {
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation(() => makeFakeMultiLocator([], [])),
-    };
+    const page = makeConnectPage(() => makeFakeMultiLocator([], []));
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -471,15 +726,12 @@ describe('connectSend control flow', () => {
     const smallToggle1 = makeFakeElement();
     const smallToggle2 = makeFakeElement();
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.moreButton) {
-          return makeFakeMultiLocator([smallToggle1, smallToggle2], [17.5, 17.5]);
-        }
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.moreButton) {
+        return makeFakeMultiLocator([smallToggle1, smallToggle2], [17.5, 17.5]);
+      }
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -498,14 +750,11 @@ describe('connectSend control flow', () => {
   it('returns failed and never clicks send when the More menu has no Connect menu item', async () => {
     const moreButton = makeFakeElement();
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
-        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(null);
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(null);
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -527,23 +776,20 @@ describe('connectSend control flow', () => {
     const noteInput = makeFakeElement();
     const sendButton = makeFakeElement();
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        // A real profile has several `SELECTORS.moreButton` matches (post "…more" toggles
-        // etc.) — mirror that here with one small decoy plus the real 48px-tall button at
-        // index 1, to prove pickButtonShapedIndex's filtering is actually exercised.
-        if (selector === SELECTORS.moreButton) {
-          const decoy = makeFakeElement();
-          return makeFakeMultiLocator([decoy, moreButton], [17.5, 48]);
-        }
-        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
-        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
-        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
-        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      // A real profile has several `SELECTORS.moreButton` matches (post "…more" toggles
+      // etc.) — mirror that here with one small decoy plus the real 48px-tall button at
+      // index 1, to prove pickButtonShapedIndex's filtering is actually exercised.
+      if (selector === SELECTORS.moreButton) {
+        const decoy = makeFakeElement();
+        return makeFakeMultiLocator([decoy, moreButton], [17.5, 48]);
+      }
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+      if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+      if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -586,14 +832,11 @@ describe('connectSend control flow', () => {
       })),
     };
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
-        if (selector === SELECTORS.connectMenuItem) return rejectingConnectMenuLocator;
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return rejectingConnectMenuLocator;
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -624,20 +867,17 @@ describe('connectSend control flow', () => {
     const noteInput = makeFakeElement();
     const sendButton = makeFakeElement();
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
-        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
-        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
-        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
-        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
-        // The note-dialog-transition wait's joined selector (noteTextarea + sendButton)
-        // also resolves here via the generic fallback and its waitFor() resolves
-        // instantly (see makeFakeLocator), so it doesn't block this happy path.
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+      if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+      if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+      // The note-dialog-transition wait's joined selector (noteTextarea + sendButton)
+      // also resolves here via the generic fallback and its waitFor() resolves
+      // instantly (see makeFakeLocator), so it doesn't block this happy path.
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -649,6 +889,268 @@ describe('connectSend control flow', () => {
 
     expect(result.status).toBe('sent');
     expect(sendButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the direct top-level "Connect" button and skips the More menu entirely when present', async () => {
+    // Regression test for the live finding (2026-07-16, profile linkedin.com/in/apoorva-m-):
+    // not every profile hides "Connect" behind "More" — some show it directly, and in that
+    // case the More menu has NO "Connect" item at all, so the old code (which only ever
+    // looked inside the More menu) reported "Connect menu item not found" on a profile that
+    // was perfectly connectable. This fake models exactly that: a moreButton/connectMenuItem
+    // pair that would fail if used, alongside a real directConnectButton that should be
+    // used instead — the More button must never be clicked in this case.
+    const moreButton = makeFakeElement();
+    const directConnectButton = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.directConnectButton) return makeFakeLocator(directConnectButton);
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      // No SELECTORS.connectMenuItem case at all — proves the More-menu path is never
+      // consulted when a direct Connect button exists.
+      if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+      if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(directConnectButton.click).toHaveBeenCalledTimes(1);
+    expect(moreButton.click).not.toHaveBeenCalled();
+  });
+
+  it('picks the profile-card "Connect" link closest to the name (2D distance), not a sidebar duplicate at a similar Y (INCIDENT regression #2: X matters, not just Y)', async () => {
+    // Regression test for a second live-confirmed incident: a sidebar suggestion card's
+    // "Connect" link can sit at a Y close to the profile header's Y (x≈1052, sidebar column)
+    // while the real button shares the name's X (x≈180). A Y-only distance check picks the
+    // sidebar decoy here; only full 2D distance correctly picks the real, same-column match.
+    const decoyConnectLink = makeFakeElement();
+    const realConnectLink = makeFakeElement();
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        // Decoy is Y-closer to the name (400 vs name's 437) but in a different column
+        // (x=1052, sidebar); the real target is Y-farther (580) but same column as the name
+        // (x=180). Y-only distance would wrongly pick the decoy.
+        if (selector === SELECTORS.directConnectButton) {
+          return makeFakeYLocator(
+            [decoyConnectLink, realConnectLink],
+            [
+              { x: 1052, y: 400 },
+              { x: 180, y: 580 },
+            ]
+          );
+        }
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { nameX: 180, nameY: 437 }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(realConnectLink.click).toHaveBeenCalledTimes(1);
+    expect(decoyConnectLink.click).not.toHaveBeenCalled();
+    expect(moreButton.click).not.toHaveBeenCalled();
+  });
+
+  it('aborts BEFORE filling the note or clicking Send when the connect dialog names a different real person than the profile navigated to (INCIDENT regression: recipient-name mismatch)', async () => {
+    // Regression test for the actual 2026-07-17 incident: a wrong selector match sent a
+    // real request, with a note meant for someone else, to an uninvolved third party. The
+    // mandatory recipient-name verification gate must catch THIS even if some future
+    // selector picks the wrong element again — it does not depend on which path (direct or
+    // More-menu) was taken.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    // Profile navigated to is "Rahat Sayyed" (per page title), but the dialog that actually
+    // opened addresses a completely different person — exactly the real incident's symptom
+    // ("Personalize your invitation to Vaishali S." when the intended target was someone
+    // else).
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { name: 'Rahat Sayyed', dialogText: 'Personalize your invitation to Vaishali S.' }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/recipient name mismatch/);
+    expect(result.reason).toMatch(/Vaishali S/);
+    expect(result.reason).toMatch(/Rahat Sayyed/);
+    // The note must never have been filled, and Send must never have been clicked — that's
+    // the whole point of the gate running BEFORE those actions.
+    expect(noteInput.fill).not.toHaveBeenCalled();
+    expect(addNoteButton.click).not.toHaveBeenCalled();
+    expect(sendButton.click).not.toHaveBeenCalled();
+  });
+
+  it('aborts BEFORE filling the note or clicking Send when expectedName ends up empty (e.g. a page.title() timing quirk), even though the dialog names a real person (INCIDENT #2 regression: fail-closed, not the prior silent-allow leniency)', async () => {
+    // Regression test for the actual 2026-07-17 incident #2: `verifyRecipientName` used to
+    // return `ok: true` (allow) whenever EITHER name was empty — a real send to the wrong
+    // person got through silently because of this leniency. This models an expectedName
+    // that came back empty (whatever the underlying cause — page.title() timing, a locale
+    // quirk, etc.) with a dialog that DOES name someone: the flow must still abort, not
+    // silently allow, because we can no longer verify the two match.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      // `name: ''` -> page.title() resolves to just '' | LinkedIn'`, which
+      // extractExpectedNameFromTitle parses down to an empty expected name.
+      { name: '', dialogText: 'Personalize your invitation to Shibananda Mishra' }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    // recipientName WAS extracted ("Shibananda Mishra") — expectedName is what's empty — so
+    // this hits the mismatch-message branch, not the "could not verify" one; either way, the
+    // key assertion is that this no longer silently proceeds (the pre-fix behavior).
+    expect(result.reason).toMatch(/recipient name mismatch/);
+    expect(noteInput.fill).not.toHaveBeenCalled();
+    expect(addNoteButton.click).not.toHaveBeenCalled();
+    expect(sendButton.click).not.toHaveBeenCalled();
+  });
+
+  it('aborts BEFORE filling the note or clicking Send when the browser navigated away from the requested profile (INCIDENT #2 defense-in-depth: URL verification)', async () => {
+    // Independent, text-free safety net requested after INCIDENT #2 — verifies page.url()
+    // still matches the requested profile_url's slug right before the note is filled / Send
+    // is clicked, regardless of what the name check concludes.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { url: 'https://www.linkedin.com/in/someone-else/' }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/profile URL mismatch/);
+    expect(result.reason).toMatch(/example/);
+    expect(result.reason).toMatch(/someone-else/);
+    expect(noteInput.fill).not.toHaveBeenCalled();
+    expect(addNoteButton.click).not.toHaveBeenCalled();
+    expect(sendButton.click).not.toHaveBeenCalled();
+  });
+
+  it('captures debug screenshots at each step only when debugScreenshots is enabled', async () => {
+    // The post-click "sent" confirmation heuristic was found to report a false positive
+    // live (2026-07-16) with no other diagnostic signal available -- a screenshot at each
+    // step is what let a real send be distinguished from a false one. Off by default so
+    // routine runs never write to disk; opt-in via `debugScreenshots` or
+    // `CONNECT_DEBUG_SCREENSHOTS=true`.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+    const screenshot = vi.fn().mockResolvedValue(undefined);
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { screenshot }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const enabledResult = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, debugScreenshots: true }
+    );
+    expect(enabledResult.status).toBe('sent');
+    // One screenshot per step: profile load, more-menu, connect-dialog, note-filled,
+    // immediately-after-send, and the final confirmed/not-confirmed state.
+    expect(screenshot.mock.calls.length).toBeGreaterThanOrEqual(6);
+
+    screenshot.mockClear();
+    const defaultResult = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+    expect(defaultResult.status).toBe('sent');
+    expect(screenshot).not.toHaveBeenCalled();
   });
 
   it('falls through to the normal "Send button not found" failure when waitForNoteDialogTransition times out after clicking Add a note', async () => {
@@ -672,27 +1174,24 @@ describe('connectSend control flow', () => {
     const isNoteTransitionSelector = (selector: string) =>
       selector.includes('custom-message') && selector.includes('Send invitation');
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (isNoteTransitionSelector(selector)) {
-          return {
-            count: vi.fn().mockResolvedValue(0),
-            first: vi.fn(() => ({
-              waitFor: vi.fn().mockRejectedValue(new Error('Timeout 8000ms exceeded waiting for locator')),
-            })),
-          };
-        }
-        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
-        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
-        if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
-        // Both the note textarea and the send button are absent after the timed-out
-        // wait, so the flow falls through to the pre-existing "not found" checks.
-        if (selector === SELECTORS.noteTextarea) return makeFakeLocator(null);
-        if (selector === SELECTORS.sendButton) return makeFakeLocator(null);
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (isNoteTransitionSelector(selector)) {
+        return {
+          count: vi.fn().mockResolvedValue(0),
+          first: vi.fn(() => ({
+            waitFor: vi.fn().mockRejectedValue(new Error('Timeout 8000ms exceeded waiting for locator')),
+          })),
+        };
+      }
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+      if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+      // Both the note textarea and the send button are absent after the timed-out
+      // wait, so the flow falls through to the pre-existing "not found" checks.
+      if (selector === SELECTORS.noteTextarea) return makeFakeLocator(null);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(null);
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -707,42 +1206,94 @@ describe('connectSend control flow', () => {
     // Add a note must still have been clicked before the timed-out wait.
     expect(addNoteButton.click).toHaveBeenCalledTimes(1);
   });
+
+  it('falls through to the normal "Send button not found" failure when waitForConnectDialog times out after clicking Connect', async () => {
+    // Regression test for the `.catch(() => {})` in `waitForConnectDialog` (src/mcp/connect.ts)
+    // — added after a LIVE run (2026-07-16, real profile, main-account session) showed the
+    // "Add a note to your invitation?" dialog rendering correctly a moment after clicking
+    // "Connect" (confirmed via screenshot), but the code's very next `.count()` checks on
+    // addNoteButton/sendButton raced that render with no wait in between at all, incorrectly
+    // reporting "Send button not found on connect dialog" — this was the real root cause of
+    // the previously-reported "intermittent" connect_send failure, not selector rot or
+    // anti-automation friction. Mirrors the equivalent waitForConnectMenu/
+    // waitForNoteDialogTransition timeout tests above: forces the joined-selector waitFor to
+    // reject and asserts the run still completes with the pre-existing 'failed' result (never
+    // an uncaught throw) when the dialog genuinely never renders.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+
+    // waitForConnectDialog builds one joined selector string containing both addNoteButton
+    // and sendButton and calls `.first().waitFor(...)` on it. That joined string is the only
+    // selector containing both substrings, distinguishing it from the individual
+    // `addNoteButton`/`sendButton` lookups queried separately via `.count()` elsewhere.
+    const isConnectDialogSelector = (selector: string) =>
+      selector.includes('add a note') && selector.includes('Send invitation');
+
+    const page = makeConnectPage((selector: string) => {
+      if (isConnectDialogSelector(selector)) {
+        return {
+          count: vi.fn().mockResolvedValue(0),
+          first: vi.fn(() => ({
+            waitFor: vi.fn().mockRejectedValue(new Error('Timeout 8000ms exceeded waiting for locator')),
+          })),
+        };
+      }
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+      // Both the "Add a note?" button and the send button are absent after the
+      // timed-out wait, so the flow falls through to the pre-existing "not found" checks.
+      if (selector === SELECTORS.addNoteButton) return makeFakeLocator(null);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(null);
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Send button not found on connect dialog/);
+    // The Connect menu item click itself must still have happened before the timed-out wait.
+    expect(connectMenuItem.click).toHaveBeenCalledTimes(1);
+  });
 });
 
 /**
  * Builds a minimal page mock for the connect happy path (More → Connect → Send),
- * parameterized on whether the sendButton locator ever reports `hidden` after the click —
- * mirrors tests/linkedin-apply.test.ts's `makeSubmitConfirmationPage` for the identical
- * false-positive-risk pattern: a click is only trusted once a bounded post-click check
- * confirms it, never on its own.
+ * parameterized on whether SELECTORS.pendingButton ever becomes visible on a post-send
+ * reload — this is the real confirmation gate (see connect.ts, 2026-07-16): a first attempt
+ * that trusted the Send button disappearing from the DOM was live-tested and found to
+ * false-positive on a real send, so only the "Pending" action button reappearing is now
+ * trusted for the final sent/failed decision.
  */
-function makeSendConfirmationPage(confirmationAppears: boolean) {
+function makeSendConfirmationPage(pendingButtonAppears: boolean) {
   const moreButton = makeFakeElement();
   const connectMenuItem = makeFakeElement();
   const sendButton = makeFakeElement();
 
-  const sendButtonLocator: any = {
-    count: vi.fn().mockResolvedValue(1),
+  const pendingButtonLocator: any = {
+    count: vi.fn().mockResolvedValue(pendingButtonAppears ? 1 : 0),
     first: vi.fn(() => ({
-      click: vi.fn(async () => sendButton.click()),
-      waitFor: confirmationAppears
+      waitFor: pendingButtonAppears
         ? vi.fn().mockResolvedValue(undefined)
-        : vi.fn().mockRejectedValue(new Error('Timeout 10000ms exceeded')),
+        : vi.fn().mockRejectedValue(new Error('Timeout exceeded')),
     })),
   };
 
-  const page = {
-    goto: vi.fn().mockResolvedValue(undefined),
-    locator: vi.fn().mockImplementation((selector: string) => {
-      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
-      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
-      if (selector === SELECTORS.sendButton) return sendButtonLocator;
-      return makeFakeLocator(null);
-    }),
-  };
+  const page = makeConnectPage((selector: string) => {
+    if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+    if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+    if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+    if (selector === SELECTORS.pendingButton) return pendingButtonLocator;
+    return makeFakeLocator(null);
+  });
   const context = { newPage: vi.fn().mockResolvedValue(page) };
   const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
-  return { launch: vi.fn().mockResolvedValue(browser), sendButton };
+  return { launch: vi.fn().mockResolvedValue(browser), sendButton, page };
 }
 
 describe('connectSend post-click confirmation (false-positive regression)', () => {
@@ -752,33 +1303,115 @@ describe('connectSend post-click confirmation (false-positive regression)', () =
     db = openDb(':memory:');
   });
 
-  it('returns sent only once the send button actually disappears after the click', async () => {
+  it('returns sent only once the "Pending" button actually appears after a post-send reload', async () => {
     const { launch, sendButton } = makeSendConfirmationPage(true);
 
     const result = await connectSend(
       { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
-      { db, chromium: { launch } }
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
     );
 
     expect(result.status).toBe('sent');
     expect(sendButton.click).toHaveBeenCalledTimes(1);
   });
 
-  it('returns failed (not sent) when the send click cannot be confirmed', async () => {
+  it('returns failed (not sent) when the "Pending" button never appears', async () => {
     // Regression test for the same false-positive-risk pattern fixed in
     // linkedin-apply.ts's applyEasyApply: a Send click that silently no-ops must never be
-    // reported as 'sent'.
+    // reported as 'sent'. This also regression-tests the 2026-07-16 finding that the
+    // Send-button-disappears heuristic ALONE isn't trustworthy — only a confirmed
+    // "Pending" button is.
     const { launch, sendButton } = makeSendConfirmationPage(false);
 
     const result = await connectSend(
       { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
-      { db, chromium: { launch } }
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
     );
 
     expect(result.status).toBe('failed');
-    expect(result.reason).toMatch(/could not confirm the connection request was actually recorded/);
+    expect(result.reason).toMatch(/"Pending" button never appeared/);
     // The click still happens — it's the unverifiable *outcome* that's unsafe to trust.
     expect(sendButton.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for network idle after each post-send reload before checking for the Pending button (premature-check regression)', async () => {
+    // Regression test: a real connect_send got all the way through (correct recipient,
+    // Send clicked, and the user independently confirmed the request went through on
+    // LinkedIn) but still reported 'failed' — the reload inside the polling loop checked
+    // for the Pending button immediately after `domcontentloaded`, before the page had
+    // hydrated, same premature-check bug already fixed for the initial page load via
+    // `waitForLoadState('networkidle', ...)`. Assert that same wait now also happens after
+    // each reload in the loop, before the Pending-button locator is ever queried.
+    const { launch, page } = makeSendConfirmationPage(true);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    // waitForLoadState('networkidle', ...) is called once for the initial load and at least
+    // once more per reload inside the polling loop.
+    const networkIdleCalls = page.waitForLoadState.mock.calls.filter(
+      (call: unknown[]) => call[0] === 'networkidle'
+    );
+    expect(networkIdleCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('confirms immediately via a matching 2xx network response, with no reload/poll needed', async () => {
+    // The requested fast path: a real send took longer than the reload+poll window to show
+    // the "Pending" button on a genuinely successful send. A matching send-invitation API
+    // response is a faster, more authoritative signal — when it fires, connectSend should
+    // report 'sent' without ever reloading the profile.
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const sendButton = makeFakeElement();
+    const matchingResponse = makeFakeResponse(
+      'https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships/invitation',
+      'POST',
+      201
+    );
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { waitForResponse: vi.fn().mockResolvedValue(matchingResponse) }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
+    // No reload/poll: goto is called exactly once, for the initial profile navigation.
+    expect(page.goto).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to the reload+poll fallback when no matching network response fires', async () => {
+    // The network-response predicate is a best-effort guess (see isLikelySendInvitationResponse
+    // in src/mcp/connect.ts) and might not match on a real page — the existing reload+poll
+    // path must still work as before when it doesn't fire.
+    const { launch, sendButton, page } = makeSendConfirmationPage(true);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
+    // Falls through to the reload+poll path: goto is called more than once (initial load +
+    // at least one post-send reload).
+    expect(page.goto.mock.calls.length).toBeGreaterThan(1);
   });
 });
 
@@ -817,18 +1450,15 @@ describe('connectSend hybrid fallback (option 3)', () => {
       .mockResolvedValueOnce(JSON.stringify({ matchedText: 'More' }))
       .mockResolvedValue(JSON.stringify({ matchedText: null }));
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([], []); // none found at all
-        if (selector.includes('[role="button"]')) {
-          return makeFakeClickableLocator(['Follow', 'More'], { More: fallbackMoreButton });
-        }
-        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
-        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([], []); // none found at all
+      if (selector.includes('[role="button"]')) {
+        return makeFakeClickableLocator(['Follow', 'More'], { More: fallbackMoreButton });
+      }
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);
@@ -849,20 +1479,17 @@ describe('connectSend hybrid fallback (option 3)', () => {
 
     const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ matchedText: 'Connect' }));
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockImplementation((selector: string) => {
-        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
-        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(null); // primary misses
-        if (selector === '[role="menu"] [role="menuitem"]') {
-          return makeFakeClickableLocator(['Send profile in a message', 'Connect'], {
-            Connect: fallbackConnectItem,
-          });
-        }
-        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
-        return makeFakeLocator(null);
-      }),
-    };
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+      if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(null); // primary misses
+      if (selector === '[role="menu"] [role="menuitem"]') {
+        return makeFakeClickableLocator(['Send profile in a message', 'Connect'], {
+          Connect: fallbackConnectItem,
+        });
+      }
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const launch = vi.fn().mockResolvedValue(browser);

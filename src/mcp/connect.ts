@@ -1,9 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Page, type Response } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, saveConnection } from '../db.js';
@@ -13,42 +13,24 @@ import { resolveControlWithFallback, type FallbackDeps } from '../lib/domFallbac
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
 
-// Main-account-only session state. This MCP must NEVER load
-// `secrets/linkedin-burner-state.json` (that account is reserved for the
-// `linkedin-apply` MCP in Task 3, a completely different account, never to be touched
-// here). The path is intentionally hardcoded, not a configurable parameter — mirrors how
-// `src/mcp/linkedin-apply.ts` hardcoded its burner path, for the same reviewability reason.
+// Main-account session only — never the linkedin-apply burner session (see that file's
+// identical hardcoded-path pattern).
 const MAIN_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-main-state.json');
 
 const DEFAULT_MAX_LINKEDIN_SEARCHES_PER_DAY = 20;
 const DEFAULT_MAX_CONNECTS_PER_DAY = 10;
 
-// Explicit viewport for every Playwright browser context this MCP creates. Without this,
-// Playwright defaults to a 1280×720 context. A separate standalone Playwright script used to
-// live-verify this file's selectors (people-search resultCard/profileLink/name/headline,
-// profile-header moreButton/connectMenuItem, and the "Add a note?" dialog's
-// addNoteButton/noteTextarea/sendButton — see the SELECTORS comments above and
-// .superpowers/sdd/task-6-connect-fix-report.md) explicitly set `{ width: 1440, height: 2400
-// }` on `newContext()`, while this file's `newContext()` calls passed no viewport at all,
-// silently falling back to the 1280×720 default. That mismatch is the prime suspect for the
-// live-reported "Send button not found on connect dialog" failure: the tall 2400px viewport
-// used during verification means the "Add a note?" dialog's Send button was already within
-// the initial layout viewport, whereas the much-shorter default 720px viewport can put that
-// same button below the fold. Note that `Locator.count()` (used throughout this file's
-// `.count() === 0` checks) does NOT depend on visibility or scroll position — it counts DOM
-// matches regardless — so this fix does not change the semantics of any `.count()` check;
-// it targets a different mechanism, whatever LinkedIn's dialog does differently at a smaller
-// viewport (e.g. deferring/never mounting certain content until it would be scrolled into
-// view, or a responsive layout change), consistent with the click() failing downstream of a
-// `.count() > 0` check passing. This exact viewport was the one already live-verified to work
-// end-to-end (short of the final "Send" click) in this session's prior investigations, so it
-// is reused here for consistency rather than an untested new size — including for
-// `findLinkedinProfile`, whose people-search scraping selectors were also only ever
-// live-verified at this same larger viewport, never at the default.
+// Explicit viewport (Playwright otherwise defaults to 1280x720) — this size is the one
+// live-verified to work end-to-end for this file's selectors; a shorter viewport was found
+// to hide the connect dialog's Send button below the fold.
 export const BROWSER_VIEWPORT = { width: 1440, height: 2400 };
 
 /** LinkedIn's hard cap on connection-request note length. */
 export const MAX_NOTE_LENGTH = 300;
+
+// Debug screenshots for connectSend(), gitignored — opt-in aid for diagnosing a suspected
+// false-positive 'sent' result (see docs/phase2-known-issues.md).
+const DEBUG_SCREENSHOT_DIR = path.join(projectRoot, 'debug', 'connect');
 
 const db = openDb('data.sqlite');
 
@@ -80,25 +62,37 @@ export interface ConnectDeps {
   maxConnectsPerDay?: number;
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
-  /**
-   * Hybrid Claude fallback for selector-miss escalation (see domFallback.ts and
-   * src/mcp/linkedin-apply.ts's identical pattern). Off by default unless explicitly
-   * enabled here or via `CONNECT_HYBRID_FALLBACK=true` — this keeps the fast/free
-   * selector path as the only thing that runs unless hybrid mode is deliberately turned
-   * on, and keeps tests hermetic (no real `claude` CLI invocations) unless a test
-   * explicitly injects a fallback client.
-   */
+  /** Hybrid Claude fallback for selector-miss escalation (see domFallback.ts); off by default. */
   fallback?: FallbackDeps;
   fallbackEnabled?: boolean;
+  /** Save a screenshot at each key connectSend() step to debug/connect/ (gitignored); off by default. */
+  debugScreenshots?: boolean;
+  /** Total time to keep polling for the "Pending" button before giving up. Injectable for tests. */
+  pendingConfirmationTimeoutMs?: number;
+  /** How long each individual poll attempt waits before reloading and trying again. */
+  pendingConfirmationPollMs?: number;
+}
+
+async function captureDebugScreenshot(
+  page: Pick<Page, 'screenshot'>,
+  enabled: boolean,
+  label: string
+): Promise<void> {
+  if (!enabled) return;
+  try {
+    mkdirSync(DEBUG_SCREENSHOT_DIR, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    await page.screenshot({ path: path.join(DEBUG_SCREENSHOT_DIR, `${timestamp}-${label}.png`) });
+  } catch {
+    // Best-effort diagnostic only — never let a screenshot failure break the real flow.
+  }
 }
 
 /**
  * Escalates to a bounded Claude call over the real, currently-visible control texts
  * matching `candidateSelector`, clicking only if Claude's choice is verbatim one of them.
- * Returns whether a click happened. This is the escalation half only — callers that have
- * a simple "selector missing" primary check should use `findAndClickControl` below; the
- * More-button flow calls this directly because its primary-path logic (picking the
- * button-shaped match via `pickButtonShapedIndex`) isn't a plain `count() > 0` check.
+ * Returns whether a click happened. Use directly (not via `findAndClickControl`) when the
+ * primary-path check isn't a plain `count() > 0` (e.g. the More-button bounding-box filter).
  */
 async function escalateClick(
   page: Pick<Page, 'locator'>,
@@ -120,10 +114,9 @@ async function escalateClick(
 }
 
 /**
- * Clicks the element matched by `selector`. If nothing matches (a selector-rot case) and
- * the hybrid fallback is enabled, escalates via `escalateClick` over `candidateSelector`
- * (defaults to generic clickable controls; pass `'[role="menu"] [role="menuitem"]'` for
- * the Connect menu item). Mirrors src/mcp/linkedin-apply.ts's `findAndClickControl`.
+ * Clicks the element matched by `selector`. If nothing matches and the hybrid fallback is
+ * enabled, escalates via `escalateClick` over `candidateSelector`. Mirrors
+ * src/mcp/linkedin-apply.ts's `findAndClickControl`.
  */
 async function findAndClickControl(
   page: Pick<Page, 'locator'>,
@@ -150,104 +143,195 @@ export function validateNoteLength(note: string): { ok: boolean; length: number 
   return { ok: length > 0 && length <= MAX_NOTE_LENGTH, length };
 }
 
-// LinkedIn people-search / profile DOM selectors.
-//
-// resultCard/profileLink/name/headline were LIVE-VERIFIED (see
-// .superpowers/sdd/task-6-connect-fix-report.md) against a real people-search results page
-// (`https://www.linkedin.com/search/results/people/?keywords=...`, main-account session) —
-// the old `.reusable-search__result-container` class selector matched ZERO of the page's
-// 10 real result cards. LinkedIn now renders each result as a `<div role="listitem">`
-// inside a `<div role="list">`, with fully obfuscated/hashed CSS classes elsewhere — the
-// ARIA roles are the stable anchor, same pattern as the `<footer>` tag found for Easy
-// Apply's buttons. `a.app-aware-link[href*="/in/"]` (the old profileLink selector) also
-// matched ZERO elements live; the generic `a[href*="/in/"]` does match.
-//
-// Within one result card there are (per live inspection) TWO `a[href*="/in/"]` links
-// pointing at the same profile: an outer wrapper link whose `textContent` concatenates
-// the name plus connection-degree badge plus headline plus location plus mutual-connection
-// names (an accessibility/click-target artifact), and a second, inner link whose
-// `textContent` is just the clean visible name. `.nth(1)` of that locator was confirmed
-// clean across all 10 live results. The headline has no dedicated stable selector either;
-// it was confirmed to always be the `<span>` immediately following the LAST `<span>` whose
-// text matches the connection-degree bullet (`• 1st`/`• 2nd`/`• 3rd+`) — that degree badge
-// itself renders as two adjacent duplicate spans (visible + accessibility mirror), so we
-// take the span after the *last* match, not the first.
-//
-// moreButton/connectMenuItem are LIVE-VERIFIED (see
-// .superpowers/sdd/task-6-connect-fix-report.md) against a real profile
-// (`https://www.linkedin.com/in/snehalaundhkar/`, main-account session, read-only
-// inspection): this profile shows only "Follow" + "More" as top-level actions — there is
-// NO direct "Connect" button anywhere in the top-level DOM. The old bare `connectButton`
-// selector (`button[aria-label^="Invite" i], button:has-text("Connect")`) was flatly wrong
-// for this common case: it happened to match unrelated "Invite X to connect" buttons
-// rendered inside "People you may know" carousel cards elsewhere on the page (confirmed
-// live — those cards' aria-labels are literally "Invite <name> to connect"), never the
-// actual action for the profile being viewed.
-//
-// The real flow: click the profile-header "More" button (opens a dropdown/overflow menu),
-// then click "Connect" as a menu item inside that menu.
-//
-// `main button:has-text("More")` matched 15 elements live on the tested profile — most are
-// small "…more" show-more-text toggles inside post captions (bounding-box height ~17.5px),
-// NOT the profile action button; there is also a decoy `button[aria-label="More"]`
-// (icon-only, exact aria-label match) with a genuine 0×0 bounding box in both headless and
-// headed mode — confirmed NOT usable, so aria-label was deliberately not used as the
-// selector here. The correct profile-header "More" button was the ONLY match with a
-// button-shaped bounding box (confirmed live: 58.4px × 48px) — `pickButtonShapedIndex`
-// below picks the first match with height >= 40px, which isolated exactly one element live.
-//
-// Once that "More" button is clicked, the opened menu (a `div[role="menu"]`) contained,
-// live: "Send profile in a message", "Save to PDF", "Connect", "Report / Block", "About
-// this member" — each item an `<a role="menuitem">` (or, for items with no href, a
-// `<div role="menuitem">`). The "Connect" item was confirmed live to be
-// `<a role="menuitem" href="/preload/custom-invite/?vanityName=...">Connect</a>`.
-// Scoping to `[role="menu"] ... [role="menuitem"]` is what excludes the unrelated PYMK-card
-// "Invite X to connect" buttons (those live entirely outside any `[role="menu"]`).
-//
-// addNoteButton/noteTextarea/sendButton — NOW LIVE-VERIFIED (see
-// .superpowers/sdd/task-6-connect-fix-report.md, "Fix: sendButton selector + add-note
-// transition wait" section) via a read-only re-inspection of the real "Add a note?" dialog
-// (main-account session), stopping before any actual send.
-//
-// Before clicking "Add a note": the dialog shows two buttons, "Add a note"
-// (`aria-label="Add a note"`) and "Send without a note" (`aria-label="Send without a
-// note"`); no textarea is present yet.
-//
-// After clicking "Add a note": a `<textarea id="custom-message" name="message">` appears
-// (confirmed to match the existing `noteTextarea` selector unchanged, no fix needed there),
-// and the button set changes to "Write with AI", "Cancel" (`aria-label="Cancel adding a
-// note"`), and a "Send" button whose VISIBLE TEXT is literally "Send" but whose
-// `aria-label` is "Send invitation". This is the root cause of the reported "Send button
-// not found on connect dialog" bug: the old `sendButton` selector's
-// `button:has-text("Send invitation")` alternative matches on visible text content, and
-// this button's visible text is just "Send" — "Send invitation" is only its aria-label —
-// so that alternative could never match. It has been removed. The remaining
-// `button[aria-label^="Send " i]` alternative already matches "Send invitation" correctly
-// (confirmed live), so it is kept, and a redundant exact-match alternative is added for
-// extra resilience against future copy drift. `button:has-text("Send now")` is kept as a
-// last-resort text fallback in case LinkedIn shows different copy elsewhere.
+// LinkedIn people-search / profile DOM selectors. See git history / .superpowers/sdd/task-6
+// -connect-fix-report.md for the live-inspection notes behind each of these.
 export const SELECTORS = {
   resultCard: 'div[role="listitem"]',
   profileLink: 'a[href*="/in/"]',
+  // Filtered further by pickButtonShapedIndex (below) to isolate the real profile-header
+  // "More" button from small post "…more" text toggles that also match this selector.
   moreButton: 'main button:has-text("More")',
+  // Scoped to [role="menu"] so it never matches unrelated sidebar "Invite X to connect" links.
   connectMenuItem: '[role="menu"] [role="menuitem"]:has-text("Connect")',
   addNoteButton: 'button[aria-label*="add a note" i], button:has-text("Add a note")',
   noteTextarea: '#custom-message, textarea[name="message"]',
+  // The Send button's accessible name ("Send invitation") lives only in its aria-label, not
+  // its visible text ("Send") — hence the aria-label-based alternatives.
   sendButton:
     'button[aria-label="Send invitation" i], button[aria-label^="Send " i], button:has-text("Send now")',
+  // Once a request is recorded, LinkedIn shows a "Pending" `<a>` (not a `<button>`) in place
+  // of "+ Follow". Multiple matches can exist on one page (e.g. a duplicate sticky-nav copy)
+  // — disambiguated by proximity to the profile's own name, see pickNearestLocator below.
+  pendingButton: 'a[aria-label^="Pending" i]',
+  // Some profiles show "Connect" directly at the top level instead of hiding it behind
+  // "More" — an `<a>`, not a `<button>`. Can also match more than once on a real page (e.g.
+  // a real profile was confirmed to render this twice — once in a sticky nav element with no
+  // section ancestor, once in the actual profile card ~143px below the name) — disambiguated
+  // by proximity, not a DOM-ancestor guess (two different ancestor-based guesses have each
+  // failed on a different real profile). See pickNearestLocator below.
+  directConnectButton: 'a[aria-label^="Invite " i][aria-label$=" to connect" i]',
+  // LinkedIn doesn't consistently render the profile's own name in one heading tag (a real
+  // profile was confirmed to have ZERO `<h1>` anywhere, with the name in an `<h2>` instead)
+  // — search both. Used only to locate the name's position for proximity-based picks.
+  nameHeadings: 'main h1, main h2',
+  // The "Add a note?" / "Personalize your invitation to <Name>" dialog container, used only
+  // to extract the stated recipient name for verification against the expected name.
+  // `:visible` (a Playwright selector extension, not standard CSS) excludes hidden/decoy
+  // dialog elements that may share this role elsewhere on the page — INCIDENT 2026-07-17
+  // (#2): `.first()` on an unfiltered match is a plausible way to silently grab the wrong
+  // one, the same class of bug as directConnectButton's.
+  noteDialogContainer: '[role="dialog"]:visible, [role="alertdialog"]:visible',
 } as const;
 
-// How long to wait for the profile-header "More" overflow menu to actually render after
-// being clicked, before checking for its "Connect" menu item. Bounded and non-throwing —
-// same rationale and pattern as `waitForFormControls` in src/mcp/linkedin-apply.ts:
-// `Locator.click()` only auto-waits for the clicked element ("More") itself to be
-// actionable, not for whatever the click triggers afterward (the menu animating in), and
-// `Locator.count()` is a synchronous snapshot with no retry — so without this wait, the
-// very next `.count()` check on `connectMenuItem` races the menu's render and can
-// incorrectly see 0 elements that would appear a moment later, reporting "Connect menu
-// item not found" prematurely. If the menu doesn't render within the timeout, we swallow
-// the error and fall through to the existing `.count()` check below, which then correctly
-// resolves to the existing "Connect menu item not found" failure — never throws.
+/**
+ * Pure: extracts the profile owner's name from `page.title()` (e.g. "Tanvi Gaharwar |
+ * LinkedIn" -> "Tanvi Gaharwar") — confirmed reliable where `<h1>` is not. Exported for
+ * unit testing.
+ */
+export function extractExpectedNameFromTitle(title: string): string {
+  const idx = title.indexOf(' | ');
+  return (idx === -1 ? title : title.slice(0, idx)).trim();
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * Pure: given the profile name element's position and each selector-match candidate's
+ * position, picks the index of the candidate closest by full 2D (Euclidean) distance — the
+ * real profile-card element, not a duplicate/decoy elsewhere on the page. Y-only distance is
+ * NOT enough: INCIDENT 2026-07-17 (#2) — a sidebar suggestion card's "Connect" link can sit
+ * at a similar Y to the header (x≈1052, sidebar column) while the real button is at a
+ * similar X to the name itself (x≈180, same column) — X is what actually distinguishes them.
+ * Returns -1 for an empty candidate list. Exported for unit testing.
+ */
+export function pickNearestToNameIndex(namePoint: Point, candidates: Point[]): number {
+  if (candidates.length === 0) return -1;
+  const distanceSq = (p: Point) => (p.x - namePoint.x) ** 2 + (p.y - namePoint.y) ** 2;
+  let bestIndex = 0;
+  let bestDistance = distanceSq(candidates[0]);
+  for (let i = 1; i < candidates.length; i++) {
+    const distance = distanceSq(candidates[i]);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+/** Position of the heading whose text matches `expectedName`, or null if none found. */
+async function getProfileNamePoint(page: Pick<Page, 'locator'>, expectedName: string): Promise<Point | null> {
+  if (!expectedName) return null;
+  const headings = await page
+    .locator(SELECTORS.nameHeadings)
+    .evaluateAll((els) =>
+      els.map((el) => {
+        const box = el.getBoundingClientRect();
+        return { text: (el.textContent ?? '').trim(), x: box.x, y: box.y };
+      })
+    );
+  const match = headings.find((h) => h.text === expectedName);
+  return match ? { x: match.x, y: match.y } : null;
+}
+
+/**
+ * Resolves to whichever match of `selector` sits closest (2D distance) to the profile's own
+ * name, replacing a DOM-ancestor scoping guess with proximity to a known-real anchor. Falls
+ * back to `.first()` when there's at most one match or no name position — preserving
+ * `Locator.waitFor`'s auto-poll behavior for an element that hasn't rendered yet.
+ */
+async function pickNearestLocator(page: Pick<Page, 'locator'>, selector: string, namePoint: Point | null) {
+  const candidatesLocator = page.locator(selector);
+  const count = await candidatesLocator.count();
+  if (count <= 1 || namePoint === null) return candidatesLocator.first();
+  const candidates = await candidatesLocator.evaluateAll((els) =>
+    els.map((el) => {
+      const box = el.getBoundingClientRect();
+      return { x: box.x, y: box.y };
+    })
+  );
+  const index = pickNearestToNameIndex(namePoint, candidates);
+  return candidatesLocator.nth(index === -1 ? 0 : index);
+}
+
+/**
+ * Pure: extracts the recipient name from LinkedIn's "...invitation to <Name>" dialog copy.
+ * Bounded by the first sentence terminator (`.`/`?`/`!`), a newline, " by adding a note", or
+ * end-of-string — NOT by end-of-string alone, since a real dialog variant (the pre-note
+ * "Add a note to your invitation?" screen) has a full paragraph of trailing copy after the
+ * name, which previously made this return '' and silently fail-closed on a legitimate send.
+ * Exported for unit testing.
+ */
+export function extractDialogRecipientName(dialogText: string): string {
+  const match = dialogText.match(/invitation to\s+(.+?)(?:\s+by adding a note\b|[.?!]|\n|$)/i);
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * Pure: case-insensitive first-name comparison, tolerating LinkedIn's "first name + last
+ * initial" dialog abbreviation (e.g. "Vaishali S." for "Vaishali Sharma").
+ */
+export function namesPlausiblyMatch(expectedName: string, recipientName: string): boolean {
+  const firstWord = (s: string) => s.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  const expectedFirst = firstWord(expectedName);
+  const recipientFirst = firstWord(recipientName);
+  if (!expectedFirst || !recipientFirst) return false;
+  return (
+    expectedFirst === recipientFirst ||
+    expectedFirst.startsWith(recipientFirst) ||
+    recipientFirst.startsWith(expectedFirst)
+  );
+}
+
+/**
+ * Pure: the mandatory recipient-name verification gate. FAIL-CLOSED: if either name can't be
+ * extracted, this BLOCKS (does not proceed) — INCIDENT 2026-07-17 (#2) showed the previous
+ * "unverifiable, so allow" leniency let a real wrong-recipient send through silently when
+ * extraction came back empty. Only an actual, extracted, matching pair is considered safe.
+ */
+export function verifyRecipientName(
+  expectedName: string,
+  dialogText: string
+): { ok: boolean; recipientName: string } {
+  const recipientName = extractDialogRecipientName(dialogText);
+  if (!expectedName || !recipientName) {
+    return { ok: false, recipientName };
+  }
+  return { ok: namesPlausiblyMatch(expectedName, recipientName), recipientName };
+}
+
+/**
+ * Pure: extracts the `/in/<slug>` segment from a LinkedIn profile URL, lowercased. Returns
+ * '' if no such segment is found. Exported for unit testing.
+ */
+export function extractProfileSlug(url: string): string {
+  const match = url.match(/\/in\/([^/?#]+)/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+/**
+ * Pure: independent, text-free safety net — verifies the browser is still on the originally
+ * requested profile right before the note is filled / Send is clicked, comparing slugs (not
+ * exact URL equality) to tolerate redirects/query params. FAIL-CLOSED: an unparseable slug on
+ * either side blocks, same rationale as verifyRecipientName above.
+ */
+export function verifyProfileUrl(
+  expectedUrl: string,
+  actualUrl: string
+): { ok: boolean; expectedSlug: string; actualSlug: string } {
+  const expectedSlug = extractProfileSlug(expectedUrl);
+  const actualSlug = extractProfileSlug(actualUrl);
+  return { ok: Boolean(expectedSlug) && expectedSlug === actualSlug, expectedSlug, actualSlug };
+}
+
+// Bounded, non-throwing waits below: `Locator.click()` only auto-waits for the clicked
+// element itself, not for whatever it triggers, and `Locator.count()` doesn't retry — so
+// without these, the next `.count()` check can race a render and report "not found"
+// prematurely. Each swallows its own timeout and falls through to the caller's existing
+// `.count()` check, which resolves to the pre-existing failure path — never throws.
 const MENU_RENDER_TIMEOUT_MS = 8000;
 
 async function waitForConnectMenu(page: Pick<Page, 'locator'>): Promise<void> {
@@ -255,28 +339,49 @@ async function waitForConnectMenu(page: Pick<Page, 'locator'>): Promise<void> {
     .locator(SELECTORS.connectMenuItem)
     .first()
     .waitFor({ state: 'visible', timeout: MENU_RENDER_TIMEOUT_MS })
-    .catch(() => {
-      // Timed out waiting for the More menu to render. Don't throw — let the caller's
-      // existing `.count()` check run and take the normal "not found" failure path.
-    });
+    .catch(() => {});
 }
 
-// How long to wait for the "Add a note?" dialog's post-click transition to actually render
-// after clicking "Add a note" — the note `<textarea>` appearing and the button set
-// switching from "Add a note"/"Send without a note" to "Write with AI"/"Cancel"/"Send" —
-// before checking for the note textarea and/or the send button. Same rationale and pattern
-// as `waitForConnectMenu` above and `waitForFormControls` in src/mcp/linkedin-apply.ts:
-// `Locator.click()` only auto-waits for the clicked element ("Add a note") itself to be
-// actionable, not for whatever the click triggers afterward (the dialog re-rendering its
-// textarea and button set), and `Locator.count()` is a synchronous snapshot with no retry —
-// so without this wait, the very next `.count()` checks on `noteTextarea`/`sendButton` race
-// the transition and can incorrectly see 0 elements that would appear a moment later,
-// reporting "Send button not found on connect dialog" prematurely (this was confirmed live
-// to be a real contributing factor to that bug, alongside the `sendButton` selector fix
-// above). If the transition doesn't render within the timeout, we swallow the error and
-// fall through to the existing `.count()` checks below, which then correctly resolve to the
-// existing failure paths — never throws.
+const CONNECT_DIALOG_TIMEOUT_MS = 8000;
+
+async function waitForConnectDialog(page: Pick<Page, 'locator'>): Promise<void> {
+  const anySelector = [SELECTORS.addNoteButton, SELECTORS.sendButton].join(', ');
+  await page
+    .locator(anySelector)
+    .first()
+    .waitFor({ state: 'visible', timeout: CONNECT_DIALOG_TIMEOUT_MS })
+    .catch(() => {});
+}
+
 const NOTE_TRANSITION_TIMEOUT_MS = 8000;
+
+// How long to keep polling (reload + check) for the "Pending" button after Send, and how
+// long each poll attempt waits before reloading again — this is the fallback path, used only
+// when the faster network-response confirmation (below) doesn't fire. Bumped from 30s to 90s
+// after repeated live evidence that 30s isn't consistently enough for real propagation.
+const PENDING_CONFIRMATION_TIMEOUT_MS = 90000;
+const PENDING_CONFIRMATION_POLL_MS = 5000;
+
+// Bounded wait for the network to settle after navigating to a profile — `domcontentloaded`
+// fires before LinkedIn's React app hydrates the header action row.
+const PROFILE_HEADER_SETTLE_TIMEOUT_MS = 8000;
+
+// Bounded wait for the send-invitation API response right after clicking Send — much faster
+// than reload+poll when it fires.
+const NETWORK_CONFIRMATION_TIMEOUT_MS = 12000;
+
+// Best-effort heuristic, NOT verified against a real captured request (no live browser
+// access): a POST to a "voyager"-style path mentioning invitation/connect/relationship, 2xx.
+export function isLikelySendInvitationResponse(response: Response): boolean {
+  const url = response.url().toLowerCase();
+  const isLikelyPath = url.includes('voyager') && /invitation|connect|relationship/.test(url);
+  return (
+    isLikelyPath &&
+    response.request().method() === 'POST' &&
+    response.status() >= 200 &&
+    response.status() < 300
+  );
+}
 
 async function waitForNoteDialogTransition(page: Pick<Page, 'locator'>): Promise<void> {
   const anySelector = [SELECTORS.noteTextarea, SELECTORS.sendButton].join(', ');
@@ -284,28 +389,22 @@ async function waitForNoteDialogTransition(page: Pick<Page, 'locator'>): Promise
     .locator(anySelector)
     .first()
     .waitFor({ state: 'visible', timeout: NOTE_TRANSITION_TIMEOUT_MS })
-    .catch(() => {
-      // Timed out waiting for the note textarea / new button set to render. Don't throw —
-      // let the caller's existing `.count()` checks run and take the normal "not found"
-      // failure paths.
-    });
+    .catch(() => {});
 }
 
 /**
- * Pure: given the bounding-box heights of every `SELECTORS.moreButton` match on a profile
- * page, picks the index of the first one that is button-shaped (height >= minHeightPx) —
- * this is the profile-header "More" action, as opposed to the many small "…more"
- * show-more-text toggles inside post captions (~17.5px tall, live-confirmed). Returns -1 if
- * no candidate is button-shaped. Exported for unit testing without a live Playwright page.
+ * Pure: given the bounding-box heights of every `SELECTORS.moreButton` match, picks the
+ * index of the first button-shaped one (height >= minHeightPx) — the real profile-header
+ * "More" action, as opposed to small "…more" show-more-text toggles. Returns -1 if none
+ * qualify. Exported for unit testing without a live Playwright page.
  */
 export function pickButtonShapedIndex(boxes: Array<{ height: number }>, minHeightPx = 40): number {
   return boxes.findIndex((box) => box.height >= minHeightPx);
 }
 
 /**
- * Pure: extracts the clean visible name/headline text from a result card's collected
- * profile-link texts and span texts, per the live-verified DOM pattern documented above.
- * Exported for unit testing without a live Playwright page.
+ * Pure: extracts the clean visible name/headline from a result card's collected
+ * profile-link texts and span texts. Exported for unit testing without a live page.
  */
 export function extractNameAndHeadline(
   profileLinkTexts: string[],
@@ -335,8 +434,7 @@ export async function findLinkedinProfile(
     deps.maxSearchesPerDay ??
     Number(process.env.MAX_LINKEDIN_SEARCHES_PER_DAY ?? DEFAULT_MAX_LINKEDIN_SEARCHES_PER_DAY);
 
-  // Gate first, before any Playwright action — mirrors linkedin-apply.ts's pattern of
-  // checking-and-incrementing the daily counter before touching the browser at all.
+  // Gate first, before any Playwright action.
   const allowed = checkAndIncrement(database, 'linkedin_search', maxPerDay);
   if (!allowed) {
     return {
@@ -365,10 +463,8 @@ export async function findLinkedinProfile(
       { timeout: 30000, waitUntil: 'domcontentloaded' }
     );
 
-    // Locators (not ElementHandles) throughout: a Locator re-resolves its selector at the
-    // moment of each action/read, so it survives LinkedIn's dynamic re-renders. An
-    // ElementHandle instead pins to one DOM node captured at query time, which can detach
-    // before a later read/click fires — see linkedin-apply.ts's identical fix.
+    // Locators (not ElementHandles) throughout — a Locator re-resolves at action time, so
+    // it survives LinkedIn's dynamic re-renders.
     const resultCardsLocator = page.locator(SELECTORS.resultCard);
     const cardCount = await resultCardsLocator.count();
     const candidates: ProfileCandidate[] = [];
@@ -378,18 +474,13 @@ export async function findLinkedinProfile(
       const profileLinksLocator = card.locator(SELECTORS.profileLink);
       const linkCount = await profileLinksLocator.count();
 
-      // Only indices 0 and 1 are ever consumed by extractNameAndHeadline() below — a card
-      // can have MORE than 2 `a[href*="/in/"]` matches (2, 3, or 4 observed live), the
-      // extras being "mutual connections"/"also viewed" avatar links unrelated to this
-      // result's own profile. Querying those extra indices is not just unused work — it
-      // was observed to hang/timeout live (likely lazily-rendered/off-screen nodes), so we
-      // bound the loop to the indices actually used instead of the full linkCount.
+      // Only indices 0/1 are consumed below — extra matches are unrelated mutual-connection
+      // avatar links, and were observed to hang/timeout live if queried.
       const profileLinkTexts: string[] = [];
       for (let j = 0; j < Math.min(linkCount, 2); j++) {
         profileLinkTexts.push(((await profileLinksLocator.nth(j).textContent()) ?? '').trim());
       }
-      // The clean-name link is the SECOND `a[href*="/in/"]` match within a card (live
-      // finding above); fall back to the first if only one link is present.
+      // The clean-name link is the SECOND match within a card; fall back to the first.
       const nameLinkIndex = linkCount > 1 ? 1 : 0;
       const profile_url =
         linkCount > 0 ? ((await profileLinksLocator.nth(nameLinkIndex).getAttribute('href')) ?? '') : '';
@@ -434,10 +525,11 @@ export async function connectSend(
     enabled: deps.fallbackEnabled ?? (Boolean(deps.fallback) || process.env.CONNECT_HYBRID_FALLBACK === 'true'),
     deps: deps.fallback,
   };
+  const debugScreenshots =
+    deps.debugScreenshots ?? process.env.CONNECT_DEBUG_SCREENSHOTS === 'true';
 
-  // Cheap, pure, non-browser pre-flight checks run BEFORE the rate-limit gate below, so a
-  // pre-flight rejection (invalid note length, missing main session) never burns a quota
-  // slot for a no-op that was never going to touch Playwright.
+  // Cheap pre-flight checks run before the rate-limit gate, so a rejection never burns a
+  // quota slot for a no-op that was never going to touch Playwright.
   const { ok, length } = validateNoteLength(note);
   if (!ok) {
     return {
@@ -450,10 +542,7 @@ export async function connectSend(
     return { status: 'failed', reason: 'main LinkedIn session state not found' };
   }
 
-  // Gate immediately before the Playwright launch — still strictly "before any Playwright
-  // action" (same pattern as linkedin-apply.ts's applyEasyApply and this file's
-  // findLinkedinProfile above), just moved as late as possible so the cheap checks above
-  // get first refusal.
+  // Gate immediately before the Playwright launch.
   const allowed = checkAndIncrement(database, 'connect_send', maxPerDay);
   if (!allowed) {
     return { status: 'rate_limited', reason: `daily connect limit (${maxPerDay}) reached` };
@@ -468,61 +557,113 @@ export async function connectSend(
     });
     const page = await context.newPage();
     await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
+    // Wait for the network to settle — `domcontentloaded` fires before the profile-header
+    // action row (Connect/Follow/Pending) finishes hydrating.
+    await page.waitForLoadState('networkidle', { timeout: PROFILE_HEADER_SETTLE_TIMEOUT_MS }).catch(() => {});
+    await captureDebugScreenshot(page, debugScreenshots, '01-profile-loaded');
 
-    // Locator API throughout (see findLinkedinProfile above for the same rationale).
-    //
-    // Step 1: find and click the profile-header "More" button. `SELECTORS.moreButton`
-    // matches multiple elements on a real profile (post "…more" toggles etc.) — filter to
-    // the button-shaped one via bounding-box heights (see pickButtonShapedIndex above).
-    const moreButtonsLocator = page.locator(SELECTORS.moreButton);
-    const moreButtonCount = await moreButtonsLocator.count();
-    let moreButtonIndex = -1;
-    if (moreButtonCount > 0) {
-      const moreButtonBoxes = await moreButtonsLocator.evaluateAll((els) =>
-        els.map((el) => ({ height: el.getBoundingClientRect().height }))
-      );
-      moreButtonIndex = pickButtonShapedIndex(moreButtonBoxes);
-    }
+    // The profile owner's own name, from the page title (not `<h1>` — confirmed missing
+    // entirely on a real profile), captured before any click for the mandatory
+    // recipient-name verification gate below and as the proximity anchor below.
+    const expectedName = extractExpectedNameFromTitle((await page.title().catch(() => '')) ?? '');
+    const namePoint = await getProfileNamePoint(page, expectedName);
 
-    if (moreButtonIndex !== -1) {
-      await moreButtonsLocator.nth(moreButtonIndex).click();
+    // Step 0: some profiles show "Connect" directly at the top level instead of hiding it
+    // behind "More" — check that first, picking whichever match sits closest to the name.
+    const directConnectLocator = await pickNearestLocator(page, SELECTORS.directConnectButton, namePoint);
+    const hasDirectConnect = (await directConnectLocator.count()) > 0;
+
+    if (hasDirectConnect) {
+      await directConnectLocator.click();
+      await captureDebugScreenshot(page, debugScreenshots, '02-direct-connect-clicked');
     } else {
-      // The button-shaped-filter primary path found nothing usable — escalate directly
-      // (this primary check isn't a plain `count() > 0`, so it can't go through
-      // findAndClickControl's shared miss-handling).
-      const clickedMore =
-        fallback.enabled &&
-        (await escalateClick(
-          page,
-          'Open the profile-header overflow menu that contains "Connect" (a button-shaped ' +
-            '"More" control, not a small post "…more" text toggle)',
-          fallback
-        ));
-      if (!clickedMore) {
-        return {
-          status: 'failed',
-          reason:
-            moreButtonCount === 0
-              ? 'More button not found on profile'
-              : 'no button-shaped More button found on profile',
-        };
+      // Step 1: click the profile-header "More" button, filtered to the button-shaped
+      // match via bounding-box heights (see pickButtonShapedIndex above).
+      const moreButtonsLocator = page.locator(SELECTORS.moreButton);
+      const moreButtonCount = await moreButtonsLocator.count();
+      let moreButtonIndex = -1;
+      if (moreButtonCount > 0) {
+        const moreButtonBoxes = await moreButtonsLocator.evaluateAll((els) =>
+          els.map((el) => ({ height: el.getBoundingClientRect().height }))
+        );
+        moreButtonIndex = pickButtonShapedIndex(moreButtonBoxes);
+      }
+
+      if (moreButtonIndex !== -1) {
+        await moreButtonsLocator.nth(moreButtonIndex).click();
+      } else {
+        // No button-shaped match — escalate directly (this check isn't a plain
+        // `count() > 0`, so it can't go through findAndClickControl's shared handling).
+        const clickedMore =
+          fallback.enabled &&
+          (await escalateClick(
+            page,
+            'Open the profile-header overflow menu that contains "Connect" (a button-shaped ' +
+              '"More" control, not a small post "…more" text toggle)',
+            fallback
+          ));
+        if (!clickedMore) {
+          return {
+            status: 'failed',
+            reason:
+              moreButtonCount === 0
+                ? 'More button not found on profile'
+                : 'no button-shaped More button found on profile',
+          };
+        }
+      }
+      await waitForConnectMenu(page);
+      await captureDebugScreenshot(page, debugScreenshots, '02-more-menu-open');
+
+      // Step 2: click "Connect" inside the opened overflow menu.
+      const clickedConnectMenuItem = await findAndClickControl(
+        page,
+        SELECTORS.connectMenuItem,
+        'Click "Connect" inside the currently open profile overflow menu',
+        fallback,
+        '[role="menu"] [role="menuitem"]'
+      );
+      if (!clickedConnectMenuItem) {
+        return { status: 'failed', reason: 'Connect menu item not found after opening More menu' };
       }
     }
-    await waitForConnectMenu(page);
+    await waitForConnectDialog(page);
+    await captureDebugScreenshot(page, debugScreenshots, '03-connect-dialog-open');
 
-    // Step 2: the "More" click opens a dropdown/overflow menu; find and click its
-    // "Connect" menu item (scoped to `[role="menu"]` so this never matches the unrelated
-    // "Invite X to connect" buttons rendered in "People you may know" carousel cards
-    // elsewhere on the page).
-    const clickedConnectMenuItem = await findAndClickControl(
-      page,
-      SELECTORS.connectMenuItem,
-      'Click "Connect" inside the currently open profile overflow menu',
-      fallback,
-      '[role="menu"] [role="menuitem"]'
-    );
-    if (!clickedConnectMenuItem) {
-      return { status: 'failed', reason: 'Connect menu item not found after opening More menu' };
+    // Independent, text-free safety net: confirm the browser is still on the requested
+    // profile right before the note is filled / Send is clicked. Runs before the name check
+    // since it doesn't depend on parsing any visible text.
+    const urlCheck = verifyProfileUrl(profile_url, page.url());
+    if (!urlCheck.ok) {
+      await captureDebugScreenshot(page, debugScreenshots, '03a-url-mismatch');
+      return {
+        status: 'failed',
+        reason:
+          `profile URL mismatch: expected profile slug "${urlCheck.expectedSlug}" but the ` +
+          `browser is currently on "${urlCheck.actualSlug}" — aborting before filling the ` +
+          'note or clicking Send',
+      };
+    }
+
+    // Mandatory recipient-name verification safety net — runs for BOTH the direct-Connect
+    // and More-menu paths (both reach this point), before any note is filled or Send is
+    // clicked. This is the gate against ANY selector picking the wrong link. FAIL-CLOSED:
+    // an unverifiable name (either side empty) blocks rather than allows — see
+    // verifyRecipientName's doc comment.
+    const dialogTextLocator = page.locator(SELECTORS.noteDialogContainer).first();
+    const dialogText = ((await dialogTextLocator.count()) > 0 ? await dialogTextLocator.textContent() : '') ?? '';
+    const { ok: recipientOk, recipientName } = verifyRecipientName(expectedName, dialogText);
+    if (!recipientOk) {
+      await captureDebugScreenshot(page, debugScreenshots, '03b-recipient-name-mismatch');
+      return {
+        status: 'failed',
+        reason: recipientName
+          ? `recipient name mismatch: the connect dialog addresses "${recipientName}" but the ` +
+            `profile navigated to is "${expectedName}" — aborting before filling the note or ` +
+            'clicking Send to avoid sending to the wrong person'
+          : `could not verify the connect dialog's recipient name (expected "${expectedName}") — ` +
+            'aborting before filling the note or clicking Send',
+      };
     }
 
     const addNoteButtonLocator = page.locator(SELECTORS.addNoteButton);
@@ -533,7 +674,15 @@ export async function connectSend(
       if ((await noteInputLocator.count()) > 0) {
         await noteInputLocator.first().fill(note);
       }
+      await captureDebugScreenshot(page, debugScreenshots, '04-note-filled');
     }
+
+    // Start listening for the send-invitation API response BEFORE clicking Send, so a fast
+    // response can't resolve before we start awaiting it.
+    const networkConfirmationPromise = page
+      .waitForResponse(isLikelySendInvitationResponse, { timeout: NETWORK_CONFIRMATION_TIMEOUT_MS })
+      .then(() => true)
+      .catch(() => false);
 
     const clickedSend = await findAndClickControl(
       page,
@@ -543,33 +692,56 @@ export async function connectSend(
       fallback
     );
     if (!clickedSend) {
+      await captureDebugScreenshot(page, debugScreenshots, '05-send-button-not-found');
       return { status: 'failed', reason: 'Send button not found on connect dialog' };
     }
+    await captureDebugScreenshot(page, debugScreenshots, '06-immediately-after-send-click');
 
-    // Don't trust the click alone — linkedin-apply.ts's Easy Apply submit button was found
-    // to silently no-op under this exact same "click and immediately report success"
-    // pattern (see its submissionConfirmation fix). UNLIKE this file's
-    // moreButton/connectMenuItem/sendButton selectors (which ARE live-verified per the
-    // comments above), there is no already-live-verified confirmation signal for a
-    // genuinely-sent connection request — sending a real request to verify one requires
-    // explicit human approval this fix doesn't have. This is a best-effort heuristic only:
-    // LinkedIn's invite dialog should dismiss itself once the send actually goes through,
-    // so we wait for the just-clicked Send button to disappear from the DOM. If it's
-    // still there after a bounded wait, treat the click as unconfirmed rather than
-    // reporting a false 'sent'. TODO: live-verify this signal (or find a more specific one,
-    // e.g. a toast/snackbar) the same way submissionConfirmation was live-verified.
-    const confirmed = await page
-      .locator(SELECTORS.sendButton)
-      .first()
-      .waitFor({ state: 'hidden', timeout: 10000 })
-      .then(() => true)
-      .catch(() => false);
+    // Fast path: a matching 2xx API response is a much more authoritative and quicker signal
+    // than waiting for the UI to visually update.
+    let pendingConfirmed = await networkConfirmationPromise;
 
-    if (!confirmed) {
+    if (!pendingConfirmed) {
+      // Don't trust the click alone — a click can silently no-op. This DOM-disappearance wait
+      // is a fast diagnostic capture only; it is NOT the basis for the sent/failed decision.
+      await page
+        .locator(SELECTORS.sendButton)
+        .first()
+        .waitFor({ state: 'hidden', timeout: 10000 })
+        .catch(() => {});
+      await captureDebugScreenshot(page, debugScreenshots, '07-after-dialog-dismiss-wait');
+
+      // Fallback confirmation gate: reload the profile and poll for LinkedIn's own "Pending"
+      // action button, which replaces "Follow" once the request is actually recorded.
+      const pendingTimeoutMs = deps.pendingConfirmationTimeoutMs ?? PENDING_CONFIRMATION_TIMEOUT_MS;
+      const pendingPollMs = deps.pendingConfirmationPollMs ?? PENDING_CONFIRMATION_POLL_MS;
+      const deadline = Date.now() + pendingTimeoutMs;
+      do {
+        await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' }).catch(() => {});
+        // Same "checked too early" fix as the initial load — let the reloaded page hydrate
+        // before checking for the Pending button.
+        await page.waitForLoadState('networkidle', { timeout: PROFILE_HEADER_SETTLE_TIMEOUT_MS }).catch(() => {});
+        // Re-derive the name anchor each reload (fresh DOM) and pick the nearest match.
+        const pendingNamePoint = await getProfileNamePoint(page, expectedName);
+        pendingConfirmed = await (await pickNearestLocator(page, SELECTORS.pendingButton, pendingNamePoint))
+          .waitFor({ state: 'visible', timeout: pendingPollMs })
+          .then(() => true)
+          .catch(() => false);
+      } while (!pendingConfirmed && Date.now() < deadline);
+    }
+
+    await captureDebugScreenshot(
+      page,
+      debugScreenshots,
+      pendingConfirmed ? '08-pending-confirmed' : '08-pending-not-found'
+    );
+
+    if (!pendingConfirmed) {
       return {
         status: 'failed',
         reason:
-          'clicked Send but could not confirm the connection request was actually recorded — verify manually on LinkedIn',
+          'clicked Send but the "Pending" button never appeared on the profile — connection ' +
+          'request was not confirmed. Verify manually on LinkedIn.',
       };
     }
 
@@ -596,11 +768,8 @@ export async function connectSend(
 
 /**
  * Pure bookkeeping write for a connection draft that was never sent — records a
- * `drafted` or `skipped` row so the orchestrator (per CLAUDE.md's "Connecting" section)
- * has a real tool to call when the user doesn't approve a drafted note, instead of a
- * DB write instruction with no corresponding tool. No Playwright involved and no
- * rate-limit gating needed — this never touches LinkedIn, it only records a status the
- * orchestrator already decided on.
+ * `drafted`/`skipped` row so the orchestrator has a tool to call without ever touching
+ * connect_send. No Playwright, no rate-limit gating.
  */
 export function recordConnectionStatus(
   {
@@ -661,16 +830,22 @@ server.registerTool(
       'This performs the real action immediately when called — it does NOT wait for approval itself. ' +
       'The orchestrating agent (CLAUDE.md) must only call this AFTER an explicit human "send" reply ' +
       'to a posted draft; never call this speculatively. Gated by a daily connect_send rate limit and ' +
-      "LinkedIn's 300-character note cap.",
+      "LinkedIn's 300-character note cap. Set debug_screenshots=true to save a screenshot at each " +
+      'step to debug/connect/ (gitignored) — useful when investigating a suspected false-positive ' +
+      "'sent' result.",
     inputSchema: {
       profile_url: z.string(),
       note: z.string(),
       job_id: z.string().optional(),
       company: z.string().optional(),
+      debug_screenshots: z.boolean().optional(),
     },
   },
-  async ({ profile_url, note, job_id, company }) => {
-    const result = await connectSend({ profile_url, note, job_id, company });
+  async ({ profile_url, note, job_id, company, debug_screenshots }) => {
+    const result = await connectSend(
+      { profile_url, note, job_id, company },
+      { debugScreenshots: debug_screenshots }
+    );
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   }
 );

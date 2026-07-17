@@ -9,6 +9,7 @@ dist/
 .superpowers/
 .hunter_usage.json
 secrets/
+debug/
 .env
 .env.*
 !.env.example
