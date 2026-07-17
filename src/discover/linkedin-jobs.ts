@@ -12,7 +12,7 @@ const CONFIG_PATH = path.join(projectRoot, 'config', 'discover-linkedin.json');
 const BURNER_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-burner-state.json');
 
 export interface DiscoverLinkedInConfig {
-  jobs: { search_url: string; limit: number };
+  jobs: Array<{ name: string; search_url: string; limit: number }>;
   posts: { role: string; geo: string; limit: number };
 }
 
@@ -95,10 +95,17 @@ export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Jo
   const browserLauncher = deps.chromium ?? chromium;
   const burnerStatePath = deps.burnerStatePath ?? BURNER_STATE_PATH;
 
-  if (config.jobs.search_url.startsWith('REPLACE_WITH_')) {
-    console.error(
-      "[discover] linkedin_jobs: config/discover-linkedin.json's jobs.search_url is still the placeholder — replace it with a real LinkedIn job search URL before running this"
-    );
+  const realEntries = config.jobs.filter((entry) => {
+    if (entry.search_url.startsWith('REPLACE_WITH_')) {
+      console.error(
+        `[discover] linkedin_jobs (${entry.name}): search_url is still the placeholder — skipping, replace it with a real LinkedIn job search URL to enable this entry`
+      );
+      return false;
+    }
+    return true;
+  });
+
+  if (realEntries.length === 0) {
     return [];
   }
 
@@ -108,33 +115,45 @@ export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Jo
   }
 
   let browser: Browser | undefined;
+  const allJobs: Job[] = [];
   try {
     browser = await browserLauncher.launch({ headless: true });
     const context = await browser.newContext({ storageState: burnerStatePath });
-    const page = await context.newPage();
-    await page.goto(config.jobs.search_url, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector(JOB_CARD_SELECTOR, { timeout: 15000 });
 
-    const rawCards: RawJobCard[] = await page.locator(JOB_CARD_SELECTOR).evaluateAll((nodes: Element[]) =>
-      nodes.map((n) => {
-        const titleEl = n.querySelector('a.job-card-list__title, .job-card-container__link') as HTMLAnchorElement | null;
-        const companyEl = n.querySelector('.job-card-container__primary-description, .artdeco-entity-lockup__subtitle');
-        const snippetEl = n.querySelector('.job-card-list__insight, .job-card-container__metadata-wrapper');
-        return {
-          titleText: titleEl?.textContent ?? null,
-          companyText: companyEl?.textContent ?? null,
-          hrefRaw: titleEl?.href ?? null,
-          snippetText: snippetEl?.textContent ?? null,
-          easyApply: !!n.querySelector('[aria-label*="Easy Apply" i]'),
-        };
-      })
-    );
+    for (const entry of realEntries) {
+      try {
+        const page = await context.newPage();
+        await page.goto(entry.search_url, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector(JOB_CARD_SELECTOR, { timeout: 15000 });
 
-    const capped = rawCards.slice(0, config.jobs.limit);
-    const { jobs, found, parsed, skipped } = parseLinkedInJobCards(capped);
-    console.error(`[discover] linkedin_jobs: ${parsed}/${found} parsed, ${skipped} skipped (malformed)`);
+        const rawCards: RawJobCard[] = await page.locator(JOB_CARD_SELECTOR).evaluateAll((nodes: Element[]) =>
+          nodes.map((n) => {
+            const titleEl = n.querySelector('a.job-card-list__title, .job-card-container__link') as HTMLAnchorElement | null;
+            const companyEl = n.querySelector('.job-card-container__primary-description, .artdeco-entity-lockup__subtitle');
+            const snippetEl = n.querySelector('.job-card-list__insight, .job-card-container__metadata-wrapper');
+            return {
+              titleText: titleEl?.textContent ?? null,
+              companyText: companyEl?.textContent ?? null,
+              hrefRaw: titleEl?.href ?? null,
+              snippetText: snippetEl?.textContent ?? null,
+              easyApply: !!n.querySelector('[aria-label*="Easy Apply" i]'),
+            };
+          })
+        );
 
-    const newJobs = jobs.filter((job) => !isSeen(db, job.id));
+        const capped = rawCards.slice(0, entry.limit);
+        const { jobs, found, parsed, skipped } = parseLinkedInJobCards(capped);
+        console.error(`[discover] linkedin_jobs (${entry.name}): ${parsed}/${found} parsed, ${skipped} skipped (malformed)`);
+        allJobs.push(...jobs);
+      } catch (err) {
+        console.error(
+          `[discover] linkedin_jobs (${entry.name}): fetch failed:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    const newJobs = allJobs.filter((job) => !isSeen(db, job.id));
     for (const job of newJobs) {
       saveJob(db, job);
     }

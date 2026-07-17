@@ -9,10 +9,15 @@ import {
 import { openDb, isSeen } from '../src/db.js';
 
 describe('loadDiscoverConfig', () => {
-  it('reads jobs and posts config from config/discover-linkedin.json', () => {
+  it('reads jobs (array) and posts config from config/discover-linkedin.json', () => {
     const config = loadDiscoverConfig();
-    expect(typeof config.jobs.search_url).toBe('string');
-    expect(typeof config.jobs.limit).toBe('number');
+    expect(Array.isArray(config.jobs)).toBe(true);
+    expect(config.jobs.length).toBeGreaterThan(0);
+    for (const entry of config.jobs) {
+      expect(typeof entry.name).toBe('string');
+      expect(typeof entry.search_url).toBe('string');
+      expect(typeof entry.limit).toBe('number');
+    }
     expect(typeof config.posts.role).toBe('string');
     expect(typeof config.posts.geo).toBe('string');
     expect(typeof config.posts.limit).toBe('number');
@@ -136,7 +141,10 @@ function makeFakePage(rawCards: RawJobCard[]) {
 }
 
 describe('fetchLinkedInJobs', () => {
-  const realConfigOverride = { jobs: { search_url: 'https://example.com/jobs', limit: 25 }, posts: { role: 'x', geo: 'in', limit: 25 } };
+  const realConfigOverride = {
+    jobs: [{ name: 'default', search_url: 'https://example.com/jobs', limit: 25 }],
+    posts: { role: 'x', geo: 'in', limit: 25 },
+  };
 
   it('scrapes cards, dedups against the db, and returns only new jobs', async () => {
     const db = openDb(':memory:');
@@ -181,7 +189,7 @@ describe('fetchLinkedInJobs', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  it('caps results at config.jobs.limit before parsing', async () => {
+  it('caps results at each entry\'s limit before parsing', async () => {
     const db = openDb(':memory:');
     const rawCards: RawJobCard[] = Array.from({ length: 30 }, (_, i) => ({
       titleText: `Job ${i}`,
@@ -195,7 +203,14 @@ describe('fetchLinkedInJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchLinkedInJobs({ chromium: chromiumStub, db, configOverride: { jobs: { search_url: 'https://example.com', limit: 5 }, posts: { role: 'x', geo: 'in', limit: 5 } } });
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [{ name: 'default', search_url: 'https://example.com', limit: 5 }],
+        posts: { role: 'x', geo: 'in', limit: 5 },
+      },
+    });
 
     expect(jobs).toHaveLength(5);
   });
@@ -232,17 +247,132 @@ describe('fetchLinkedInJobs', () => {
     expect(chromiumStub.launch).not.toHaveBeenCalled();
   });
 
-  it('returns [] and never launches a browser when jobs.search_url is still the placeholder', async () => {
+  it('returns [] and never launches a browser when the only entry\'s search_url is still the placeholder', async () => {
     const db = openDb(':memory:');
     const chromiumStub = { launch: vi.fn() };
 
     const jobs = await fetchLinkedInJobs({
       chromium: chromiumStub,
       db,
-      configOverride: { jobs: { search_url: 'REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL', limit: 25 }, posts: { role: 'x', geo: 'in', limit: 25 } },
+      configOverride: {
+        jobs: [{ name: 'default', search_url: 'REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL', limit: 25 }],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
     });
 
     expect(jobs).toEqual([]);
     expect(chromiumStub.launch).not.toHaveBeenCalled();
+  });
+
+  it('scrapes multiple real entries and returns the combined, deduped jobs from both', async () => {
+    const db = openDb(':memory:');
+    const rawCardsA: RawJobCard[] = [
+      { titleText: 'Job A', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/view/1111111111/', snippetText: null, easyApply: false },
+    ];
+    const rawCardsB: RawJobCard[] = [
+      { titleText: 'Job B', companyText: 'Widgets', hrefRaw: 'https://www.linkedin.com/jobs/view/2222222222/', snippetText: null, easyApply: false },
+    ];
+    const pageA = makeFakePage(rawCardsA);
+    const pageB = makeFakePage(rawCardsB);
+    const context = { newPage: vi.fn().mockResolvedValueOnce(pageA).mockResolvedValueOnce(pageB) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'entry-a', search_url: 'https://example.com/a', limit: 25 },
+          { name: 'entry-b', search_url: 'https://example.com/b', limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((j) => j.id).sort()).toEqual(['li-job:1111111111', 'li-job:2222222222']);
+    expect(chromiumStub.launch).toHaveBeenCalledTimes(1);
+    expect(browser.close).toHaveBeenCalled();
+  });
+
+  it('skips a placeholder entry and only scrapes the real entry alongside it', async () => {
+    const db = openDb(':memory:');
+    const rawCards: RawJobCard[] = [
+      { titleText: 'Real Job', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/view/3333333333/', snippetText: null, easyApply: false },
+    ];
+    const page = makeFakePage(rawCards);
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'placeholder', search_url: 'REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL', limit: 25 },
+          { name: 'real', search_url: 'https://example.com/real', limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe('li-job:3333333333');
+    // Only one page opened, for the real entry.
+    expect(context.newPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns [] and never launches a browser when all entries are placeholders', async () => {
+    const db = openDb(':memory:');
+    const chromiumStub = { launch: vi.fn() };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'a', search_url: 'REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL', limit: 25 },
+          { name: 'b', search_url: 'REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL', limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(jobs).toEqual([]);
+    expect(chromiumStub.launch).not.toHaveBeenCalled();
+  });
+
+  it('tolerates one entry failing to scrape while another entry still succeeds', async () => {
+    const db = openDb(':memory:');
+    const failingPage = {
+      goto: vi.fn().mockRejectedValue(new Error('net::ERR_CONNECTION_RESET')),
+      waitForSelector: vi.fn(),
+      locator: vi.fn(),
+    };
+    const rawCards: RawJobCard[] = [
+      { titleText: 'Survivor Job', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/view/4444444444/', snippetText: null, easyApply: false },
+    ];
+    const goodPage = makeFakePage(rawCards);
+    const context = { newPage: vi.fn().mockResolvedValueOnce(failingPage).mockResolvedValueOnce(goodPage) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'failing', search_url: 'https://example.com/failing', limit: 25 },
+          { name: 'good', search_url: 'https://example.com/good', limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe('li-job:4444444444');
+    expect(browser.close).toHaveBeenCalled();
   });
 });

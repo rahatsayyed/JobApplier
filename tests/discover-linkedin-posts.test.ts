@@ -150,7 +150,7 @@ describe('fetchLinkedInPosts', () => {
     const context = { newPage: vi.fn().mockResolvedValue(page) };
     const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
-    const configOverride = { jobs: { search_url: 'https://example.com', limit: 5 }, posts: { role: 'devops engineer', geo: 'in', limit: 5 } };
+    const configOverride = { jobs: [{ name: 'default', search_url: 'https://example.com', limit: 5 }], posts: { role: 'devops engineer', geo: 'in', limit: 5 } };
 
     await fetchLinkedInPosts({}, { chromium: chromiumStub, db, configOverride });
 
