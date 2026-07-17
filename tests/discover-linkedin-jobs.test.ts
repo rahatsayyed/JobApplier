@@ -4,7 +4,9 @@ import {
   extractLinkedInJobId,
   parseLinkedInJobCards,
   fetchLinkedInJobs,
+  buildLinkedInJobsSearchUrl,
   type RawJobCard,
+  type JobSearchEntry,
 } from '../src/discover/linkedin-jobs.js';
 import { openDb, isSeen } from '../src/db.js';
 
@@ -15,7 +17,7 @@ describe('loadDiscoverConfig', () => {
     expect(config.jobs.length).toBeGreaterThan(0);
     for (const entry of config.jobs) {
       expect(typeof entry.name).toBe('string');
-      expect(typeof entry.search_url).toBe('string');
+      expect(entry.search_url === undefined || typeof entry.search_url === 'string').toBe(true);
       expect(typeof entry.limit).toBe('number');
     }
     expect(typeof config.posts.role).toBe('string');
@@ -126,6 +128,62 @@ describe('parseLinkedInJobCards', () => {
     expect(result.parsed).toBe(0);
     expect(result.skipped).toBe(1);
     expect(result.jobs).toHaveLength(0);
+  });
+});
+
+describe('buildLinkedInJobsSearchUrl', () => {
+  it('builds a base URL with keyword and location', () => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'full stack developer react', location: 'India', limit: 25 });
+    const parsed = new URL(url);
+    expect(parsed.origin + parsed.pathname).toBe('https://www.linkedin.com/jobs/search/');
+    expect(parsed.searchParams.get('keywords')).toBe('full stack developer react');
+    expect(parsed.searchParams.get('location')).toBe('India');
+    expect(parsed.searchParams.has('f_TPR')).toBe(false);
+    expect(parsed.searchParams.has('f_WT')).toBe(false);
+    expect(parsed.searchParams.has('f_AL')).toBe(false);
+    expect(parsed.searchParams.has('f_E')).toBe(false);
+  });
+
+  it('maps posted_within_seconds to f_TPR=r<seconds>', () => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', posted_within_seconds: 86400, limit: 25 });
+    expect(new URL(url).searchParams.get('f_TPR')).toBe('r86400');
+  });
+
+  it('maps remote_only: true to f_WT=2', () => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', remote_only: true, limit: 25 });
+    expect(new URL(url).searchParams.get('f_WT')).toBe('2');
+  });
+
+  it.each([[false], [undefined]])('omits f_WT when remote_only is %s', (remoteOnly) => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', remote_only: remoteOnly, limit: 25 });
+    expect(new URL(url).searchParams.has('f_WT')).toBe(false);
+  });
+
+  it('maps easy_apply_only: true to f_AL=true', () => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', easy_apply_only: true, limit: 25 });
+    expect(new URL(url).searchParams.get('f_AL')).toBe('true');
+  });
+
+  it.each([[false], [undefined]])('omits f_AL when easy_apply_only is %s', (easyApplyOnly) => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', easy_apply_only: easyApplyOnly, limit: 25 });
+    expect(new URL(url).searchParams.has('f_AL')).toBe(false);
+  });
+
+  it.each([
+    ['internship', '1'],
+    ['entry', '2'],
+    ['associate', '3'],
+    ['mid-senior', '4'],
+    ['director', '5'],
+    ['executive', '6'],
+  ] as const)('maps experience_level %s to f_E=%s', (level, code) => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', experience_level: level, limit: 25 });
+    expect(new URL(url).searchParams.get('f_E')).toBe(code);
+  });
+
+  it('omits f_E when experience_level is undefined', () => {
+    const url = buildLinkedInJobsSearchUrl({ name: 'x', keyword: 'react', limit: 25 });
+    expect(new URL(url).searchParams.has('f_E')).toBe(false);
   });
 });
 
@@ -374,5 +432,79 @@ describe('fetchLinkedInJobs', () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0].id).toBe('li-job:4444444444');
     expect(browser.close).toHaveBeenCalled();
+  });
+
+  it('uses search_url, not a built URL, when both search_url and keyword are set', async () => {
+    const db = openDb(':memory:');
+    const rawCards: RawJobCard[] = [
+      { titleText: 'Job', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/view/5555555555/', snippetText: null, easyApply: false },
+    ];
+    const page = makeFakePage(rawCards);
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const explicitUrl = 'https://www.linkedin.com/jobs/search/?keywords=explicit';
+    await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'both', search_url: explicitUrl, keyword: 'ignored keyword', location: 'India', limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(page.goto).toHaveBeenCalledWith(explicitUrl, { waitUntil: 'domcontentloaded' });
+  });
+
+  it('builds a URL from structured fields when search_url is absent and keyword is set', async () => {
+    const db = openDb(':memory:');
+    const rawCards: RawJobCard[] = [
+      { titleText: 'Job', companyText: 'Acme', hrefRaw: 'https://www.linkedin.com/jobs/view/6666666666/', snippetText: null, easyApply: false },
+    ];
+    const page = makeFakePage(rawCards);
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'structured', keyword: 'full stack developer react', location: 'India', remote_only: true, limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(page.goto).toHaveBeenCalledTimes(1);
+    const gotoUrl = page.goto.mock.calls[0][0] as string;
+    expect(gotoUrl).toContain('linkedin.com/jobs/search/');
+    const parsed = new URL(gotoUrl);
+    expect(parsed.searchParams.get('keywords')).toBe('full stack developer react');
+    expect(parsed.searchParams.get('location')).toBe('India');
+    expect(parsed.searchParams.get('f_WT')).toBe('2');
+  });
+
+  it('skips an entry with neither a usable search_url nor a keyword', async () => {
+    const db = openDb(':memory:');
+    const chromiumStub = { launch: vi.fn() };
+
+    const jobs = await fetchLinkedInJobs({
+      chromium: chromiumStub,
+      db,
+      configOverride: {
+        jobs: [
+          { name: 'no-url-no-keyword', limit: 25 },
+        ],
+        posts: { role: 'x', geo: 'in', limit: 25 },
+      },
+    });
+
+    expect(jobs).toEqual([]);
+    expect(chromiumStub.launch).not.toHaveBeenCalled();
   });
 });

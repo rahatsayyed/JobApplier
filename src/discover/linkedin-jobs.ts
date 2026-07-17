@@ -11,9 +11,59 @@ const projectRoot = path.resolve(__dirname, '../..');
 const CONFIG_PATH = path.join(projectRoot, 'config', 'discover-linkedin.json');
 const BURNER_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-burner-state.json');
 
+export interface JobSearchEntry {
+  name: string;
+  search_url?: string;
+  keyword?: string;
+  location?: string;
+  posted_within_seconds?: number;
+  remote_only?: boolean;
+  easy_apply_only?: boolean;
+  experience_level?:
+    | 'internship'
+    | 'entry'
+    | 'associate'
+    | 'mid-senior'
+    | 'director'
+    | 'executive';
+  limit: number;
+}
+
 export interface DiscoverLinkedInConfig {
-  jobs: Array<{ name: string; search_url: string; limit: number }>;
+  jobs: JobSearchEntry[];
   posts: { role: string; geo: string; limit: number };
+}
+
+const EXPERIENCE_LEVEL_CODES: Record<string, string> = {
+  internship: '1',
+  entry: '2',
+  associate: '3',
+  'mid-senior': '4',
+  director: '5',
+  executive: '6',
+};
+
+export function buildLinkedInJobsSearchUrl(entry: JobSearchEntry): string {
+  const params = new URLSearchParams();
+  if (entry.keyword) {
+    params.set('keywords', entry.keyword);
+  }
+  if (entry.location) {
+    params.set('location', entry.location);
+  }
+  if (entry.posted_within_seconds !== undefined) {
+    params.set('f_TPR', `r${entry.posted_within_seconds}`);
+  }
+  if (entry.remote_only) {
+    params.set('f_WT', '2');
+  }
+  if (entry.easy_apply_only) {
+    params.set('f_AL', 'true');
+  }
+  if (entry.experience_level) {
+    params.set('f_E', EXPERIENCE_LEVEL_CODES[entry.experience_level]);
+  }
+  return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
 }
 
 export function loadDiscoverConfig(): DiscoverLinkedInConfig {
@@ -95,17 +145,26 @@ export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Jo
   const browserLauncher = deps.chromium ?? chromium;
   const burnerStatePath = deps.burnerStatePath ?? BURNER_STATE_PATH;
 
-  const realEntries = config.jobs.filter((entry) => {
-    if (entry.search_url.startsWith('REPLACE_WITH_')) {
+  const resolvedEntries: Array<{ entry: JobSearchEntry; url: string }> = [];
+  for (const entry of config.jobs) {
+    const hasUsableSearchUrl =
+      !!entry.search_url && !entry.search_url.startsWith('REPLACE_WITH_');
+    if (hasUsableSearchUrl) {
+      resolvedEntries.push({ entry, url: entry.search_url as string });
+    } else if (entry.keyword) {
+      resolvedEntries.push({ entry, url: buildLinkedInJobsSearchUrl(entry) });
+    } else if (entry.search_url) {
       console.error(
-        `[discover] linkedin_jobs (${entry.name}): search_url is still the placeholder — skipping, replace it with a real LinkedIn job search URL to enable this entry`
+        `[discover] linkedin_jobs (${entry.name}): search_url is still the placeholder and no structured fields (keyword) are set — skipping, replace search_url or fill in structured fields to enable this entry`
       );
-      return false;
+    } else {
+      console.error(
+        `[discover] linkedin_jobs (${entry.name}): no search_url and no keyword set — skipping`
+      );
     }
-    return true;
-  });
+  }
 
-  if (realEntries.length === 0) {
+  if (resolvedEntries.length === 0) {
     return [];
   }
 
@@ -120,10 +179,10 @@ export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Jo
     browser = await browserLauncher.launch({ headless: true });
     const context = await browser.newContext({ storageState: burnerStatePath });
 
-    for (const entry of realEntries) {
+    for (const { entry, url } of resolvedEntries) {
       try {
         const page = await context.newPage();
-        await page.goto(entry.search_url, { waitUntil: 'domcontentloaded' });
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector(JOB_CARD_SELECTOR, { timeout: 15000 });
 
         const rawCards: RawJobCard[] = await page.locator(JOB_CARD_SELECTOR).evaluateAll((nodes: Element[]) =>
