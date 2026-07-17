@@ -158,6 +158,11 @@ not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails.
    and returns the combined JSON array of new Job objects. If empty, skip to step 6 and report
    zero new jobs.
 
+   Neither `discover.linkedin_jobs` nor `discover.linkedin_posts` has been live-tested against
+   real LinkedIn search results yet — selectors were written from the design spec, not verified
+   live. The first real hunt run after this lands should be watched closely (check the
+   `[discover]` console logs for parsed/skipped counts) before trusting it unattended.
+
 2. **Match** — dispatch `subagent_type: matcher` with the full job list from step 1. It returns
    `[{job_id, score, reasons, missing_keywords}, ...]` for every job (unfiltered).
    In the orchestrating session (cheap, no tools needed), filter this yourself: any `job_id`
