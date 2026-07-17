@@ -198,16 +198,29 @@ export interface Point {
   y: number;
 }
 
+// Max plausible 2D distance (px) between the profile's own name and a real header action
+// button. INCIDENT 2026-07-17 (#3): confirmed-working real header buttons sit ~130-145px
+// below the name in the same X column; sidebar-suggestion-card decoys sit ~800-900px away
+// (mostly in X, a different column entirely). 300px is a generous margin above the real
+// case and well under the decoy distance — a candidate farther than this is rejected as
+// implausible rather than accepted just for being the only/closest match available.
+const MAX_PLAUSIBLE_CANDIDATE_DISTANCE_PX = 300;
+
 /**
  * Pure: given the profile name element's position and each selector-match candidate's
  * position, picks the index of the candidate closest by full 2D (Euclidean) distance — the
  * real profile-card element, not a duplicate/decoy elsewhere on the page. Y-only distance is
- * NOT enough: INCIDENT 2026-07-17 (#2) — a sidebar suggestion card's "Connect" link can sit
- * at a similar Y to the header (x≈1052, sidebar column) while the real button is at a
- * similar X to the name itself (x≈180, same column) — X is what actually distinguishes them.
- * Returns -1 for an empty candidate list. Exported for unit testing.
+ * NOT enough (INCIDENT #2: a sidebar card can share the header's Y while sitting in a
+ * different X column). Returns -1 if there are no candidates, OR if the single nearest one
+ * is farther than `maxDistancePx` — an implausibly distant "nearest" match (e.g. the only
+ * candidate on the page is a sidebar decoy, INCIDENT #3) must be rejected, not accepted just
+ * for being the closest available. Exported for unit testing.
  */
-export function pickNearestToNameIndex(namePoint: Point, candidates: Point[]): number {
+export function pickNearestToNameIndex(
+  namePoint: Point,
+  candidates: Point[],
+  maxDistancePx: number = MAX_PLAUSIBLE_CANDIDATE_DISTANCE_PX
+): number {
   if (candidates.length === 0) return -1;
   const distanceSq = (p: Point) => (p.x - namePoint.x) ** 2 + (p.y - namePoint.y) ** 2;
   let bestIndex = 0;
@@ -219,7 +232,7 @@ export function pickNearestToNameIndex(namePoint: Point, candidates: Point[]): n
       bestIndex = i;
     }
   }
-  return bestIndex;
+  return Math.sqrt(bestDistance) <= maxDistancePx ? bestIndex : -1;
 }
 
 /** Position of the heading whose text matches `expectedName`, or null if none found. */
@@ -239,14 +252,17 @@ async function getProfileNamePoint(page: Pick<Page, 'locator'>, expectedName: st
 
 /**
  * Resolves to whichever match of `selector` sits closest (2D distance) to the profile's own
- * name, replacing a DOM-ancestor scoping guess with proximity to a known-real anchor. Falls
- * back to `.first()` when there's at most one match or no name position — preserving
- * `Locator.waitFor`'s auto-poll behavior for an element that hasn't rendered yet.
+ * name, replacing a DOM-ancestor scoping guess with proximity to a known-real anchor — and to
+ * a zero-match locator (via `.nth(count)`, out of range) if the nearest is implausibly far
+ * (see `pickNearestToNameIndex`), so an all-decoy page correctly falls through instead of
+ * clicking the only match that exists. Falls back to `.first()` when there are no matches at
+ * all or no name position — preserving `Locator.waitFor`'s auto-poll behavior for an element
+ * that hasn't rendered yet.
  */
 async function pickNearestLocator(page: Pick<Page, 'locator'>, selector: string, namePoint: Point | null) {
   const candidatesLocator = page.locator(selector);
   const count = await candidatesLocator.count();
-  if (count <= 1 || namePoint === null) return candidatesLocator.first();
+  if (count === 0 || namePoint === null) return candidatesLocator.first();
   const candidates = await candidatesLocator.evaluateAll((els) =>
     els.map((el) => {
       const box = el.getBoundingClientRect();
@@ -254,7 +270,7 @@ async function pickNearestLocator(page: Pick<Page, 'locator'>, selector: string,
     })
   );
   const index = pickNearestToNameIndex(namePoint, candidates);
-  return candidatesLocator.nth(index === -1 ? 0 : index);
+  return candidatesLocator.nth(index === -1 ? count : index);
 }
 
 /**

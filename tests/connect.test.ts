@@ -47,9 +47,18 @@ function makeFakeLocator(el: ReturnType<typeof makeFakeElement> | null): any {
     }),
     waitFor: vi.fn().mockResolvedValue(undefined),
     textContent: vi.fn().mockResolvedValue(null),
-    evaluateAll: vi.fn().mockResolvedValue([]),
+    // Default plausible position (~130px below x=180, matching real observed header-button
+    // distances) so single-match directConnectButton/pendingButton fakes built via this
+    // helper (rather than makeFakeYLocator) are still accepted by pickNearestLocator's
+    // distance check by default; empty when there's no element at all.
+    evaluateAll: vi.fn().mockResolvedValue(el ? [{ x: 180, y: 230 }] : []),
   };
   locator.first = vi.fn(() => locator);
+  // `pickNearestLocator` (src/mcp/connect.ts) calls `.nth(index)` on whatever
+  // `page.locator(selector)` returns, even for a single-match locator like this one —
+  // `.nth(0)` resolves to the element itself, any other index to "no match" (mirrors real
+  // Playwright's out-of-range `.nth()` semantics).
+  locator.nth = vi.fn((i: number) => (i === 0 ? locator : makeFakeLocator(null)));
   return locator;
 }
 
@@ -396,6 +405,24 @@ describe('pickNearestToNameIndex (2D proximity, INCIDENT #2)', () => {
 
   it('returns -1 for an empty candidate list', () => {
     expect(pickNearestToNameIndex({ x: 0, y: 0 }, [])).toBe(-1);
+  });
+
+  it('returns -1 (rejects) when the ONLY candidate is implausibly far, instead of accepting it by default (INCIDENT #3: Juliet/Alok false-negative regression)', () => {
+    // Real header buttons sit ~130-145px below the name; a sidebar decoy sits ~800-900px
+    // away. Being the sole candidate must not be enough to accept it.
+    const namePoint = { x: 180, y: 437 };
+    expect(pickNearestToNameIndex(namePoint, [{ x: 1052, y: 410 }])).toBe(-1);
+  });
+
+  it('still accepts the only candidate when it is within the plausible distance', () => {
+    const namePoint = { x: 180, y: 437 };
+    expect(pickNearestToNameIndex(namePoint, [{ x: 180, y: 580 }])).toBe(0);
+  });
+
+  it('respects a custom maxDistancePx override', () => {
+    const namePoint = { x: 0, y: 0 };
+    expect(pickNearestToNameIndex(namePoint, [{ x: 0, y: 50 }], 40)).toBe(-1);
+    expect(pickNearestToNameIndex(namePoint, [{ x: 0, y: 50 }], 60)).toBe(0);
   });
 });
 
@@ -976,6 +1003,79 @@ describe('connectSend control flow', () => {
     expect(moreButton.click).not.toHaveBeenCalled();
   });
 
+  it('falls through to the More-menu path (not the sidebar decoy) when the profile has NO real direct-Connect button at all — Juliet K Gasper case (INCIDENT regression #3: false negative, only decoy candidate exists)', async () => {
+    // Regression test for a live-confirmed false negative: Juliet's own profile header shows
+    // only Message/Follow/More — genuinely no direct Connect button. `directConnectButton`
+    // still matched ONE stray sidebar suggestion-card link ("Soumyashree SR", ~850px away),
+    // and because it was the ONLY match, the old code accepted it as "nearest" by default.
+    // The real fix: reject an implausibly distant sole candidate and fall through to More.
+    const sidebarDecoy = makeFakeElement();
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.directConnectButton) {
+          return makeFakeYLocator([sidebarDecoy], [{ x: 1052, y: 410 }]);
+        }
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { nameX: 180, nameY: 437 }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(sidebarDecoy.click).not.toHaveBeenCalled();
+    expect(moreButton.click).toHaveBeenCalledTimes(1);
+    expect(connectMenuItem.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to the More-menu path (not the sidebar decoy) when the profile has NO real direct-Connect button at all — Alok Singh Baghel case (INCIDENT regression #3)', async () => {
+    // Same mechanism as the Juliet case above, confirmed independently on a second real
+    // profile in the same live batch: sidebar decoy was "Dhruv Sharaf", ~870px away.
+    const sidebarDecoy = makeFakeElement();
+    const moreButton = makeFakeElement();
+    const connectMenuItem = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.directConnectButton) {
+          return makeFakeYLocator([sidebarDecoy], [{ x: 1060, y: 500 }]);
+        }
+        if (selector === SELECTORS.moreButton) return makeFakeMultiLocator([moreButton], [48]);
+        if (selector === SELECTORS.connectMenuItem) return makeFakeLocator(connectMenuItem);
+        if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { nameX: 180, nameY: 500 }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(sidebarDecoy.click).not.toHaveBeenCalled();
+    expect(moreButton.click).toHaveBeenCalledTimes(1);
+    expect(connectMenuItem.click).toHaveBeenCalledTimes(1);
+  });
+
   it('aborts BEFORE filling the note or clicking Send when the connect dialog names a different real person than the profile navigated to (INCIDENT regression: recipient-name mismatch)', async () => {
     // Regression test for the actual 2026-07-17 incident: a wrong selector match sent a
     // real request, with a note meant for someone else, to an uninvolved third party. The
@@ -1275,13 +1375,19 @@ function makeSendConfirmationPage(pendingButtonAppears: boolean) {
   const connectMenuItem = makeFakeElement();
   const sendButton = makeFakeElement();
 
+  const pendingElement = {
+    waitFor: pendingButtonAppears
+      ? vi.fn().mockResolvedValue(undefined)
+      : vi.fn().mockRejectedValue(new Error('Timeout exceeded')),
+  };
+  const emptyElement = { waitFor: vi.fn().mockRejectedValue(new Error('no match')) };
   const pendingButtonLocator: any = {
     count: vi.fn().mockResolvedValue(pendingButtonAppears ? 1 : 0),
-    first: vi.fn(() => ({
-      waitFor: pendingButtonAppears
-        ? vi.fn().mockResolvedValue(undefined)
-        : vi.fn().mockRejectedValue(new Error('Timeout exceeded')),
-    })),
+    // Plausible position (~130px below the default name) so pickNearestLocator's distance
+    // check accepts it when it exists — only reached when count > 0.
+    evaluateAll: vi.fn().mockResolvedValue(pendingButtonAppears ? [{ x: 180, y: 230 }] : []),
+    first: vi.fn(() => pendingElement),
+    nth: vi.fn((i: number) => (i === 0 ? pendingElement : emptyElement)),
   };
 
   const page = makeConnectPage((selector: string) => {
