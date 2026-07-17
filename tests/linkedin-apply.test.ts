@@ -275,7 +275,7 @@ describe('applyEasyApply control flow', () => {
   });
 
   it('falls through to the normal manual_review path when waitForFormControls times out after the Easy Apply click', async () => {
-    // Regression test for the `.catch(() => {})` in `waitForFormControls` (src/mcp/linkedin-apply.ts).
+    // Regression test for the `.catch(() => {})` in `waitForFormControls` (src/apply/linkedin.ts).
     // That helper wraps a bounded `locator.waitFor(...)` in a swallowing catch so a timeout
     // falls through to the existing `.count()`-based manual_review fallbacks instead of
     // throwing. Every other test's fake `waitFor` resolves instantly, so none of them

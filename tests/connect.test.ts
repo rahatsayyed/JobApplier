@@ -843,7 +843,7 @@ describe('connectSend control flow', () => {
   it('falls through to the normal "Connect menu item not found" failure when waitForConnectMenu times out after the More click', async () => {
     // Regression test for the `.catch(() => {})` in `waitForConnectMenu` (src/mcp/connect.ts),
     // added for the same bug class already fixed in `waitForFormControls`
-    // (src/mcp/linkedin-apply.ts, see tests/linkedin-apply.test.ts's matching timeout test).
+    // (src/apply/linkedin.ts, see tests/linkedin-apply.test.ts's matching timeout test).
     // `waitForConnectMenu` wraps a bounded `locator.waitFor(...)` in a swallowing catch so a
     // timeout falls through to the existing `.count()`-based "not found" fallback instead of
     // throwing. Every other test's fake `waitFor` resolves instantly, so none of them
@@ -1423,7 +1423,7 @@ describe('connectSend post-click confirmation (false-positive regression)', () =
 
   it('returns failed (not sent) when the "Pending" button never appears', async () => {
     // Regression test for the same false-positive-risk pattern fixed in
-    // linkedin-apply.ts's applyEasyApply: a Send click that silently no-ops must never be
+    // linkedin.ts's applyEasyApply: a Send click that silently no-ops must never be
     // reported as 'sent'. This also regression-tests the 2026-07-16 finding that the
     // Send-button-disappears heuristic ALONE isn't trustworthy — only a confirmed
     // "Pending" button is.

@@ -10,12 +10,12 @@ import * as lever from '../ats/lever.js';
 import * as workday from '../ats/workday.js';
 import * as ashby from '../ats/ashby.js';
 
-// Best-effort, NOT live-verified selectors (unlike linkedin-apply.ts's
+// Best-effort, NOT live-verified selectors (unlike linkedin.ts's
 // SELECTORS.submissionConfirmation, which was confirmed live against a real posting).
 // There is no single proven post-submit signal across Greenhouse/Lever/Workday/Ashby in this
 // codebase — this is a defensible heuristic guess at common confirmation copy, not a
 // guarantee. Treat any 'submitted' result gated on this as lower-confidence than
-// linkedin-apply.ts's equivalent until a real posting confirms it.
+// linkedin.ts's equivalent until a real posting confirms it.
 export const SELECTORS = {
   submissionConfirmation:
     'text=/thank you|application (received|submitted)|successfully submitted|application complete/i',
@@ -25,7 +25,7 @@ export const SELECTORS = {
  * Clicks the element matched by `selector`. If nothing matches (a selector-rot case) and the
  * hybrid fallback is enabled, escalates to a bounded Claude call over the real, currently-
  * visible button/link texts, clicking only if Claude's choice is verbatim one of them.
- * Returns whether a click happened. Mirrors linkedin-apply.ts's `findAndClickControl`.
+ * Returns whether a click happened. Mirrors linkedin.ts's `findAndClickControl`.
  */
 async function findAndClickControl(
   page: Pick<Page, 'locator'>,
@@ -53,7 +53,7 @@ async function findAndClickControl(
   return true;
 }
 
-// Must match linkedin-apply.ts's own DEFAULT_MAX_APPLIES_PER_DAY — see the shared-counter
+// Must match linkedin.ts's own DEFAULT_MAX_APPLIES_PER_DAY — see the shared-counter
 // rationale on the `checkAndIncrement` call below.
 const DEFAULT_MAX_APPLIES_PER_DAY = 5;
 
@@ -128,7 +128,7 @@ export interface ApplyExternalDeps {
   chromium?: { launch: typeof chromium.launch };
   /**
    * Hybrid Claude fallback for submit-button-selector-miss escalation only (see
-   * domFallback.ts and linkedin-apply.ts's identical pattern). Off by default unless
+   * domFallback.ts and linkedin.ts's identical pattern). Off by default unless
    * explicitly enabled here or via `EXTERNAL_APPLY_HYBRID_FALLBACK=true`. Required-field
    * selectors (name/email/resumeUpload) are NOT covered — Greenhouse/Lever/Workday/Ashby's
    * field IDs are documented as far more stable than LinkedIn's, and matching a label to an
@@ -212,7 +212,7 @@ export async function applyExternal(
   // fetch) has already had a chance to reject the request for free, so a rejection never
   // burns a quota slot for a no-op.
   //
-  // Judgment call: this shares the SAME 'easy_apply' counter key as linkedin-apply.ts's
+  // Judgment call: this shares the SAME 'easy_apply' counter key as linkedin.ts's
   // `apply_easy_apply`, per the design spec (docs/superpowers/specs/2026-07-07-jobapplier-
   // phase2-design.md §5.1: "Rate-limited by MAX_APPLIES_PER_DAY (shared counter with 5.2)"),
   // where §5.2 is this file. So `MAX_APPLIES_PER_DAY` is one combined daily cap across
@@ -287,7 +287,7 @@ export async function applyExternal(
     }
 
     // Don't trust the click alone — the same false-positive class of bug fixed in
-    // linkedin-apply.ts this session (a submit click can silently no-op with no thrown
+    // linkedin.ts this session (a submit click can silently no-op with no thrown
     // error). Unlike that file's live-verified confirmation text, SELECTORS.submissionConfirmation
     // here is a best-effort heuristic (see its comment above) — but "unproven" is still safer
     // than "unchecked": if it can't be confirmed within the timeout, report manual_review

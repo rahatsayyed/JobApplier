@@ -11,7 +11,7 @@ Phase 1 pipeline. It runs as a Claude Code agent using MCP tools (`job-fetch`, `
 `contacts`, `gmail`, `apply`, `connect`) and skills (`match-jobs`, `draft-outreach`,
 `draft-connect-note`). `apply` is one MCP server exposing one tool per platform —
 `apply.linkedin`, `apply.greenhouse`, `apply.lever`, `apply.workday`, `apply.ashby` — backed by
-`src/mcp/linkedin-apply.ts` (Easy Apply, burner account) and `src/mcp/external-apply.ts` (the
+`src/apply/linkedin.ts` (Easy Apply, burner account) and `src/apply/external.ts` (the
 other four, auto-detected from `apply_url` with a platform-match safety check).
 
 The orchestrating session does not call the `job-fetch`/`contacts`/`resume`/`gmail` tools
@@ -231,7 +231,7 @@ Steps, for each targeted job:
     - `config/easy-apply-answers.json` is re-read from disk on every `apply.linkedin` call
       (`loadAnswers()` calls `readFileSync` fresh each time), so no MCP reconnect is needed for
       this specific edit — you can retry the apply immediately after writing the `custom` entry.
-      (An MCP reconnect is only needed if `linkedin-apply.ts`'s own source changes.)
+      (An MCP reconnect is only needed if `linkedin.ts`'s own source changes.)
     - Still inform the user (Telegram if active, else chat) what question blocked the apply, what
       value you added and where it came from (resume / existing config / user-provided), before
       retrying — this is real personal data going into a real application, not a silent action.
@@ -246,26 +246,26 @@ the multi-stage pipeline "Running the hunt" uses.
 ### Hybrid Claude fallback (Easy Apply + external ATS, opt-in)
 
 Hardcoded Playwright selectors are the fast, free default path and run first on every step, in
-both `linkedin-apply.ts` and `external-apply.ts`. LinkedIn's DOM is not stable the way
+both `linkedin.ts` and `external.ts`. LinkedIn's DOM is not stable the way
 Greenhouse/Lever/Workday/Ashby's is, so selector rot happens there most; rather than
 dead-ending at `manual_review`/`needs_answer` on every selector miss, a bounded Claude
 escalation can kick in — only on failure, never on every step:
-- **Control click miss** — `linkedin-apply.ts`: Easy Apply button, or Next/Review/Submit not
-  found. `external-apply.ts`: submit button not found (required-field selectors —
+- **Control click miss** — `linkedin.ts`: Easy Apply button, or Next/Review/Submit not
+  found. `external.ts`: submit button not found (required-field selectors —
   name/email/resumeUpload — are NOT covered; those platforms' field IDs are documented as far
   more stable than LinkedIn's, and finding the right field is different work than picking a
   button to click). Escalates with the real, currently-visible button/link texts on the page
   and picks one — or refuses if none plausibly match. Never invents text that isn't actually on
   the page.
-- **Unanswerable screening question** (`linkedin-apply.ts` only — external ATS forms in this
+- **Unanswerable screening question** (`linkedin.ts` only — external ATS forms in this
   codebase have no dynamic Q&A schema): escalates with the question text and the candidate's
   existing truthful answer topics (the fixed fields + the `custom` map), asking only whether
   the question is a *rephrasing* of one already answered. Never invents a new value — if the
   question asks for genuinely new information, it still falls through to `needs_answer` (step
   2a above).
 
-Opt-in per file, off by default: `EASY_APPLY_HYBRID_FALLBACK=true` for `linkedin-apply.ts`,
-`EXTERNAL_APPLY_HYBRID_FALLBACK=true` for `external-apply.ts` — these are independent toggles,
+Opt-in per file, off by default: `EASY_APPLY_HYBRID_FALLBACK=true` for `linkedin.ts`,
+`EXTERNAL_APPLY_HYBRID_FALLBACK=true` for `external.ts` — these are independent toggles,
 not shared.
 
 This project has no separate Anthropic API key/billing — the user has a Claude subscription,
@@ -273,13 +273,13 @@ not API credits — so this fallback shells out to the `claude` CLI in headless 
 invoking one of two project-level custom slash commands rather than an ad hoc inline prompt:
 `.claude/commands/easy-apply-control-fallback.md` (control-click escalation, shared by both
 files) and `.claude/commands/easy-apply-answer-fallback.md` (screening-question escalation,
-`linkedin-apply.ts` only). Keeping the task, output contract, and "never invent" rules in those
+`linkedin.ts` only). Keeping the task, output contract, and "never invent" rules in those
 files means Claude already knows the exact steps on every invocation instead of the caller
 re-deriving them in a fresh prompt each time. Each call authenticates via the same Claude Code
 subscription session (not a metered API key) and is a single, isolated, non-agentic invocation
 — no follow-up turns, no tool use.
 
-None of `external-apply.ts`'s new confirmation-check/fallback behavior has been live-tested
+None of `external.ts`'s new confirmation-check/fallback behavior has been live-tested
 against a real Greenhouse/Lever/Workday/Ashby posting yet — same caveat as the rest of Phase
 2's untested-live gaps (see "Connecting" below for the equivalent `connect.ts` caveat).
 
@@ -315,7 +315,7 @@ this file's already-live-verified moreButton/connectMenuItem/sendButton selector
 real request to verify it requires explicit human approval that hasn't been given yet. The
 next real, approved `connect_send` should be watched to confirm the heuristic actually fires,
 and ideally identify a more specific signal (e.g. exact toast/snackbar text) the way
-`linkedin-apply.ts`'s submission confirmation was live-verified.
+`linkedin.ts`'s submission confirmation was live-verified.
 
 `connect_send`'s own selector-miss points (More button, Connect menu item, Send button) can
 also escalate to the same bounded Claude fallback described above, gated by

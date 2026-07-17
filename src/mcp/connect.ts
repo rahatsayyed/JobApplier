@@ -116,7 +116,7 @@ async function escalateClick(
 /**
  * Clicks the element matched by `selector`. If nothing matches and the hybrid fallback is
  * enabled, escalates via `escalateClick` over `candidateSelector`. Mirrors
- * src/mcp/linkedin-apply.ts's `findAndClickControl`.
+ * src/apply/linkedin.ts's `findAndClickControl`.
  */
 async function findAndClickControl(
   page: Pick<Page, 'locator'>,

@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile);
 
 // Hybrid-mode Claude fallback for browser-automation steps whose hardcoded Playwright
 // selectors miss (LinkedIn's DOM is not stable the way Greenhouse/Lever/Workday/Ashby's is).
-// This is the escalation path ONLY — the fast, free, selector-based path in linkedin-apply.ts
+// This is the escalation path ONLY — the fast, free, selector-based path in linkedin.ts
 // always runs first and is the common case.
 //
 // There is no Anthropic API key/billing set up for this project — the user has a Claude

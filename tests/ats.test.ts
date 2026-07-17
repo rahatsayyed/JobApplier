@@ -3,7 +3,7 @@ import { detect as detectGreenhouse, fieldMap as greenhouseFieldMap } from '../s
 import { detect as detectLever, fieldMap as leverFieldMap } from '../src/ats/lever.js';
 import { detect as detectWorkday, fieldMap as workdayFieldMap } from '../src/ats/workday.js';
 import { detect as detectAshby, fieldMap as ashbyFieldMap } from '../src/ats/ashby.js';
-import { detectAts, splitName, applyExternal, SELECTORS } from '../src/mcp/external-apply.js';
+import { detectAts, splitName, applyExternal, SELECTORS } from '../src/apply/external.js';
 import { openDb, saveJob, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
@@ -174,7 +174,7 @@ describe('applyExternal rate limiting (Finding 1)', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('shares the same "easy_apply" daily counter as linkedin-apply.ts (documented shared cap)', async () => {
+  it('shares the same "easy_apply" daily counter as linkedin.ts (documented shared cap)', async () => {
     seedApplicableJob('job-ext-shared-1');
 
     // Pre-exhaust the shared counter the way applyEasyApply would.
@@ -330,7 +330,7 @@ function makeFakeExternalApplyPage({
   return { page, submitButton };
 }
 
-describe('applyExternal submission confirmation (parity with linkedin-apply.ts false-positive fix)', () => {
+describe('applyExternal submission confirmation (parity with linkedin.ts false-positive fix)', () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -372,7 +372,7 @@ describe('applyExternal submission confirmation (parity with linkedin-apply.ts f
   });
 
   it('returns manual_review (not submitted) when the submit click cannot be confirmed', async () => {
-    // Regression test for the same false-positive class of bug fixed in linkedin-apply.ts:
+    // Regression test for the same false-positive class of bug fixed in linkedin.ts:
     // a submit click can silently no-op, so the click alone must never be trusted.
     seedApplicableJob('job-ext-unconfirmed-1');
     const { page, submitButton } = makeFakeExternalApplyPage({
