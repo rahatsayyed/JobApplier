@@ -1,0 +1,11 @@
+{
+  "jobs": {
+    "search_url": "REPLACE_WITH_YOUR_LINKEDIN_JOBS_SEARCH_URL",
+    "limit": 25
+  },
+  "posts": {
+    "role": "full stack developer / react",
+    "geo": "in",
+    "limit": 25
+  }
+}
