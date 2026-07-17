@@ -90,7 +90,7 @@ export interface LinkedInPostsDeps {
   burnerStatePath?: string;
 }
 
-const POST_CARD_SELECTOR = '.feed-shared-update-v2, .reusable-search__result-container';
+const POST_CARD_SELECTOR = '[role="listitem"]';
 
 export async function fetchLinkedInPosts(
   params: { role?: string; geo?: string },
@@ -119,11 +119,10 @@ export async function fetchLinkedInPosts(
 
     const rawCards: RawPostCard[] = await page.locator(POST_CARD_SELECTOR).evaluateAll((nodes: Element[]) =>
       nodes.map((n) => {
-        const textEl = n.querySelector('.feed-shared-update-v2__description, .update-components-text');
         const linkEl = n.querySelector('a[href*="urn:li:activity"]') as HTMLAnchorElement | null;
-        const authorEl = n.querySelector('.update-components-actor__name, .entity-result__title-text');
+        const authorEl = n.querySelector('a[href*="/in/"]');
         return {
-          textContent: textEl?.textContent ?? null,
+          textContent: n.textContent ?? null,
           hrefRaw: linkEl?.href ?? null,
           authorText: authorEl?.textContent ?? null,
         };

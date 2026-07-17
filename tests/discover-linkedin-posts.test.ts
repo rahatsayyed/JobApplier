@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import {
   extractActivityUrn,
   isHiringIntent,
@@ -6,6 +9,19 @@ import {
   buildLinkedInPostSearchUrl,
   type RawPostCard,
 } from '../src/discover/linkedin-posts.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+describe('POST_CARD_SELECTOR', () => {
+  it('uses the role=listitem selector, not the old hashed-class selector', () => {
+    const source = readFileSync(
+      path.join(__dirname, '../src/discover/linkedin-posts.ts'),
+      'utf-8'
+    );
+    expect(source).toContain('[role="listitem"]');
+    expect(source).not.toContain('.feed-shared-update-v2, .reusable-search__result-container');
+  });
+});
 
 describe('extractActivityUrn', () => {
   it('extracts the activity id from a permalink href', () => {
