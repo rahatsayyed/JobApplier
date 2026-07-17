@@ -152,7 +152,10 @@ reasoning stay out of your own context — you only see the compact JSON each st
 not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails.
 
 1. **Discover** — dispatch `subagent_type: discoverer` with the Role and Location from
-   Preferences. It returns a JSON array of new Job objects. If empty, skip to step 6 and report
+   Preferences. It calls `job-fetch.list_new_jobs` (Adzuna/Remotive/RemoteOK/Serper) plus
+   `discover.linkedin_jobs` and `discover.linkedin_posts` (LinkedIn job search + hiring-post
+   search, burner account, see `docs/superpowers/specs/2026-07-17-linkedin-discovery-design.md`),
+   and returns the combined JSON array of new Job objects. If empty, skip to step 6 and report
    zero new jobs.
 
 2. **Match** — dispatch `subagent_type: matcher` with the full job list from step 1. It returns
