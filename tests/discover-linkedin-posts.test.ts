@@ -140,6 +140,35 @@ describe('parseLinkedInPostCards', () => {
     expect(result.jobs).toHaveLength(1);
     expect(result.jobs[0].id).toBe(expectedId);
   });
+
+  it('falls back to default title when authorText is an empty string', () => {
+    const profileUrl = 'https://www.linkedin.com/in/some-company/';
+    const text = "We're hiring a Frontend Developer, 5+ years experience";
+    const rawCards: RawPostCard[] = [
+      {
+        textContent: text,
+        profileUrl,
+        authorText: '',
+      },
+    ];
+
+    const result = parseLinkedInPostCards(rawCards);
+    const expectedId = buildSyntheticPostId(profileUrl, text);
+
+    expect(result.found).toBe(1);
+    expect(result.parsed).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]).toEqual({
+      id: expectedId,
+      source: 'linkedin-posts',
+      title: 'LinkedIn hiring post',
+      company: '',
+      url: profileUrl,
+      apply_url: profileUrl,
+      description: text,
+    });
+  });
 });
 
 import { vi } from 'vitest';

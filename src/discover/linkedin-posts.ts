@@ -61,7 +61,7 @@ export function parseLinkedInPostCards(rawCards: RawPostCard[]): ParseResult {
       jobs.push({
         id: buildSyntheticPostId(card.profileUrl, card.textContent),
         source: 'linkedin-posts',
-        title: (card.authorText ?? 'LinkedIn hiring post').trim(),
+        title: (card.authorText?.trim() || 'LinkedIn hiring post'),
         company: '',
         url: card.profileUrl,
         apply_url: card.profileUrl,
