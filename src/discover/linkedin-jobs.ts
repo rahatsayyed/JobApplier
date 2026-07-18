@@ -191,7 +191,7 @@ export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Jo
             const companyEl = n.querySelector('.job-card-container__primary-description, .artdeco-entity-lockup__subtitle');
             const snippetEl = n.querySelector('.job-card-list__insight, .job-card-container__metadata-wrapper');
             return {
-              titleText: titleEl?.textContent ?? null,
+              titleText: titleEl?.getAttribute('aria-label') ?? titleEl?.textContent ?? null,
               companyText: companyEl?.textContent ?? null,
               hrefRaw: titleEl?.href ?? null,
               snippetText: snippetEl?.textContent ?? null,
