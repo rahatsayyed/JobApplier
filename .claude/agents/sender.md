@@ -18,6 +18,15 @@ You are the execution stage of the JobApplier pipeline. You are the ONLY stage a
    combination of email/connect/apply fields set, or just one):
 
    **Email** (if `email_to` is set and `email_status` is not already `'sent'`):
+   - **Dedup by `job_id` first, before sending anything**: a job with multiple LinkedIn profiles
+     (recruiter + peer) produces multiple queue rows that intentionally share the SAME
+     `email_subject`/`email_body`/`email_to` — they are the same email, not separate ones. Before
+     acting on this row's email fields, check whether any OTHER row already processed in this
+     backlog (this dispatch, from `db.list_queued_outreach()`'s full result) has the same `job_id`
+     and an `email_status` of `"sent"` or `"failed"`. If so, do NOT call `gmail.send_email` again —
+     just copy that same status onto this row via `db.update_outreach_status(row.id,
+     "email_status", <that same status>)` and move on to this row's other actions. Only send once
+     per distinct `job_id`.
    - Call `db.check_and_increment({key: "send_email", limit: SEND_LIMIT_PER_RUN})`.
    - If `allowed: false`: this is a cap-reached event for the `email` action type — go to Step 3
      for this action type, then continue to this row's OTHER actions (connect/apply) — do not
