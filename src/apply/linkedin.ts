@@ -206,6 +206,28 @@ export function findPreparedResumePath(
 }
 
 /**
+ * Given a truthful answer that a numeric-only field just rejected as "Invalid input", returns
+ * an ordered list of reformatted candidates to retry — never a different figure, only the same
+ * truthful value expressed in a way the field might accept:
+ * 1. Strip everything but digits and a decimal point (handles a unit suffix like "25 LPA").
+ * 2. If that's still a decimal, also offer its floored (truncated) integer — some fields only
+ *    accept whole numbers (observed live: "years of experience with X" rejecting "3.5"), and
+ *    flooring never overclaims the truthful value.
+ * Returns an empty array when the answer has no numeric content at all (e.g. "None") — there is
+ * nothing safe to reformat it into, the caller must fall through to its existing handling.
+ */
+export function computeNumericFallbackCandidates(answer: string): string[] {
+  const stripped = answer.replace(/[^0-9.]/g, '');
+  if (!stripped) return [];
+  const candidates = [stripped];
+  if (stripped.includes('.')) {
+    const floored = stripped.split('.')[0];
+    if (floored) candidates.push(floored);
+  }
+  return candidates;
+}
+
+/**
  * Distinguishes "the form is genuinely on a final step with no working submit control" from
  * "the form never advanced past an earlier step because a field's truthful answer failed
  * LinkedIn's client-side validation" (observed live: a numeric-only field like "years of
@@ -512,21 +534,27 @@ export async function applyEasyApply(
         }
         await input.fill(String(answer));
 
-        // Some numeric-style fields (observed on CTC/salary questions) silently reject a
-        // unit-suffixed value like "25 LPA" with an inline "Invalid input" error — but that
-        // validation only renders on blur, not immediately after `.fill()`. Blur first, then
-        // retry once with just the leading numeric portion if it's flagged invalid; this
-        // reformats the already-truthful answer, it doesn't invent a new figure.
+        // Some numeric-style fields (observed on CTC/salary and "years of experience with X"
+        // questions) silently reject a unit-suffixed or decimal value ("25 LPA", "3.5") with an
+        // inline "Invalid input" error — but that validation only renders on blur, not
+        // immediately after `.fill()`. Blur first, then retry through each reformatted
+        // candidate in order (strip to digits/dot, then floor to a whole number) until one is
+        // accepted or the candidates are exhausted; see computeNumericFallbackCandidates for
+        // why this never invents a different figure, only reformats the truthful one.
         await input.blur();
-        const isInvalid = await input.evaluate((el) => {
+        let isInvalid = await input.evaluate((el) => {
           const wrapper = el.parentElement?.parentElement;
           return wrapper ? /invalid input/i.test(wrapper.textContent ?? '') : false;
         });
         if (isInvalid) {
-          const numericOnly = String(answer).replace(/[^0-9.]/g, '');
-          if (numericOnly) {
-            await input.fill(numericOnly);
+          for (const candidate of computeNumericFallbackCandidates(String(answer))) {
+            await input.fill(candidate);
             await input.blur();
+            isInvalid = await input.evaluate((el) => {
+              const wrapper = el.parentElement?.parentElement;
+              return wrapper ? /invalid input/i.test(wrapper.textContent ?? '') : false;
+            });
+            if (!isInvalid) break;
           }
         }
       }

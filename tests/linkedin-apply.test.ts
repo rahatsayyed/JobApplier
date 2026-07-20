@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveAnswer, applyEasyApply, findPreparedResumePath, describeStuckValidationErrors, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
+import { resolveAnswer, applyEasyApply, findPreparedResumePath, describeStuckValidationErrors, computeNumericFallbackCandidates, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
 import { openDb, saveJob, enqueueOutreach, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
@@ -144,6 +144,28 @@ function makeFakeGroupingsLocator(groupings: ReturnType<typeof makeFakeGroupingL
     nth: vi.fn((i: number) => groupings[i]),
   };
 }
+
+describe('computeNumericFallbackCandidates', () => {
+  it('strips a unit suffix like "LPA" to a plain integer', () => {
+    expect(computeNumericFallbackCandidates('25 LPA')).toEqual(['25']);
+  });
+
+  it('offers the floored integer as a second candidate for a decimal value', () => {
+    expect(computeNumericFallbackCandidates('3.5')).toEqual(['3.5', '3']);
+  });
+
+  it('returns an empty list for a fully non-numeric truthful answer (e.g. "None")', () => {
+    expect(computeNumericFallbackCandidates('None')).toEqual([]);
+  });
+
+  it('does not add a floored duplicate for an already-whole number', () => {
+    expect(computeNumericFallbackCandidates('45')).toEqual(['45']);
+  });
+
+  it('handles a decimal with no leading digit before the dot gracefully', () => {
+    expect(computeNumericFallbackCandidates('.5')).toEqual(['.5']);
+  });
+});
 
 describe('describeStuckValidationErrors', () => {
   it('returns null when no fields are invalid (a genuinely missing submit button)', () => {
