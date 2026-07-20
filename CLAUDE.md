@@ -321,7 +321,15 @@ unaffected by this — it can still be used standalone if you want to hand-pick 
 The manual on-demand `/connect` command uses the same `connect_send` call as the automatic
 path above — it also sends immediately, without a separate approval step, since the approval
 gate was removed project-wide (see above). "Manual" here means "you trigger it for one
-hand-picked job/profile," not "requires a review step."
+hand-picked job/profile," not "requires a review step." Steps, for a hand-picked job:
+
+1. Call `connect.find_linkedin_profile({company, role_hint})` → up to 3 candidate profiles.
+2. Invoke the `draft-connect-note` skill with the job and the chosen candidate profile → a note
+   (≤300 chars, references the job/role by name).
+3. Call `connect.connect_send({profile_url, note, job_id, company})` immediately — no approval
+   wait, per above. `connect_send`'s own fail-closed recipient-name/URL verification still runs.
+4. Report the result (`sent`/`rate_limited`/`failed`) to Telegram per the "Communication"
+   section.
 
 ### `connect_send` reliability
 
@@ -332,10 +340,21 @@ item, Send button) can escalate to the bounded Claude fallback, gated by
 `CONNECT_HYBRID_FALLBACK=true` (off by default).
 
 The full autonomous execute-stage flow (queue → email → connect → apply → cap-overrun Telegram
-prompt) has not been live-tested end-to-end yet — each underlying tool (`gmail.send_email`,
-`connect.connect_send`, `apply.*`) is independently already live-verified from earlier work, but
-the new queue-draining orchestration in `sender.md` itself has not. Watch the first real hunt run
-after this lands closely.
+prompt) is now live-verified end-to-end (2026-07-20): a real 5-job hunt run sent 2 real emails
+(deduped correctly), attempted 10 real connection requests (6 sent immediately, 4 initially
+blocked by `connect_send`'s recipient-name verification then confirmed as transient — all 10
+succeeded on retry with identical target/note, verified via screenshot + DB each time), and
+attempted 1 LinkedIn Easy Apply (`manual_review` — see the `apply.linkedin` resume-lookup bug
+below). Three real bugs were found and fixed during this run:
+- `sender` was sending the same email twice when a job had two LinkedIn profiles (recruiter +
+  peer), since the two `outreach_queue` rows intentionally share identical email content —
+  `sender.md` now dedupes by `job_id` before sending, not by row.
+- `contact-finder`'s seniority-preference match used a raw substring check, so "Leader"
+  incorrectly matched "Lead" — now requires a word-boundary match.
+- `apply.linkedin`'s resume lookup only checked the legacy `outreach` table (from the old
+  direct-send flow), which the autonomous pipeline never writes to — every autonomous-pipeline
+  apply attempt fell through to `manual_review` with "no prepared resume found" as a result.
+  `findPreparedResumePath` (`src/apply/linkedin.ts`) now checks `outreach_queue` too.
 
 ## Resume tailoring rules
 
