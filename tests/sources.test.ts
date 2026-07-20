@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { normalizeAdzuna } from '../src/sources/adzuna.js';
 import { normalizeRemotive } from '../src/sources/remotive.js';
 import { normalizeRemoteok } from '../src/sources/remoteok.js';
-import { normalizeSerper } from '../src/sources/serper.js';
 
 describe('normalizeAdzuna', () => {
   it('maps adzuna results to Job[]', () => {
@@ -99,24 +98,3 @@ describe('normalizeRemoteok', () => {
   });
 });
 
-describe('normalizeSerper', () => {
-  it('keeps only linkedin.com/posts links', () => {
-    const jobs = normalizeSerper({
-      organic: [
-        { title: 'A', link: 'https://linkedin.com/posts/abc', snippet: 's1' },
-        { title: 'B', link: 'https://example.com/notposts', snippet: 's2' },
-      ],
-    });
-
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]).toEqual({
-      id: 'dork:https://linkedin.com/posts/abc',
-      source: 'dork',
-      title: 'A',
-      company: '',
-      url: 'https://linkedin.com/posts/abc',
-      apply_url: 'https://linkedin.com/posts/abc',
-      description: 's1',
-    });
-  });
-});

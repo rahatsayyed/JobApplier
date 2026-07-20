@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { openDb, isSeen, saveJob } from '../db.js';
-import { fetchAllJobs, fetchHiringPosts } from '../sources/index.js';
+import { fetchAllJobs } from '../sources/index.js';
 
 const db = openDb('data.sqlite');
 
@@ -19,23 +19,6 @@ server.registerTool(
   },
   async ({ role, location }) => {
     const jobs = await fetchAllJobs({ role, location });
-    return {
-      content: [{ type: 'text', text: JSON.stringify(jobs) }],
-    };
-  }
-);
-
-server.registerTool(
-  'search_hiring_posts',
-  {
-    description: 'Search LinkedIn hiring posts via Google dorks (Serper)',
-    inputSchema: {
-      role: z.string(),
-      geo: z.string().optional(),
-    },
-  },
-  async ({ role, geo }) => {
-    const jobs = await fetchHiringPosts({ role, geo });
     return {
       content: [{ type: 'text', text: JSON.stringify(jobs) }],
     };

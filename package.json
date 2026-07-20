@@ -10,7 +10,7 @@
     "mcp:resume": "tsx src/mcp/resume.ts",
     "mcp:contacts": "tsx src/mcp/contacts.ts",
     "mcp:email": "tsx src/mcp/email.ts",
-    "mcp:sqlite": "tsx src/mcp/sqlite.ts",
+    "mcp:db": "tsx src/mcp/db.ts",
     "mcp:apply": "tsx src/mcp/apply.ts",
     "mcp:connect": "tsx src/mcp/connect.ts",
     "mcp:discover": "tsx src/mcp/discover.ts"

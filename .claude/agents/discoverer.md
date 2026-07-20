@@ -10,8 +10,7 @@ three discovery tools and return the combined, unmodified list of Job objects.
 ## Steps
 
 1. Call `list_new_jobs({role, location})` using the exact `role` and `location` values passed to
-   you in the prompt. This covers Adzuna, Remotive, RemoteOK, and the Serper Google-dork hiring
-   post search.
+   you in the prompt. This covers Adzuna, Remotive, and RemoteOK.
 2. Call `linkedin_jobs()` — no parameters. This scrapes LinkedIn's own job search results
    (using the search URL configured in `config/discover-linkedin.json`).
 3. Call `linkedin_posts({role, geo})` using the `role` value passed to you, and pass `location`

@@ -71,6 +71,27 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       sent_at TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS outreach_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      resume_pdf_path TEXT,
+      email_subject TEXT,
+      email_body TEXT,
+      email_to TEXT,
+      email_status TEXT,
+      connect_note TEXT,
+      connect_profile_url TEXT,
+      connect_category TEXT,
+      connect_company TEXT,
+      connect_status TEXT,
+      apply_platform TEXT,
+      apply_url TEXT,
+      apply_status TEXT,
+      status TEXT DEFAULT 'queued',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Migration: older databases created before `method`/`account` existed on
@@ -83,6 +104,14 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
   }
   if (!columnNames.has('account')) {
     db.exec('ALTER TABLE applications ADD COLUMN account TEXT');
+  }
+
+  // Migration: older databases created before `connect_company` existed on
+  // `outreach_queue`. Add it if missing so existing data.sqlite files don't break.
+  const outreachQueueColumns = db.prepare("PRAGMA table_info(outreach_queue)").all() as Array<{ name: string }>;
+  const outreachQueueColumnNames = new Set(outreachQueueColumns.map((c) => c.name));
+  if (!outreachQueueColumnNames.has('connect_company')) {
+    db.exec('ALTER TABLE outreach_queue ADD COLUMN connect_company TEXT');
   }
 
   return db;
@@ -231,4 +260,83 @@ export function saveConnection(db: BetterSqlite3.Database, connection: Connectio
     connection.status,
     connection.sent_at ?? null
   );
+}
+
+export interface OutreachQueueItem {
+  id: number;
+  job_id: string;
+  resume_pdf_path: string | null;
+  email_subject: string | null;
+  email_body: string | null;
+  email_to: string | null;
+  email_status: string | null;
+  connect_note: string | null;
+  connect_profile_url: string | null;
+  connect_category: string | null;
+  connect_company: string | null;
+  connect_status: string | null;
+  apply_platform: string | null;
+  apply_url: string | null;
+  apply_status: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function enqueueOutreach(
+  db: BetterSqlite3.Database,
+  item: {
+    job_id: string;
+    resume_pdf_path: string | null;
+    email_subject: string | null;
+    email_body: string | null;
+    email_to: string | null;
+    connect_note: string | null;
+    connect_profile_url: string | null;
+    connect_category: string | null;
+    connect_company: string | null;
+    apply_platform: string | null;
+    apply_url: string | null;
+  }
+): number {
+  const result = db.prepare(`
+    INSERT INTO outreach_queue (
+      job_id, resume_pdf_path, email_subject, email_body, email_to,
+      connect_note, connect_profile_url, connect_category, connect_company,
+      apply_platform, apply_url
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    item.job_id,
+    item.resume_pdf_path,
+    item.email_subject,
+    item.email_body,
+    item.email_to,
+    item.connect_note,
+    item.connect_profile_url,
+    item.connect_category,
+    item.connect_company,
+    item.apply_platform,
+    item.apply_url
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export function listQueuedOutreach(db: BetterSqlite3.Database): OutreachQueueItem[] {
+  return db
+    .prepare(`SELECT * FROM outreach_queue WHERE status = 'queued' ORDER BY created_at ASC`)
+    .all() as OutreachQueueItem[];
+}
+
+const UPDATABLE_FIELDS = ['email_status', 'connect_status', 'apply_status', 'status'] as const;
+
+export function updateOutreachStatus(
+  db: BetterSqlite3.Database,
+  id: number,
+  field: (typeof UPDATABLE_FIELDS)[number],
+  value: string
+): void {
+  if (!UPDATABLE_FIELDS.includes(field)) {
+    throw new Error(`updateOutreachStatus: invalid field "${field}"`);
+  }
+  db.prepare(`UPDATE outreach_queue SET ${field} = ?, updated_at = datetime('now') WHERE id = ?`).run(value, id);
 }

@@ -1,11 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { openDb } from '../db.js';
+import { enqueueOutreach, listQueuedOutreach, openDb, updateOutreachStatus } from '../db.js';
+import { checkAndIncrement } from '../lib/rateLimit.js';
 
 const db = openDb('data.sqlite');
 
-const server = new McpServer({ name: 'sqlite', version: '1.0.0' });
+const server = new McpServer({ name: 'db', version: '1.0.0' });
 
 server.registerTool(
   'list_jobs',
@@ -169,12 +170,91 @@ server.registerTool(
   }
 );
 
+server.registerTool(
+  'enqueue_outreach',
+  {
+    description: 'Add one prepared outreach item (resume/email/connect-note/apply-plan) to the outreach_queue for the sender stage to execute later. Pure persistence — does not send anything.',
+    inputSchema: {
+      job_id: z.string(),
+      resume_pdf_path: z.string().optional(),
+      email_subject: z.string().optional(),
+      email_body: z.string().optional(),
+      email_to: z.string().optional(),
+      connect_note: z.string().optional(),
+      connect_profile_url: z.string().optional(),
+      connect_category: z.enum(['recruiter', 'peer']).optional(),
+      connect_company: z.string().optional(),
+      apply_platform: z.enum(['linkedin', 'greenhouse', 'lever', 'workday', 'ashby', 'none']).optional(),
+      apply_url: z.string().optional(),
+    },
+  },
+  async (params) => {
+    const id = enqueueOutreach(db, {
+      job_id: params.job_id,
+      resume_pdf_path: params.resume_pdf_path ?? null,
+      email_subject: params.email_subject ?? null,
+      email_body: params.email_body ?? null,
+      email_to: params.email_to ?? null,
+      connect_note: params.connect_note ?? null,
+      connect_profile_url: params.connect_profile_url ?? null,
+      connect_category: params.connect_category ?? null,
+      connect_company: params.connect_company ?? null,
+      apply_platform: params.apply_platform ?? null,
+      apply_url: params.apply_url ?? null,
+    });
+    return { content: [{ type: 'text', text: JSON.stringify({ id }) }] };
+  }
+);
+
+server.registerTool(
+  'list_queued_outreach',
+  {
+    description: 'List every outreach_queue row still pending (status=queued), oldest first. Used by the sender stage to get its full backlog, including anything left over from a previous run that hit a rate cap.',
+    inputSchema: {},
+  },
+  async () => {
+    const rows = listQueuedOutreach(db);
+    return { content: [{ type: 'text', text: JSON.stringify(rows) }] };
+  }
+);
+
+server.registerTool(
+  'update_outreach_status',
+  {
+    description: 'Update one status field on an outreach_queue row after attempting its action (email/connect/apply), or the overall row status once all its actions are attempted.',
+    inputSchema: {
+      id: z.number(),
+      field: z.enum(['email_status', 'connect_status', 'apply_status', 'status']),
+      value: z.string(),
+    },
+  },
+  async ({ id, field, value }) => {
+    updateOutreachStatus(db, id, field, value);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+  }
+);
+
+server.registerTool(
+  'check_and_increment',
+  {
+    description: 'Atomically check whether a daily counter is still under its limit and increment it if so. Returns {allowed: true} and increments, or {allowed: false} without incrementing if the limit is already reached. Use a distinct `key` per thing being capped (e.g. "send_email") — do NOT reuse "connect_send" or "easy_apply", which connect.connect_send and apply.* already increment internally themselves.',
+    inputSchema: {
+      key: z.string(),
+      limit: z.number(),
+    },
+  },
+  async ({ key, limit }) => {
+    const allowed = checkAndIncrement(db, key, limit);
+    return { content: [{ type: 'text', text: JSON.stringify({ allowed }) }] };
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
 main().catch((err) => {
-  console.error('[sqlite] fatal error:', err);
+  console.error('[db] fatal error:', err);
   process.exit(1);
 });

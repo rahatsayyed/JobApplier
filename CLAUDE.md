@@ -5,9 +5,10 @@
 JobApplier is an autonomous job-hunting agent. It fetches new job postings, scores each one
 against a base resume, tailors the resume for good matches, finds a verified contact email at
 the hiring company, drafts a cold outreach email, and sends it — within strict safety limits.
-Phase 2 adds opt-in LinkedIn Easy Apply (burner account), external ATS apply (Greenhouse/Lever/
-Workday/Ashby), and human-approved LinkedIn connection requests (main account) on top of the
-Phase 1 pipeline. It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`,
+Phase 2 adds LinkedIn Easy Apply (burner account), external ATS apply (Greenhouse/Lever/
+Workday/Ashby), and LinkedIn connection requests (main account) on top of the
+Phase 1 pipeline — both now run automatically as part of every hunt run, per the "Applying" and
+"Connecting" sections below. It runs as a Claude Code agent using MCP tools (`job-fetch`, `resume`,
 `contacts`, `gmail`, `apply`, `connect`) and skills (`match-jobs`, `draft-outreach`,
 `draft-connect-note`). `apply` is one MCP server exposing both a per-platform tool for each
 target — `apply.linkedin`, `apply.greenhouse`, `apply.lever`, `apply.workday`, `apply.ashby` —
@@ -34,8 +35,10 @@ change for day-to-day tuning.
 - **Role**: `full stack developer / react`
 - **Location**: `india` (remote also acceptable)
 - **Remote OK**: yes
-- **MATCH_THRESHOLD**: `70` (env var; jobs scoring below this are skipped — see `.env`)
-- **SEND_LIMIT_PER_RUN**: `1` (env var; max real emails sent per run — see `.env`)
+- **MATCH_THRESHOLD**: `60` (env var; jobs scoring below this are skipped — see `.env`)
+- **SEND_LIMIT_PER_RUN**: `1` (env var; max real emails — enforced as a daily counter via
+  `db.check_and_increment`, not literally reset per invocation, so two hunt runs in the same day
+  share the same budget — see `.env`)
 
 ## Context & Subagent Discipline
 
@@ -97,11 +100,11 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
 | Trigger | Action |
 |---------|--------|
 | `/runhunt` or "run hunt", "find jobs" | Run the full hunt pipeline (below). |
-| `/status` or "status", "summary" | Query SQLite: count of jobs (total/matched/by-source), outreach (sent/queued/failed), etc. No side effects, instant response. |
+| `/status` or "status", "summary" | Query the `db` MCP: count of jobs (total/matched/by-source), outreach (sent/queued/failed), etc. No side effects, instant response. |
 | `/followups` | Phase 1.5 — send follow-up nudges to old sent emails (if implemented). |
 | `/apply #N` or "apply to job #N" | Apply to one matched job (see "Applying" below). |
 | `/applyall` | Apply to all of today's matched jobs (see "Applying" below). |
-| `/connect` | Draft and (with approval) send a LinkedIn connection request for a matched job (see "Connecting" below). |
+| `/connect` | Draft and send a LinkedIn connection request for a matched job (see "Connecting" below). |
 | `/checkreplies` | Phase 3 — not built yet. Reply with link to Phase 3 plan. |
 
 **Setting up Telegram slash commands** (one-time, via BotFather):
@@ -113,7 +116,7 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
    status - Show job/outreach/thread stats
    followups - Send follow-up nudges (Phase 1.5)
    apply - Apply to a job (Easy Apply or external ATS)
-   connect - Draft + (with approval) send a LinkedIn connect request
+   connect - Draft + send a LinkedIn connect request
    checkreplies - Check replies (Phase 3 — not yet)
    ```
 
@@ -122,15 +125,15 @@ commands silently stale.
 
 ## Status Command
 
-When told `/status` or "show status", query the SQLite MCP for stats (no tool side effects, instant):
+When told `/status` or "show status", query the `db` MCP for stats (no tool side effects, instant):
 
-1. Call `sqlite.get_job_stats()` → returns total, by_status, by_source.
-2. Call `sqlite.get_outreach_stats()` → returns total, by_status, by_month.
+1. Call `db.get_job_stats()` → returns total, by_status, by_source.
+2. Call `db.get_outreach_stats()` → returns total, by_status, by_month.
 3. Format a concise summary:
    ```
    📊 Job Stats
    • Total discovered: N
-   • Matched (≥70): M
+   • Matched (≥60): M
    • By source: Adzuna X, Remotive Y, RemoteOK Z
 
    📧 Outreach Stats
@@ -149,10 +152,11 @@ When told "run hunt" (see Commands above), run the pipeline below. **You (the or
 session) do not call `job-fetch`, `contacts`, `resume`, or `gmail` tools yourself.** Instead,
 dispatch a fresh subagent per stage using the Task tool, so each stage's tool output and
 reasoning stay out of your own context — you only see the compact JSON each stage returns. Do
-not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails.
+not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails (enforced as a daily counter —
+see "Safety" rule 2).
 
 1. **Discover** — dispatch `subagent_type: discoverer` with the Role and Location from
-   Preferences. It calls `job-fetch.list_new_jobs` (Adzuna/Remotive/RemoteOK/Serper) plus
+   Preferences. It calls `job-fetch.list_new_jobs` (Adzuna/Remotive/RemoteOK) plus
    `discover.linkedin_jobs` and `discover.linkedin_posts` (LinkedIn job search + hiring-post
    search, burner account, see `docs/superpowers/specs/2026-07-17-linkedin-discovery-design.md`),
    and returns the combined JSON array of new Job objects. If empty, skip to step 6 and report
@@ -166,49 +170,48 @@ not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails.
 2. **Match** — dispatch `subagent_type: matcher` with the full job list from step 1. It returns
    `[{job_id, score, reasons, missing_keywords}, ...]` for every job (unfiltered).
    In the orchestrating session (cheap, no tools needed), filter this yourself: any `job_id`
-   with `score < MATCH_THRESHOLD` (env var, default 70) is SKIPPED — not contacted, not
+   with `score < MATCH_THRESHOLD` (env var, default 60) is SKIPPED — not contacted, not
    tailored, not drafted. Keep the list of MATCHED job_ids and their full Job objects (from
    step 1) for step 3.
 
-3. **Find contacts** — dispatch `subagent_type: contact-finder` with the list of MATCHED jobs
-   from step 2. It returns `[{job_id, contact: {...}|null}, ...]`. Split this yourself:
-   - `contact: null` → add to the "needs manual contact" list for the final report; do not
-     proceed to step 4 for this job.
-   - `contact: {...}` (verified) → keep for step 4.
+3. **Find contacts + LinkedIn profiles** — dispatch `subagent_type: contact-finder` with the
+   list of MATCHED jobs from step 2. It returns
+   `[{job_id, contact: {...}|null, linkedin_profiles: [{profile, category}, ...]}, ...]` — a
+   verified email contact and up to two LinkedIn profiles (recruiter category, peer category)
+   per job. A job with neither a contact nor any profile gets no further stages.
 
-4. **Prepare outreach** — for EACH job with a verified contact from step 3, dispatch a separate
-   `subagent_type: outreach-preparer` call with that one job + its contact + the base resume
-   (you may fetch the base resume once yourself via a single lightweight call, or let the first
-   preparer subagent fetch it — either is fine since it's read-only). Each call returns
-   `{job_id, pdf_path, subject, body, to}`. Collect all of these into one list. These can be
-   dispatched one at a time or, if the runtime supports concurrent Task calls, in parallel —
-   either way, do not call `gmail.send_email` yourself for any of them.
+4. **Prepare** — for EACH job with a contact and/or at least one LinkedIn profile from step 3,
+   dispatch a separate `subagent_type: outreach-preparer` call with that one job + its
+   contact-finder result + the base resume (fetch it once yourself, or let the first preparer
+   fetch it — either is fine, read-only). These can be dispatched in parallel — each call tailors
+   the resume, drafts the email and connect note(s), and enqueues everything to
+   `outreach_queue` itself; it does not return content to you, only a small confirmation. You do
+   not collect a batch to hand to the next stage — the queue is the handoff.
 
-5. **Send** — dispatch ONE `subagent_type: sender` call with the entire list of prepared items
-   from step 4 and the current `SEND_LIMIT_PER_RUN` value. It returns
-   `{sent: [...], queued: [...], failed: [...]}`. This is the only stage that ever calls
-   `gmail.send_email`, which keeps the per-run cap enforced in exactly one place.
+5. **Execute** — dispatch ONE `subagent_type: sender` call with the current `SEND_LIMIT_PER_RUN`
+   value. It reads the full `outreach_queue` backlog (including anything left over from a
+   previous run) and executes email sends, connect sends, and applies, prompting Telegram if it
+   hits a daily cap mid-run (see "Connecting" and "Applying" below for what changed). Returns
+   `{email: {...}, connect: {...}, apply: {...}}`.
 
 6. **Report** — after all stages complete (or immediately, if step 1 returned zero jobs), deliver
-   a clear summary per the "Communication" section above with these exact counts:
+   a clear summary per the "Communication" section above with these counts:
    - Total new jobs fetched (step 1).
    - Total jobs matched (step 2, `score >= MATCH_THRESHOLD`).
-   - Total emails actually sent (`sent` from step 5).
-   - Total jobs "needs manual contact" (step 3), with titles/companies/urls.
-   - Total jobs "queued — send limit reached" (`queued` from step 5), with titles/companies.
-   - Total "failed" sends (step 5), with titles/companies and the error, if any.
+   - Emails sent/failed/queued, connects sent/failed/queued, applies
+     submitted/manual_review/needs_answer/failed/queued (step 5).
+   - Total jobs with no usable contact or profile at all (step 3), with titles/companies/urls.
 
 ## Applying (Phase 2)
 
-Applying is a **separate, opt-in** flow from "Running the hunt" — it is **never** implicitly
-bundled into the Phase 1 email-hunt pipeline. It only runs when:
-- explicitly triggered by command (`/apply #N`, `/applyall`, "apply to job #N", "apply to today's
-  matches"), or
-- the cron/autonomous trigger fires AND `AUTO_APPLY_ENABLED=true` (env var, default `false`).
+Applying is now an unconditional part of every hunt run's "Execute" stage (see "Running the
+hunt" step 5) — there is no `AUTO_APPLY_ENABLED` opt-in gate anymore. This was an explicit,
+informed decision, made alongside the "Connecting" change above; a more granular flag/control
+scheme may be reintroduced later as separate work, not designed here.
 
-An explicit manual command may still invoke applying regardless of `AUTO_APPLY_ENABLED` — that
-flag only gates the *autonomous* (cron) path. Manual applies are still subject to the daily rate
-limits below.
+The manual on-demand `/apply #N` and `/applyall` commands (apply to one or all of today's
+matches, outside a hunt run) are unaffected by this and remain available. Manual applies are
+still subject to the daily rate limits below.
 
 Steps, for each targeted job:
 
@@ -297,43 +300,42 @@ None of `external.ts`'s new confirmation-check/fallback behavior has been live-t
 against a real Greenhouse/Lever/Workday/Ashby posting yet — same caveat as the rest of Phase
 2's untested-live gaps (see "Connecting" below for the equivalent `connect.ts` caveat).
 
-## Connecting (Phase 2, human-gated)
+## Connecting
 
-For a matched job (with or without a sent cold email):
+LinkedIn connection requests are now sent automatically by the `sender` stage as part of every
+hunt run (see "Running the hunt" step 5) — there is no per-note Telegram approval gate anymore.
+This was an explicit, informed decision (not an oversight): the wrong-recipient incident that
+originally motivated the approval gate was root-caused and fixed at the automated-verification
+level (`connect.ts`'s `verifyRecipientName`, `verifyProfileUrl`, and 2D-proximity candidate
+matching, all fail-closed) rather than relying on a human catching it after the fact. Those
+automated defenses are UNCHANGED and still run on every `connect_send` call regardless of who
+triggered it.
 
-1. Call `connect.find_linkedin_profile({company, role_hint})` → top 3 candidate profiles.
-2. Invoke the `draft-connect-note` skill with the job and the chosen candidate profile → a
-   drafted note (≤300 chars).
-3. **Post the drafted note to Telegram and STOP.** Do not call `connect.connect_send` in this
-   turn. Optionally call `connect.record_connection_status({profile_url, note, status: 'drafted',
-   job_id, company})` to record the draft (pure bookkeeping write, no side effects). Wait for the
-   user's next message.
-4. On the user's next reply, matched to this pending draft (e.g. by job/company name):
-   - `send` (or equivalent approval) → call `connect.connect_send({profile_url, note})` now, for
-     the first time, in response to this explicit approval.
-   - `edit: <changes>` → redraft per the requested changes, re-post to Telegram, and wait again
-     (do not send the edited version without a fresh approval).
-   - `skip` or anything else non-approving → call
-     `connect.record_connection_status({profile_url, note, status: 'skipped', job_id, company})`
-     to mark the connection `status='skipped'` in the DB, then move on; do not send.
-5. If `connect_send` reports `rate_limited` (daily `MAX_CONNECTS_PER_DAY` cap reached), report
-   that to Telegram and stop — do not retry later in the same run.
+`MAX_CONNECTS_PER_DAY` is still enforced (inside `connect.ts` itself, via `checkAndIncrement`) —
+`sender` reacts to a `rate_limited` result by pausing further connects and prompting Telegram
+with an overrun option for that run, per "Running the hunt" step 5.
+
+The manual on-demand `/connect` command (draft one note for one job, outside a hunt run) is
+unaffected by this — it can still be used standalone if you want to hand-pick a target.
+
+The manual on-demand `/connect` command uses the same `connect_send` call as the automatic
+path above — it also sends immediately, without a separate approval step, since the approval
+gate was removed project-wide (see above). "Manual" here means "you trigger it for one
+hand-picked job/profile," not "requires a review step."
 
 ### `connect_send` reliability
 
-`connect_send` now verifies its final Send click actually went through (waits for the invite
-dialog to dismiss) before reporting `sent` — a click that silently no-ops now correctly returns
-`failed` instead of a false `sent`, the same false-positive class of bug fixed in
-`apply.linkedin`. **This confirmation signal is best-effort, NOT live-verified** — unlike
-this file's already-live-verified moreButton/connectMenuItem/sendButton selectors, sending a
-real request to verify it requires explicit human approval that hasn't been given yet. The
-next real, approved `connect_send` should be watched to confirm the heuristic actually fires,
-and ideally identify a more specific signal (e.g. exact toast/snackbar text) the way
-`linkedin.ts`'s submission confirmation was live-verified.
+`connect_send` verifies its final Send click actually went through (waits for the invite dialog
+to dismiss) before reporting `sent` — a click that silently no-ops correctly returns `failed`
+instead of a false `sent`. `connect_send`'s own selector-miss points (More button, Connect menu
+item, Send button) can escalate to the bounded Claude fallback, gated by
+`CONNECT_HYBRID_FALLBACK=true` (off by default).
 
-`connect_send`'s own selector-miss points (More button, Connect menu item, Send button) can
-also escalate to the same bounded Claude fallback described above, gated by
-`CONNECT_HYBRID_FALLBACK=true` (off by default, independent of the other two flags).
+The full autonomous execute-stage flow (queue → email → connect → apply → cap-overrun Telegram
+prompt) has not been live-tested end-to-end yet — each underlying tool (`gmail.send_email`,
+`connect.connect_send`, `apply.*`) is independently already live-verified from earlier work, but
+the new queue-draining orchestration in `sender.md` itself has not. Watch the first real hunt run
+after this lands closely.
 
 ## Resume tailoring rules
 
@@ -348,15 +350,20 @@ rules inline, so a future change only needs to happen in one place.
 
 1. Only send email to addresses marked `verified: true` by `contacts.find_company_emails`.
    Never send to an unverified guess.
-2. Never exceed `SEND_LIMIT_PER_RUN` real sends via the `gmail` `send_email` tool in a single run. Extra
-   matches beyond the limit get queued and reported, not sent.
-3. In the "Running the hunt" pipeline (Phase 1 email flow), cold email is the only outreach
-   channel — do not attempt LinkedIn messages, connection requests, or any other channel as part
-   of that flow. LinkedIn connection requests are only ever sent via the separate, human-gated
-   "Connecting" flow below (rule 5), never bundled into a hunt run.
+2. Never exceed `SEND_LIMIT_PER_RUN` — enforced as a daily counter (`db.check_and_increment`), so
+   it can already be partially consumed by an earlier run today. Items beyond the cap stay
+   `queued` in `outreach_queue` (see "Running the hunt" step 5) rather than being sent, and
+   `sender` prompts Telegram with an option to raise it for the current run.
+3. The "Running the hunt" pipeline sends both cold email and LinkedIn connection requests
+   automatically as part of every run, per the "Connecting" section below — this is an
+   explicit, informed design decision, not an oversight. Do not attempt any OTHER outreach
+   channel (e.g. LinkedIn direct messages) as part of that flow.
 4. If any tool call fails or returns an error, do not retry silently more than once; log the
    failure and continue with the next job rather than aborting the whole run.
-5. Never call `connect_send` without a `send` approval reply logged in the same conversation.
+5. `connect_send` is called automatically by the `sender` stage as part of every hunt run — no
+   per-note human approval is required (see "Connecting"). The automated recipient-verification
+   safety net inside `connect.ts` (`verifyRecipientName`, `verifyProfileUrl`, fail-closed) still
+   runs on every call regardless of who/what triggered it.
 6. Never use the burner account's session for `connect`/`find_linkedin_profile`, and never use
    the main account's session for `apply.linkedin`.
 7. Respect `MAX_APPLIES_PER_DAY` / `MAX_CONNECTS_PER_DAY` — stop and report "limit reached" rather
