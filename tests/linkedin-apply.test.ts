@@ -150,20 +150,20 @@ describe('computeNumericFallbackCandidates', () => {
     expect(computeNumericFallbackCandidates('25 LPA')).toEqual(['25']);
   });
 
-  it('offers the floored integer as a second candidate for a decimal value', () => {
-    expect(computeNumericFallbackCandidates('3.5')).toEqual(['3.5', '3']);
+  it('offers the ceiling (rounded-up) integer as a second candidate for a decimal value', () => {
+    expect(computeNumericFallbackCandidates('3.5')).toEqual(['3.5', '4']);
   });
 
   it('returns an empty list for a fully non-numeric truthful answer (e.g. "None")', () => {
     expect(computeNumericFallbackCandidates('None')).toEqual([]);
   });
 
-  it('does not add a floored duplicate for an already-whole number', () => {
+  it('does not add a ceiling duplicate for an already-whole number', () => {
     expect(computeNumericFallbackCandidates('45')).toEqual(['45']);
   });
 
   it('handles a decimal with no leading digit before the dot gracefully', () => {
-    expect(computeNumericFallbackCandidates('.5')).toEqual(['.5']);
+    expect(computeNumericFallbackCandidates('.5')).toEqual(['.5', '1']);
   });
 });
 

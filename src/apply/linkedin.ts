@@ -210,9 +210,9 @@ export function findPreparedResumePath(
  * an ordered list of reformatted candidates to retry — never a different figure, only the same
  * truthful value expressed in a way the field might accept:
  * 1. Strip everything but digits and a decimal point (handles a unit suffix like "25 LPA").
- * 2. If that's still a decimal, also offer its floored (truncated) integer — some fields only
- *    accept whole numbers (observed live: "years of experience with X" rejecting "3.5"), and
- *    flooring never overclaims the truthful value.
+ * 2. If that's still a decimal, also offer it rounded up to the next whole number (ceiling) —
+ *    some fields only accept whole numbers (observed live: "years of experience with X"
+ *    rejecting "3.5").
  * Returns an empty array when the answer has no numeric content at all (e.g. "None") — there is
  * nothing safe to reformat it into, the caller must fall through to its existing handling.
  */
@@ -221,8 +221,10 @@ export function computeNumericFallbackCandidates(answer: string): string[] {
   if (!stripped) return [];
   const candidates = [stripped];
   if (stripped.includes('.')) {
-    const floored = stripped.split('.')[0];
-    if (floored) candidates.push(floored);
+    const asNumber = Number(stripped);
+    if (!Number.isNaN(asNumber)) {
+      candidates.push(String(Math.ceil(asNumber)));
+    }
   }
   return candidates;
 }
