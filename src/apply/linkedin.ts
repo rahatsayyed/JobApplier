@@ -178,6 +178,33 @@ export interface ApplyEasyApplyResult {
   question?: string;
 }
 
+/**
+ * Finds the tailored resume prepared for a job, checking both the legacy `outreach` table
+ * (populated by the old direct-send email flow) and `outreach_queue` (populated by the
+ * autonomous pipeline's outreach-preparer, which does not write to `outreach` at all) — a job
+ * going through the autonomous pipeline would otherwise be invisible to this lookup even though
+ * a real tailored resume exists for it. When both have a row for the job, the more recent one
+ * wins.
+ */
+export function findPreparedResumePath(
+  database: BetterSqlite3.Database,
+  job_id: string
+): string | undefined {
+  const legacy = database
+    .prepare('SELECT resume_path, created_at FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(job_id) as { resume_path: string; created_at: string } | undefined;
+  const queued = database
+    .prepare(
+      'SELECT resume_pdf_path as resume_path, created_at FROM outreach_queue WHERE job_id = ? AND resume_pdf_path IS NOT NULL ORDER BY created_at DESC LIMIT 1'
+    )
+    .get(job_id) as { resume_path: string; created_at: string } | undefined;
+
+  if (!legacy && !queued) return undefined;
+  if (!legacy) return queued!.resume_path;
+  if (!queued) return legacy.resume_path;
+  return new Date(queued.created_at) >= new Date(legacy.created_at) ? queued.resume_path : legacy.resume_path;
+}
+
 function recordAndReturn(
   database: BetterSqlite3.Database,
   jobId: string,
@@ -370,9 +397,7 @@ export async function applyEasyApply(
     }
     await waitForFormControls(page);
 
-    const prepared = database
-      .prepare('SELECT resume_path FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
-      .get(job_id) as { resume_path: string } | undefined;
+    const resumePath = findPreparedResumePath(database, job_id);
 
     for (let step = 0; step < MAX_FORM_STEPS; step++) {
       // Newer "Contact info" step: fill the standalone phone input directly, since it
@@ -390,7 +415,7 @@ export async function applyEasyApply(
       // must be handled with `page.waitForEvent('filechooser')` at click time.
       const resumeUploadButtonLocator = page.locator(SELECTORS.resumeUploadButton);
       if ((await resumeUploadButtonLocator.count()) > 0) {
-        if (!prepared?.resume_path) {
+        if (!resumePath) {
           return recordAndReturn(
             database,
             job_id,
@@ -402,7 +427,7 @@ export async function applyEasyApply(
         await resumeUploadButtonLocator.first().click();
         const chooser = await fileChooserPromise;
         if (chooser) {
-          await chooser.setFiles(prepared.resume_path);
+          await chooser.setFiles(resumePath);
           // Upload is asynchronous (a visible "Uploading" indicator appears, then an
           // "Upload resume" button re-renders while it's in flight). Clicking Next before
           // this resolves either no-ops against a disabled button or, worse, re-triggers
@@ -560,8 +585,8 @@ export async function applyEasyApply(
     // already present in the DOM (as opposed to the newer flow's click-to-open-chooser
     // button, handled per-step in the loop above).
     const resumeUploadCount = await page.locator(SELECTORS.resumeUpload).count();
-    if (resumeUploadCount > 0 && prepared?.resume_path) {
-      await page.setInputFiles(SELECTORS.resumeUpload, prepared.resume_path);
+    if (resumeUploadCount > 0 && resumePath) {
+      await page.setInputFiles(SELECTORS.resumeUpload, resumePath);
     }
 
     const clickedFinalSubmit = await findAndClickControl(

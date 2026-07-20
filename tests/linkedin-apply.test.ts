@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveAnswer, applyEasyApply, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
-import { openDb, saveJob } from '../src/db.js';
+import { resolveAnswer, applyEasyApply, findPreparedResumePath, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
+import { openDb, saveJob, enqueueOutreach, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
 const answers: EasyApplyAnswers = {
@@ -595,5 +595,94 @@ describe('applyEasyApply hybrid fallback (option 3)', () => {
     // '25 LPA' is the already-truthful expected_salary value from config — never a
     // fabricated new figure.
     expect(input.fill).toHaveBeenCalledWith('25 LPA');
+  });
+});
+
+describe('findPreparedResumePath', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('finds a resume from outreach_queue when there is no legacy outreach row (the autonomous-pipeline case)', () => {
+    enqueueOutreach(db, {
+      job_id: 'job-q-1',
+      resume_pdf_path: '/tmp/queue-resume.pdf',
+      email_subject: null,
+      email_body: null,
+      email_to: null,
+      connect_note: 'note',
+      connect_profile_url: 'https://linkedin.com/in/someone/',
+      connect_category: 'recruiter',
+      connect_company: 'Acme',
+      apply_platform: 'linkedin',
+      apply_url: 'https://linkedin.com/jobs/view/123',
+    });
+
+    expect(findPreparedResumePath(db, 'job-q-1')).toBe('/tmp/queue-resume.pdf');
+  });
+
+  it('finds a resume from the legacy outreach table when there is no outreach_queue row (the old manual-email-flow case)', () => {
+    saveOutreach(db, {
+      job_id: 'job-legacy-1',
+      contact_email: 'hr@acme.com',
+      subject: 'subj',
+      body: 'body',
+      resume_path: '/tmp/legacy-resume.pdf',
+    });
+
+    expect(findPreparedResumePath(db, 'job-legacy-1')).toBe('/tmp/legacy-resume.pdf');
+  });
+
+  it('prefers whichever row is more recent when both a legacy outreach row and an outreach_queue row exist for the same job', () => {
+    saveOutreach(db, {
+      job_id: 'job-both-1',
+      contact_email: 'hr@acme.com',
+      subject: 'subj',
+      body: 'body',
+      resume_path: '/tmp/legacy-resume.pdf',
+    });
+    // outreach_queue row is inserted after, so its created_at (via default datetime('now'))
+    // should be the same second or later — SQLite's datetime('now') has 1-second resolution,
+    // so this test only asserts the queue row is picked when its timestamp is >= the legacy
+    // row's, which the natural insert order guarantees here.
+    enqueueOutreach(db, {
+      job_id: 'job-both-1',
+      resume_pdf_path: '/tmp/queue-resume.pdf',
+      email_subject: null,
+      email_body: null,
+      email_to: null,
+      connect_note: null,
+      connect_profile_url: null,
+      connect_category: null,
+      connect_company: null,
+      apply_platform: 'linkedin',
+      apply_url: 'https://linkedin.com/jobs/view/456',
+    });
+
+    expect(findPreparedResumePath(db, 'job-both-1')).toBe('/tmp/queue-resume.pdf');
+  });
+
+  it('returns undefined when no resume is prepared for this job in either table', () => {
+    expect(findPreparedResumePath(db, 'job-nothing-1')).toBeUndefined();
+  });
+
+  it('ignores an outreach_queue row whose resume_pdf_path is null (apply-only or connect-only rows)', () => {
+    enqueueOutreach(db, {
+      job_id: 'job-null-resume-1',
+      resume_pdf_path: null,
+      email_subject: null,
+      email_body: null,
+      email_to: null,
+      connect_note: 'note',
+      connect_profile_url: 'https://linkedin.com/in/someone/',
+      connect_category: 'peer',
+      connect_company: 'Acme',
+      apply_platform: 'none',
+      apply_url: null,
+    });
+
+    expect(findPreparedResumePath(db, 'job-null-resume-1')).toBeUndefined();
   });
 });
