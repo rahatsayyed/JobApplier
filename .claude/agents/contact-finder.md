@@ -23,8 +23,11 @@ value is available.
    candidate pool for the **recruiter** category. From that pool, exclude any candidate whose
    headline/title contains "Intern", "Associate" (too junior), or "Chief", "VP", "Vice
    President", "Director", "Head of" (too senior). From what remains, prefer a candidate whose
-   headline/title contains "Senior", "Lead", or "Manager"; if none do, pick the first remaining
-   candidate. If nothing remains after exclusion, this job has no recruiter category profile.
+   headline/title contains "Senior", "Lead", or "Manager" **as a distinct word, not as a
+   substring of a different word** — e.g. "Leader" or "Leadership" must NOT count as containing
+   "Lead"; check for the word bounded by spaces/punctuation, not a raw substring match. If none
+   do, pick the first remaining candidate. If nothing remains after exclusion, this job has no
+   recruiter category profile.
 3. Call `connect.find_linkedin_profile({company, role_hint: <job's own title — job.title, or
    job.extracted_title if job.title is empty>})`. This is the **peer** category: someone already
    working in a similar role at the company. Do not apply the seniority exclusion from step 2
