@@ -10,6 +10,7 @@
   "custom": {
     "What is your current CTC?": "7 LPA",
     "Are you comfortable working in an onsite setting?": true,
-    "Do you have experience with building products from scratch using agentic AI?": true
+    "Do you have experience with building products from scratch using agentic AI?": true,
+    "What is your experience with Golang": "0"
   }
 }

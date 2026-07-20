@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveAnswer, applyEasyApply, findPreparedResumePath, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
+import { resolveAnswer, applyEasyApply, findPreparedResumePath, describeStuckValidationErrors, SELECTORS, type EasyApplyAnswers } from '../src/apply/linkedin.js';
 import { openDb, saveJob, enqueueOutreach, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
@@ -144,6 +144,40 @@ function makeFakeGroupingsLocator(groupings: ReturnType<typeof makeFakeGroupingL
     nth: vi.fn((i: number) => groupings[i]),
   };
 }
+
+describe('describeStuckValidationErrors', () => {
+  it('returns null when no fields are invalid (a genuinely missing submit button)', () => {
+    const reason = describeStuckValidationErrors([
+      { questionText: 'What is your Total Years of experience?', isInvalid: false },
+      { questionText: 'What is your Notice Period?', isInvalid: false },
+    ]);
+    expect(reason).toBeNull();
+  });
+
+  it('names the stuck question(s) when one field is invalid', () => {
+    const reason = describeStuckValidationErrors([
+      { questionText: 'What is your Total Years of experience?', isInvalid: false },
+      { questionText: 'What is your experience with Golang', isInvalid: true },
+    ]);
+    expect(reason).toBe(
+      'form did not advance — validation error(s) on: What is your experience with Golang'
+    );
+  });
+
+  it('names every stuck question when multiple fields are invalid', () => {
+    const reason = describeStuckValidationErrors([
+      { questionText: 'What is your Current CTC?', isInvalid: true },
+      { questionText: 'What is your Expected CTC?', isInvalid: true },
+    ]);
+    expect(reason).toBe(
+      'form did not advance — validation error(s) on: What is your Current CTC?, What is your Expected CTC?'
+    );
+  });
+
+  it('returns null for an empty entry list', () => {
+    expect(describeStuckValidationErrors([])).toBeNull();
+  });
+});
 
 describe('SELECTORS next/review/submit buttons', () => {
   // These are pure string assertions on the selector VALUES, not proof the selector

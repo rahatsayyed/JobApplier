@@ -205,6 +205,25 @@ export function findPreparedResumePath(
   return new Date(queued.created_at) >= new Date(legacy.created_at) ? queued.resume_path : legacy.resume_path;
 }
 
+/**
+ * Distinguishes "the form is genuinely on a final step with no working submit control" from
+ * "the form never advanced past an earlier step because a field's truthful answer failed
+ * LinkedIn's client-side validation" (observed live: a numeric-only field like "years of
+ * experience with X" silently rejects a non-numeric truthful answer such as "None", the
+ * existing invalid-input recovery only handles values with a leading digit to strip down to,
+ * and the surrounding Next/Review-click loop has no way to tell these two situations apart —
+ * it just exhausts MAX_FORM_STEPS and reports the generic, misleading "submit button not found
+ * on final step" either way). Returns a specific reason naming the stuck question(s) when any
+ * are invalid, or `null` when none are (a genuine missing-submit-control case).
+ */
+export function describeStuckValidationErrors(
+  entries: Array<{ questionText: string; isInvalid: boolean }>
+): string | null {
+  const invalidQuestions = entries.filter((e) => e.isInvalid).map((e) => e.questionText);
+  if (invalidQuestions.length === 0) return null;
+  return `form did not advance — validation error(s) on: ${invalidQuestions.join(', ')}`;
+}
+
 function recordAndReturn(
   database: BetterSqlite3.Database,
   jobId: string,
@@ -596,7 +615,26 @@ export async function applyEasyApply(
       fallback
     );
     if (!clickedFinalSubmit) {
-      return recordAndReturn(database, job_id, 'manual_review', 'submit button not found on final step');
+      const ariaLabeledInputs = page.locator(SELECTORS.ariaLabeledTextInput);
+      const inputCount = await ariaLabeledInputs.count();
+      const invalidEntries: Array<{ questionText: string; isInvalid: boolean }> = [];
+      for (let i = 0; i < inputCount; i++) {
+        const input = ariaLabeledInputs.nth(i);
+        const questionText = (await input.getAttribute('aria-label')) ?? '';
+        if (!questionText) continue;
+        const isInvalid = await input.evaluate((el) => {
+          const wrapper = el.parentElement?.parentElement;
+          return wrapper ? /invalid input/i.test(wrapper.textContent ?? '') : false;
+        });
+        invalidEntries.push({ questionText, isInvalid });
+      }
+      const stuckReason = describeStuckValidationErrors(invalidEntries);
+      return recordAndReturn(
+        database,
+        job_id,
+        'manual_review',
+        stuckReason ?? 'submit button not found on final step'
+      );
     }
 
     // Don't trust the click alone — confirm the application actually went through
