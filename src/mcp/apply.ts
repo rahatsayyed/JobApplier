@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { applyEasyApply } from '../apply/linkedin.js';
 import { applyExternal } from '../apply/external.js';
+import { routeApplyAuto } from './applyAutoRouter.js';
 
 // One MCP server, one tool per apply platform. src/apply/linkedin.ts and src/apply/external.ts
 // keep their own Playwright flows and unit tests (applyEasyApply / applyExternal), unchanged —
@@ -53,6 +54,30 @@ function registerExternalPlatform(platform: string) {
 for (const platform of ['greenhouse', 'lever', 'workday', 'ashby']) {
   registerExternalPlatform(platform);
 }
+
+server.registerTool(
+  'auto',
+  {
+    description:
+      'Routes an application to the correct apply.<platform> tool by inspecting apply_url. ' +
+      'Thin dispatcher only — does not reimplement platform logic, so there is one source of ' +
+      'truth per platform, not two. An apply_url matching none of the known platforms is passed ' +
+      'through to the external-ATS path with no pinned platform, which lets it attempt to learn ' +
+      'a new platform (self-extending ATS bootstrapping) instead of refusing outright.',
+    inputSchema: {
+      apply_url: z.string(),
+      job_id: z.string(),
+    },
+  },
+  async ({ apply_url, job_id }) => {
+    const route = routeApplyAuto(apply_url);
+    const result =
+      route.kind === 'linkedin'
+        ? await applyEasyApply({ job_id })
+        : await applyExternal({ job_id, expected_platform: route.platform ?? undefined });
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  }
+);
 
 async function main() {
   const transport = new StdioServerTransport();

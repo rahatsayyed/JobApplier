@@ -296,9 +296,28 @@ re-deriving them in a fresh prompt each time. Each call authenticates via the sa
 subscription session (not a metered API key) and is a single, isolated, non-agentic invocation
 — no follow-up turns, no tool use.
 
+### Self-extending ATS bootstrapping
+
+`apply.auto` is the only caller that can ever reach this path — the 4 explicit per-platform
+tools always pin `expected_platform`, which fails closed instead of bootstrapping (see
+"Applying (Phase 2)" above). When `apply_url` resolves to a domain that matches none of the 4
+known ATS platforms (Greenhouse/Lever/Workday/Ashby) — and the caller did NOT pin a specific `expected_platform`
+(i.e. not one of the 4 explicit `apply.<platform>` tools, which always fail closed to
+`manual_review` on a mismatch rather than bootstrap) — `external.ts` attempts to learn a
+`FieldMap` for it from a live snapshot of the page's form controls, via a bounded `claude
+--print` call (`.claude/commands/ats-bootstrap-fieldmap.md`), always on with no opt-in flag
+(unlike the hybrid fallbacks above). On success the learned `FieldMap` is persisted to
+`config/learned-ats-platforms.json` (read fresh on every call, no reconnect needed) and used
+immediately for the current application — same required-field/confirmation-text safety nets as
+the 4 built-in platforms, no special leniency. On failure (any of name/email/resumeUpload/
+submitButton unresolved), nothing is written and the application falls to `manual_review`.
+See `docs/superpowers/specs/2026-07-21-ats-bootstrap-design.md` for the full design.
+
 None of `external.ts`'s new confirmation-check/fallback behavior has been live-tested
 against a real Greenhouse/Lever/Workday/Ashby posting yet — same caveat as the rest of Phase
-2's untested-live gaps (see "Connecting" below for the equivalent `connect.ts` caveat).
+2's untested-live gaps (see "Connecting" below for the equivalent `connect.ts` caveat). The
+self-extending ATS bootstrap above is in the same boat — it has unit-test coverage but has
+never been exercised against a real unrecognized-ATS posting.
 
 ## Connecting
 

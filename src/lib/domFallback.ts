@@ -29,7 +29,7 @@ export interface FallbackDeps {
   model?: string;
 }
 
-async function runClaudeCli(command: string, input: unknown, model?: string): Promise<string | null> {
+export async function runClaudeCli(command: string, input: unknown, model?: string): Promise<string | null> {
   const args = ['-p', `/${command} ${JSON.stringify(input)}`, '--output-format', 'json'];
   if (model) args.push('--model', model);
   try {
@@ -54,7 +54,7 @@ async function runClaudeCli(command: string, input: unknown, model?: string): Pr
  * sometimes wrap it in a markdown fence or add stray text — try the raw text, a fenced
  * block, and the first `{...}` span, in that order, validating against `schema` each time.
  */
-function extractJson<T>(raw: string, schema: z.ZodType<T>): T | null {
+export function extractJson<T>(raw: string, schema: z.ZodType<T>): T | null {
   const candidates = [raw.trim()];
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) candidates.unshift(fenced[1].trim());

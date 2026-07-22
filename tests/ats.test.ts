@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { detect as detectGreenhouse, fieldMap as greenhouseFieldMap } from '../src/ats/greenhouse.js';
 import { detect as detectLever, fieldMap as leverFieldMap } from '../src/ats/lever.js';
 import { detect as detectWorkday, fieldMap as workdayFieldMap } from '../src/ats/workday.js';
@@ -6,6 +6,10 @@ import { detect as detectAshby, fieldMap as ashbyFieldMap } from '../src/ats/ash
 import { detectAts, splitName, applyExternal, SELECTORS } from '../src/apply/external.js';
 import { openDb, saveJob, saveOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
+import { existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { saveLearnedPlatform } from '../src/ats/learned.js';
 
 const REQUIRED_FIELD_KEYS = ['name', 'email', 'phone', 'resumeUpload', 'coverLetter'];
 
@@ -236,9 +240,12 @@ describe('applyExternal rate limiting (Finding 1)', () => {
     expect(row).toBeUndefined();
   });
 
-  it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: unsupported ATS)', async () => {
+  it('rejects immediately without launching a browser when expected_platform is set and the URL matches no known/learned platform', async () => {
+    // A caller invoking one of the 4 explicit per-platform tools always sets
+    // expected_platform — an unrecognized domain there is a data problem (wrong apply_url),
+    // not a bootstrap opportunity, so this stays a cheap pre-flight rejection.
     saveJob(db, {
-      id: 'job-ext-unsupported-ats',
+      id: 'job-ext-unsupported-explicit',
       source: 'other',
       title: 'Full Stack Developer',
       company: 'Acme Corp',
@@ -247,7 +254,7 @@ describe('applyExternal rate limiting (Finding 1)', () => {
       description: 'React role',
     });
     saveOutreach(db, {
-      job_id: 'job-ext-unsupported-ats',
+      job_id: 'job-ext-unsupported-explicit',
       contact_email: 'hiring@acme.com',
       subject: 'Application',
       body: 'Cover letter body',
@@ -256,7 +263,7 @@ describe('applyExternal rate limiting (Finding 1)', () => {
     const launch = vi.fn();
 
     const result = await applyExternal(
-      { job_id: 'job-ext-unsupported-ats' },
+      { job_id: 'job-ext-unsupported-explicit', expected_platform: 'greenhouse' },
       { db, maxAppliesPerDay: 5, chromium: { launch } }
     );
 
@@ -268,6 +275,49 @@ describe('applyExternal rate limiting (Finding 1)', () => {
       .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
       .get('easy_apply') as { count: number } | undefined;
     expect(row).toBeUndefined();
+  });
+
+  it('attempts to bootstrap a new field map (no expected_platform) for an unrecognized domain, falling to manual_review when the bootstrap cannot resolve any required field', async () => {
+    saveJob(db, {
+      id: 'job-ext-unsupported-bootstrap',
+      source: 'other',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://example.com/careers/123',
+      apply_url: 'https://example.com/careers/123',
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: 'job-ext-unsupported-bootstrap',
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+    const { page } = makeFakeExternalApplyPage({
+      submitButtonSelector: '#submit',
+      rawSnapshot: { inputs: [], buttons: [] },
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const runClaude = vi.fn().mockResolvedValue(null); // simulates the bootstrap CLI call failing/finding nothing
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-unsupported-bootstrap' },
+      { db, maxAppliesPerDay: 5, chromium: { launch }, bootstrap: { runClaude } }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/could not learn a field map for this platform/);
+    expect(result.platform).toBe('example.com');
+    expect(launch).toHaveBeenCalled();
+
+    // Unlike the cheap pre-flight rejections above, a bootstrap ATTEMPT is real work
+    // (browser launch + a live Claude call) and burns a quota slot just like any other apply.
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('easy_apply') as { count: number } | undefined;
+    expect(row?.count).toBe(1);
   });
 });
 
@@ -284,17 +334,20 @@ function makeFakeExternalApplyPage({
   confirmationAppears = true,
   clickableCandidates = [] as string[],
   clickableElementsByText = {} as Record<string, { click: ReturnType<typeof vi.fn> }>,
+  rawSnapshot = { inputs: [], buttons: [] } as { inputs: unknown[]; buttons: unknown[] },
 }: {
   submitButtonSelector: string;
   submitButtonFound?: boolean;
   confirmationAppears?: boolean;
   clickableCandidates?: string[];
   clickableElementsByText?: Record<string, { click: ReturnType<typeof vi.fn> }>;
+  rawSnapshot?: { inputs: unknown[]; buttons: unknown[] };
 }) {
   const submitButton = { click: vi.fn().mockResolvedValue(undefined) };
 
   const page = {
     goto: vi.fn().mockResolvedValue(undefined),
+    evaluate: vi.fn().mockResolvedValue(rawSnapshot),
     $: vi.fn().mockResolvedValue({}), // every required-field/optional-field lookup "found"
     fill: vi.fn().mockResolvedValue(undefined),
     setInputFiles: vi.fn().mockResolvedValue(undefined),
@@ -475,5 +528,113 @@ describe('applyExternal hybrid fallback (submit-button escalation only)', () => 
 
     expect(result.status).toBe('manual_review');
     expect(result.reason).toMatch(/submit button not found/);
+  });
+});
+
+describe('applyExternal self-extending ATS bootstrap (success + reuse)', () => {
+  let db: Database.Database;
+  let tmpDir: string;
+  let learnedPlatformsPath: string;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    tmpDir = mkdtempSync(path.join(tmpdir(), 'ats-bootstrap-test-'));
+    learnedPlatformsPath = path.join(tmpDir, 'learned-ats-platforms.json');
+  });
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function seedApplicableJob(jobId: string, applyUrl: string) {
+    saveJob(db, {
+      id: jobId,
+      source: 'other',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: applyUrl,
+      apply_url: applyUrl,
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: jobId,
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+  }
+
+  it('learns a FieldMap for a new platform, persists it, and submits through it in the same run', async () => {
+    seedApplicableJob('job-ext-bootstrap-success', 'https://jobs.newats.example/apply/123');
+    const rawSnapshot = {
+      inputs: [
+        { tag: 'input', id: 'full_name', indexAmongSameTag: 0 },
+        { tag: 'input', id: 'email_addr', indexAmongSameTag: 1 },
+        { tag: 'input', name: 'resume', indexAmongSameTag: 2 },
+      ],
+      buttons: [{ tag: 'button', id: 'submit_btn', text: 'Submit', indexAmongSameTag: 0 }],
+    };
+    const { page, submitButton } = makeFakeExternalApplyPage({
+      submitButtonSelector: '#submit_btn',
+      confirmationAppears: true,
+      rawSnapshot,
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const runClaude = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        fieldMap: {
+          name: '#full_name',
+          email: '#email_addr',
+          resumeUpload: 'input[name="resume"]',
+          submitButton: '#submit_btn',
+        },
+      })
+    );
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-bootstrap-success' },
+      { db, chromium: { launch }, bootstrap: { runClaude }, learnedPlatformsPath }
+    );
+
+    expect(result.status).toBe('submitted');
+    expect(result.platform).toBe('jobs.newats.example');
+    expect(submitButton.click).toHaveBeenCalledTimes(1);
+
+    const registry = JSON.parse(readFileSync(learnedPlatformsPath, 'utf8'));
+    expect(registry['jobs.newats.example'].name).toBe('#full_name');
+  });
+
+  it('reuses a previously learned platform on a later call without invoking the bootstrap Claude fallback again', async () => {
+    seedApplicableJob('job-ext-bootstrap-reuse', 'https://jobs.newats.example/apply/456');
+    saveLearnedPlatform(
+      'jobs.newats.example',
+      {
+        name: '#full_name',
+        email: '#email_addr',
+        phone: '#phone',
+        resumeUpload: 'input[name="resume"]',
+        coverLetter: '#cover',
+        submitButton: '#submit_btn',
+      },
+      learnedPlatformsPath
+    );
+    const { page, submitButton } = makeFakeExternalApplyPage({
+      submitButtonSelector: '#submit_btn',
+      confirmationAppears: true,
+    });
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+    const runClaude = vi.fn();
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-bootstrap-reuse' },
+      { db, chromium: { launch }, bootstrap: { runClaude }, learnedPlatformsPath }
+    );
+
+    expect(result.status).toBe('submitted');
+    expect(submitButton.click).toHaveBeenCalledTimes(1);
+    expect(runClaude).not.toHaveBeenCalled();
   });
 });

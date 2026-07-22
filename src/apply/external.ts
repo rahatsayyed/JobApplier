@@ -9,6 +9,9 @@ import * as greenhouse from '../ats/greenhouse.js';
 import * as lever from '../ats/lever.js';
 import * as workday from '../ats/workday.js';
 import * as ashby from '../ats/ashby.js';
+import { detectLearned, saveLearnedPlatform } from '../ats/learned.js';
+import { snapshotFormControls } from '../lib/domSnapshot.js';
+import { bootstrapFieldMap } from '../lib/atsBootstrap.js';
 
 // Best-effort, NOT live-verified selectors (unlike linkedin.ts's
 // SELECTORS.submissionConfirmation, which was confirmed live against a real posting).
@@ -136,6 +139,17 @@ export interface ApplyExternalDeps {
    */
   fallback?: FallbackDeps;
   fallbackEnabled?: boolean;
+  /**
+   * Injectable Claude fallback for the self-extending ATS bootstrap step (always-on, no
+   * opt-in flag — see docs/superpowers/specs/2026-07-21-ats-bootstrap-design.md). Separate
+   * from `fallback` above, which only covers the opt-in submit-click escalation.
+   */
+  bootstrap?: FallbackDeps;
+  /**
+   * Override for the learned-platform registry file path, for testing without touching the
+   * real config/learned-ats-platforms.json.
+   */
+  learnedPlatformsPath?: string;
 }
 
 function recordAndReturn(
@@ -186,16 +200,23 @@ export async function applyExternal(
     );
   }
 
-  const ats = detectAts(job.apply_url);
-  if (!ats) {
-    return recordAndReturn(database, job_id, null, 'manual_review', 'unsupported ATS platform');
-  }
+  let ats = detectAts(job.apply_url) ?? detectLearned(job.apply_url, deps.learnedPlatformsPath);
 
-  // Safety check for the per-platform tool split (apply.greenhouse/lever/workday/ashby): a
-  // job's apply_url can drift from what the caller expects (e.g. a Greenhouse posting that
-  // redirects through a Lever-branded domain). Refuse rather than silently applying through
-  // the wrong platform's tool.
-  if (expected_platform && ats.platform !== expected_platform) {
+  if (!ats) {
+    if (expected_platform) {
+      // A caller invoking a SPECIFIC platform tool (apply.greenhouse et al.) always sets
+      // expected_platform. An unrecognized domain there means a data problem (wrong apply_url
+      // stored), not a legitimate new platform to learn — bootstrapping only ever fires for
+      // the no-expected-platform case (a generic caller with no fixed platform in mind), never
+      // through an explicit specific-platform tool call.
+      return recordAndReturn(database, job_id, null, 'manual_review', 'unsupported ATS platform');
+    }
+    // else: fall through — attempt to bootstrap a FieldMap once the browser has launched, below.
+  } else if (expected_platform && ats.platform !== expected_platform) {
+    // Safety check for the per-platform tool split (apply.greenhouse/lever/workday/ashby): a
+    // job's apply_url can drift from what the caller expects (e.g. a Greenhouse posting that
+    // redirects through a Lever-branded domain). Refuse rather than silently applying through
+    // the wrong platform's tool.
     return recordAndReturn(
       database,
       job_id,
@@ -210,7 +231,9 @@ export async function applyExternal(
   // Gate immediately before the Playwright launch — after every cheap, pure, non-browser
   // pre-flight check above (job lookup, tailored-resume lookup, ATS detection, base resume
   // fetch) has already had a chance to reject the request for free, so a rejection never
-  // burns a quota slot for a no-op.
+  // burns a quota slot for a no-op. An unrecognized domain with no expected_platform is NOT a
+  // cheap rejection past this point — bootstrapping is a real attempt (browser launch + a
+  // live Claude call) and still burns a slot, the same as any other apply attempt.
   //
   // Judgment call: this shares the SAME 'easy_apply' counter key as linkedin.ts's
   // `apply_easy_apply`, per the design spec (docs/superpowers/specs/2026-07-07-jobapplier-
@@ -224,7 +247,7 @@ export async function applyExternal(
     return {
       job_id,
       status: 'rate_limited',
-      platform: ats.platform,
+      platform: ats?.platform ?? null,
       reason: `daily apply limit (${maxPerDay}) reached`,
     };
   }
@@ -235,44 +258,69 @@ export async function applyExternal(
     const page = await browser.newPage();
     await page.goto(job.apply_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
 
-    for (const [key, selector] of getRequiredFieldEntries(ats.fieldMap)) {
+    if (!ats) {
+      let hostname: string | null = null;
+      try {
+        hostname = new URL(job.apply_url).hostname.toLowerCase();
+      } catch {
+        hostname = null;
+      }
+
+      const snapshot = await snapshotFormControls(page);
+      const bootstrapResult = await bootstrapFieldMap(snapshot, deps.bootstrap);
+      if ('missing' in bootstrapResult) {
+        return recordAndReturn(
+          database,
+          job_id,
+          hostname,
+          'manual_review',
+          `could not learn a field map for this platform — missing: ${bootstrapResult.missing.join(', ')}`
+        );
+      }
+
+      if (hostname) saveLearnedPlatform(hostname, bootstrapResult.fieldMap, deps.learnedPlatformsPath);
+      ats = { platform: hostname ?? 'unknown', fieldMap: bootstrapResult.fieldMap };
+    }
+    const resolvedAts = ats!;
+
+    for (const [key, selector] of getRequiredFieldEntries(resolvedAts.fieldMap)) {
       const el = await page.$(selector);
       if (!el) {
         return recordAndReturn(
           database,
           job_id,
-          ats.platform,
+          resolvedAts.platform,
           'manual_review',
           `required field "${key}" not found on page (selector: ${selector})`
         );
       }
     }
 
-    if (ats.fieldMap.firstName && ats.fieldMap.lastName) {
+    if (resolvedAts.fieldMap.firstName && resolvedAts.fieldMap.lastName) {
       const { first, last } = splitName(applicant.name);
-      await page.fill(ats.fieldMap.firstName, first);
-      await page.fill(ats.fieldMap.lastName, last);
+      await page.fill(resolvedAts.fieldMap.firstName, first);
+      await page.fill(resolvedAts.fieldMap.lastName, last);
     } else {
-      await page.fill(ats.fieldMap.name, applicant.name ?? '');
+      await page.fill(resolvedAts.fieldMap.name, applicant.name ?? '');
     }
 
-    await page.fill(ats.fieldMap.email, applicant.email ?? '');
+    await page.fill(resolvedAts.fieldMap.email, applicant.email ?? '');
 
     if (applicant.phone) {
-      const phoneEl = await page.$(ats.fieldMap.phone);
-      if (phoneEl) await page.fill(ats.fieldMap.phone, applicant.phone);
+      const phoneEl = await page.$(resolvedAts.fieldMap.phone);
+      if (phoneEl) await page.fill(resolvedAts.fieldMap.phone, applicant.phone);
     }
 
-    const coverLetterEl = await page.$(ats.fieldMap.coverLetter);
+    const coverLetterEl = await page.$(resolvedAts.fieldMap.coverLetter);
     if (coverLetterEl && prepared.body) {
-      await page.fill(ats.fieldMap.coverLetter, prepared.body);
+      await page.fill(resolvedAts.fieldMap.coverLetter, prepared.body);
     }
 
-    await page.setInputFiles(ats.fieldMap.resumeUpload, prepared.resume_path);
+    await page.setInputFiles(resolvedAts.fieldMap.resumeUpload, prepared.resume_path);
 
     const clickedSubmit = await findAndClickControl(
       page,
-      ats.fieldMap.submitButton,
+      resolvedAts.fieldMap.submitButton,
       'Submit the completed job application form',
       fallback
     );
@@ -280,9 +328,9 @@ export async function applyExternal(
       return recordAndReturn(
         database,
         job_id,
-        ats.platform,
+        resolvedAts.platform,
         'manual_review',
-        `submit button not found on page (selector: ${ats.fieldMap.submitButton})`
+        `submit button not found on page (selector: ${resolvedAts.fieldMap.submitButton})`
       );
     }
 
@@ -303,18 +351,18 @@ export async function applyExternal(
       return recordAndReturn(
         database,
         job_id,
-        ats.platform,
+        resolvedAts.platform,
         'manual_review',
         'clicked submit but could not confirm the application was actually recorded — verify manually'
       );
     }
 
-    return recordAndReturn(database, job_id, ats.platform, 'submitted');
+    return recordAndReturn(database, job_id, resolvedAts.platform, 'submitted');
   } catch (err) {
     return recordAndReturn(
       database,
       job_id,
-      ats.platform,
+      ats?.platform ?? null,
       'failed',
       (err as Error).message ?? 'unknown error during external apply'
     );
