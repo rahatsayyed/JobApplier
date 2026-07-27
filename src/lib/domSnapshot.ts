@@ -50,8 +50,19 @@ interface RawDescriptor extends ControlDescriptor {
  * synthesizing a verifiable selector for each via `buildSelector`.
  */
 export async function snapshotFormControls(page: Pick<Page, 'evaluate'>): Promise<FormControlSnapshot> {
+  // No nested named function declarations here (e.g. a separate `describe` helper) — tsx/esbuild
+  // wraps those in a `__name(...)` helper call that only exists in Node's compiled output, not in
+  // Playwright's isolated browser evaluation context, causing a live "ReferenceError: __name is
+  // not defined" that no unit test (which mocks `evaluate` entirely) can catch. Every other
+  // evaluate() callback in this codebase (linkedin.ts) avoids this by inlining logic directly, as
+  // this does too.
   const raw = await page.evaluate(() => {
-    function describe(el: Element, tag: string, index: number) {
+    const inputEls = Array.from(document.querySelectorAll('input, select, textarea'));
+    const inputTagCounts: Record<string, number> = {};
+    const inputs = inputEls.map((el) => {
+      const tag = el.tagName.toLowerCase();
+      const count = inputTagCounts[tag] ?? 0;
+      inputTagCounts[tag] = count + 1;
       const input = el as HTMLInputElement;
       return {
         tag,
@@ -61,17 +72,8 @@ export async function snapshotFormControls(page: Pick<Page, 'evaluate'>): Promis
         ariaLabel: el.getAttribute('aria-label') || undefined,
         placeholder: input.placeholder || undefined,
         text: el.textContent?.trim() || undefined,
-        indexAmongSameTag: index,
+        indexAmongSameTag: count,
       };
-    }
-
-    const inputEls = Array.from(document.querySelectorAll('input, select, textarea'));
-    const inputTagCounts: Record<string, number> = {};
-    const inputs = inputEls.map((el) => {
-      const tag = el.tagName.toLowerCase();
-      const count = inputTagCounts[tag] ?? 0;
-      inputTagCounts[tag] = count + 1;
-      return describe(el, tag, count);
     });
 
     const buttonEls = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"]'));
@@ -80,7 +82,17 @@ export async function snapshotFormControls(page: Pick<Page, 'evaluate'>): Promis
       const tag = el.tagName.toLowerCase();
       const count = buttonTagCounts[tag] ?? 0;
       buttonTagCounts[tag] = count + 1;
-      return describe(el, tag, count);
+      const input = el as HTMLInputElement;
+      return {
+        tag,
+        id: el.id || undefined,
+        name: input.name || undefined,
+        type: input.type || undefined,
+        ariaLabel: el.getAttribute('aria-label') || undefined,
+        placeholder: input.placeholder || undefined,
+        text: el.textContent?.trim() || undefined,
+        indexAmongSameTag: count,
+      };
     });
 
     return { inputs, buttons };
