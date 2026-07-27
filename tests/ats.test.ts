@@ -4,7 +4,7 @@ import { detect as detectLever, fieldMap as leverFieldMap } from '../src/ats/lev
 import { detect as detectWorkday, fieldMap as workdayFieldMap } from '../src/ats/workday.js';
 import { detect as detectAshby, fieldMap as ashbyFieldMap } from '../src/ats/ashby.js';
 import { detectAts, splitName, applyExternal, SELECTORS } from '../src/apply/external.js';
-import { openDb, saveJob, saveOutreach } from '../src/db.js';
+import { openDb, saveJob, saveOutreach, enqueueOutreach } from '../src/db.js';
 import type Database from 'better-sqlite3';
 import { existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -133,6 +133,169 @@ describe('splitName', () => {
     expect(splitName(undefined)).toEqual({ first: '', last: '' });
     expect(splitName('')).toEqual({ first: '', last: '' });
     expect(splitName('   ')).toEqual({ first: '', last: '' });
+  });
+});
+
+describe('applyExternal prepared-materials lookup (outreach_queue support)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  function seedJob(jobId: string) {
+    saveJob(db, {
+      id: jobId,
+      source: 'greenhouse',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://boards.greenhouse.io/acme/jobs/123',
+      apply_url: 'https://boards.greenhouse.io/acme/jobs/123',
+      description: 'React role',
+    });
+  }
+
+  function makeFakeSubmittingPage() {
+    const submitButton = { click: vi.fn().mockResolvedValue(undefined) };
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockResolvedValue({ inputs: [], buttons: [] }),
+      $: vi.fn().mockResolvedValue({}),
+      fill: vi.fn().mockResolvedValue(undefined),
+      setInputFiles: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === greenhouseFieldMap.submitButton) {
+          return { count: vi.fn().mockResolvedValue(1), first: vi.fn(() => submitButton) };
+        }
+        if (selector === SELECTORS.submissionConfirmation) {
+          return { first: vi.fn(() => ({ waitFor: vi.fn().mockResolvedValue(undefined) })) };
+        }
+        return { count: vi.fn().mockResolvedValue(0), first: vi.fn(() => ({})) };
+      }),
+    };
+  }
+
+  it('finds a resume prepared only in outreach_queue (the autonomous-pipeline table), not just the legacy outreach table', async () => {
+    seedJob('job-ext-queue-only');
+    enqueueOutreach(db, {
+      job_id: 'job-ext-queue-only',
+      resume_pdf_path: '/tmp/queued-resume.pdf',
+      email_subject: 'Application',
+      email_body: 'Queued cover letter body',
+      email_to: 'hiring@acme.com',
+      connect_note: null,
+      connect_profile_url: null,
+      connect_category: null,
+      connect_company: null,
+      apply_platform: null,
+      apply_url: null,
+    });
+    const page = makeFakeSubmittingPage();
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyExternal({ job_id: 'job-ext-queue-only' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('submitted');
+    expect(page.setInputFiles).toHaveBeenCalledWith(greenhouseFieldMap.resumeUpload, '/tmp/queued-resume.pdf');
+  });
+
+  it('still finds a resume prepared only in the legacy outreach table', async () => {
+    seedJob('job-ext-legacy-only');
+    saveOutreach(db, {
+      job_id: 'job-ext-legacy-only',
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Legacy cover letter body',
+      resume_path: '/tmp/legacy-resume.pdf',
+    });
+    const page = makeFakeSubmittingPage();
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyExternal({ job_id: 'job-ext-legacy-only' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('submitted');
+    expect(page.setInputFiles).toHaveBeenCalledWith(greenhouseFieldMap.resumeUpload, '/tmp/legacy-resume.pdf');
+  });
+
+  it('prefers whichever of legacy/queued rows is more recent when both exist', async () => {
+    seedJob('job-ext-both-prefer-recent');
+    saveOutreach(db, {
+      job_id: 'job-ext-both-prefer-recent',
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Older legacy cover letter',
+      resume_path: '/tmp/older-legacy-resume.pdf',
+    });
+    // Ensure a distinct, later created_at than the legacy row above.
+    db.prepare("UPDATE outreach SET created_at = datetime('now', '-1 hour') WHERE job_id = ?").run(
+      'job-ext-both-prefer-recent'
+    );
+    enqueueOutreach(db, {
+      job_id: 'job-ext-both-prefer-recent',
+      resume_pdf_path: '/tmp/newer-queued-resume.pdf',
+      email_subject: 'Application',
+      email_body: 'Newer queued cover letter',
+      email_to: 'hiring@acme.com',
+      connect_note: null,
+      connect_profile_url: null,
+      connect_category: null,
+      connect_company: null,
+      apply_platform: null,
+      apply_url: null,
+    });
+    const page = makeFakeSubmittingPage();
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyExternal({ job_id: 'job-ext-both-prefer-recent' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('submitted');
+    expect(page.setInputFiles).toHaveBeenCalledWith(greenhouseFieldMap.resumeUpload, '/tmp/newer-queued-resume.pdf');
+  });
+
+  it('returns manual_review when neither outreach nor outreach_queue has a resume for this job', async () => {
+    seedJob('job-ext-no-materials');
+    const launch = vi.fn();
+
+    const result = await applyExternal({ job_id: 'job-ext-no-materials' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/no tailored resume\/cover letter prepared/);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('ignores an outreach_queue row with a null resume_pdf_path, falling back to legacy outreach if present', async () => {
+    seedJob('job-ext-queue-null-resume');
+    saveOutreach(db, {
+      job_id: 'job-ext-queue-null-resume',
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Legacy cover letter',
+      resume_path: '/tmp/legacy-fallback-resume.pdf',
+    });
+    enqueueOutreach(db, {
+      job_id: 'job-ext-queue-null-resume',
+      resume_pdf_path: null,
+      email_subject: 'Application',
+      email_body: 'Queued cover letter with no resume yet',
+      email_to: 'hiring@acme.com',
+      connect_note: null,
+      connect_profile_url: null,
+      connect_category: null,
+      connect_company: null,
+      apply_platform: null,
+      apply_url: null,
+    });
+    const page = makeFakeSubmittingPage();
+    const browser = { newPage: vi.fn().mockResolvedValue(page), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await applyExternal({ job_id: 'job-ext-queue-null-resume' }, { db, chromium: { launch } });
+
+    expect(result.status).toBe('submitted');
+    expect(page.setInputFiles).toHaveBeenCalledWith(greenhouseFieldMap.resumeUpload, '/tmp/legacy-fallback-resume.pdf');
   });
 });
 

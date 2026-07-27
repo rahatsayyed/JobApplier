@@ -103,6 +103,36 @@ function getRequiredFieldEntries(fieldMap: FieldMap): Array<[string, string]> {
   return entries;
 }
 
+/**
+ * Finds the tailored resume + cover-letter body prepared for a job, checking both the legacy
+ * `outreach` table (the old direct-send flow) and `outreach_queue` (the autonomous pipeline,
+ * which never writes to `outreach`) and preferring whichever row is more recent — mirrors
+ * linkedin.ts's `findPreparedResumePath`, which fixed the identical gap for Easy Apply on
+ * 2026-07-20. That fix was never ported here, so every external-ATS apply attempt via the
+ * autonomous pipeline fell through to manual_review with "no prepared resume found" until now.
+ */
+function findPreparedApplicationMaterials(
+  database: BetterSqlite3.Database,
+  job_id: string
+): { resume_path: string; body: string } | undefined {
+  const legacy = database
+    .prepare('SELECT resume_path, body, created_at FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(job_id) as { resume_path: string; body: string; created_at: string } | undefined;
+  const queued = database
+    .prepare(
+      `SELECT resume_pdf_path as resume_path, email_body as body, created_at FROM outreach_queue
+       WHERE job_id = ? AND resume_pdf_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`
+    )
+    .get(job_id) as { resume_path: string; body: string; created_at: string } | undefined;
+
+  if (!legacy && !queued) return undefined;
+  if (!legacy) return { resume_path: queued!.resume_path, body: queued!.body };
+  if (!queued) return { resume_path: legacy.resume_path, body: legacy.body };
+  return new Date(queued.created_at) >= new Date(legacy.created_at)
+    ? { resume_path: queued.resume_path, body: queued.body }
+    : { resume_path: legacy.resume_path, body: legacy.body };
+}
+
 export interface AtsDetection {
   platform: string;
   fieldMap: FieldMap;
@@ -186,9 +216,7 @@ export async function applyExternal(
     return recordAndReturn(database, job_id, null, 'manual_review', 'job not found or missing apply_url');
   }
 
-  const prepared = database
-    .prepare('SELECT resume_path, body FROM outreach WHERE job_id = ? ORDER BY created_at DESC LIMIT 1')
-    .get(job_id) as { resume_path: string; body: string } | undefined;
+  const prepared = findPreparedApplicationMaterials(database, job_id);
 
   if (!prepared || !prepared.resume_path) {
     return recordAndReturn(
