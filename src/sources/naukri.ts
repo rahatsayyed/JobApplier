@@ -3,14 +3,19 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import type BetterSqlite3 from 'better-sqlite3';
-import { openDb, isSeen, saveJob } from '../db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..', '..');
 const DEFAULT_SESSION_STATE_PATH = path.join(projectRoot, 'secrets', 'naukri-state.json');
 const CARD_SELECTOR = '.srp-jobtuple-wrapper';
 const COMPANY_SITE_BUTTON_SELECTOR = '.company-site-button';
+/**
+ * Caps how many jobs go through the (slow, sequential, per-job ~40s worst case) apply-URL
+ * resolution phase per fetch, so a large new-jobs batch can't hold up the whole `fetchAllJobs`
+ * call (which awaits Naukri alongside the fast API sources via `Promise.all`). Jobs beyond the
+ * cap simply keep the Naukri listing URL as `apply_url` — an already-supported fallback state.
+ */
+const MAX_APPLY_URL_RESOLUTIONS_PER_FETCH = 10;
 
 function slugify(value: string): string {
   return value
@@ -98,16 +103,26 @@ export function parseNaukriCards(rawCards: RawNaukriCard[]): NaukriParseResult {
 export interface NaukriDeps {
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
-  /** Injectable db handle, for testing without touching data.sqlite. */
-  db?: BetterSqlite3.Database;
+  /**
+   * Injectable predicate deciding whether a job id is "new" — used ONLY to gate the expensive
+   * apply-URL-resolution phase (skip re-resolving jobs the caller already knows about), never to
+   * filter what this function returns and never to persist anything. Dedup/persistence is the
+   * caller's responsibility (`src/mcp/job-fetch.ts`), matching `adzuna`/`remotive`/`remoteok`'s
+   * convention — this module owns no db handle. Defaults to "treat every job as new" (resolve
+   * apply-urls for everything returned by the search phase, capped by
+   * `MAX_APPLY_URL_RESOLUTIONS_PER_FETCH`) if not given.
+   */
+  isNewJob?: (jobId: string) => boolean;
   /** Injectable session-state file path, for testing without touching the real secrets file. */
   sessionStatePath?: string;
 }
 
 /**
  * Clicks Naukri's "Apply on company site" button if present and returns the resulting new tab's
- * URL — navigation only, never a submission. Returns null if the button isn't present, or if
- * waiting for the new tab times out.
+ * URL — navigation only, never a submission. Returns null if the button isn't present, if
+ * waiting for the new tab times out, or if the resulting URL doesn't look like a real resolved
+ * destination (still `about:blank`, an error page, or still on naukri.com — see
+ * `isResolvedApplyUrl`).
  */
 export async function resolveApplyUrl(
   page: Pick<Page, 'locator'>,
@@ -121,23 +136,48 @@ export async function resolveApplyUrl(
     await newPage.waitForLoadState('domcontentloaded').catch(() => {});
     const url = newPage.url();
     await newPage.close().catch(() => {});
-    return url;
+    return isResolvedApplyUrl(url) ? url : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Scrapes Naukri's search-results page for a role/location, then (if a saved session exists)
- * resolves each new job's real apply_url via `resolveApplyUrl`. Both phases run `headless: false`
- * — Naukri's Akamai bot protection blocks headless Chromium outright (see Global Constraints).
+ * Rejects URLs that indicate `resolveApplyUrl`'s new-tab navigation didn't actually reach the
+ * target site: `about:blank` (popup read before it navigated), non-http(s) schemes (e.g.
+ * `chrome-error://...`), and anything still on the `naukri.com` domain (an intermediate
+ * redirector or a mis-detected click target, not the employer's real ATS).
  */
-export async function fetchNaukriJobs(
+function isResolvedApplyUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === 'naukri.com' || hostname.endsWith('.naukri.com')) return false;
+  return true;
+}
+
+/**
+ * Scrapes Naukri's search-results page for a role/location, then (if a saved session exists)
+ * resolves the real apply_url for up to `MAX_APPLY_URL_RESOLUTIONS_PER_FETCH` "new" jobs (per
+ * `deps.isNewJob`) via `resolveApplyUrl`. One browser launch (`headless: false` — Naukri's Akamai
+ * bot protection blocks headless Chromium outright, see Global Constraints), with two contexts:
+ * an unauthenticated one for scraping the search-results page, and (if a saved session exists) an
+ * authenticated one for the apply-url resolution phase.
+ *
+ * This function never touches a database — dedup and persistence are the caller's job (see
+ * `NaukriDeps.isNewJob` above), matching the other `src/sources/` modules' convention.
+ */
+export async function fetchNaukri(
   params: { role: string; location?: string },
   deps: NaukriDeps = {}
 ): Promise<Job[]> {
-  const db = deps.db ?? openDb('data.sqlite');
   const browserLauncher = deps.chromium ?? chromium;
+  const isNewJob = deps.isNewJob ?? (() => true);
   const sessionStatePath = deps.sessionStatePath ?? DEFAULT_SESSION_STATE_PATH;
   const searchUrl = buildNaukriSearchUrl(params.role, params.location);
 
@@ -145,7 +185,7 @@ export async function fetchNaukriJobs(
   try {
     browser = await browserLauncher.launch({ headless: false });
 
-    let newJobs: Job[] = [];
+    let jobs: Job[] = [];
     const searchContext = await browser.newContext();
     try {
       const page = await searchContext.newPage();
@@ -166,9 +206,9 @@ export async function fetchNaukriJobs(
         })
       );
 
-      const { jobs, found, parsed, skipped } = parseNaukriCards(rawCards);
-      console.error(`[naukri] ${parsed}/${found} parsed, ${skipped} skipped (malformed)`);
-      newJobs = jobs.filter((job) => !isSeen(db, job.id));
+      const parseResult = parseNaukriCards(rawCards);
+      console.error(`[naukri] ${parseResult.parsed}/${parseResult.found} parsed, ${parseResult.skipped} skipped (malformed)`);
+      jobs = parseResult.jobs;
     } catch (err) {
       console.error('[naukri] search fetch failed:', err instanceof Error ? err.message : err);
       return [];
@@ -176,10 +216,12 @@ export async function fetchNaukriJobs(
       await searchContext.close();
     }
 
-    if (newJobs.length > 0 && existsSync(sessionStatePath)) {
+    const jobsToResolve = jobs.filter((job) => isNewJob(job.id)).slice(0, MAX_APPLY_URL_RESOLUTIONS_PER_FETCH);
+
+    if (jobsToResolve.length > 0 && existsSync(sessionStatePath)) {
       const applyContext = await browser.newContext({ storageState: sessionStatePath });
       try {
-        for (const job of newJobs) {
+        for (const job of jobsToResolve) {
           try {
             const page = await applyContext.newPage();
             await page.goto(job.url, { waitUntil: 'domcontentloaded' });
@@ -193,16 +235,13 @@ export async function fetchNaukriJobs(
       } finally {
         await applyContext.close();
       }
-    } else if (newJobs.length > 0) {
+    } else if (jobsToResolve.length > 0) {
       console.error(
         `[naukri] session state not found at ${sessionStatePath} — using Naukri listing URLs as apply_url`
       );
     }
 
-    for (const job of newJobs) {
-      saveJob(db, job);
-    }
-    return newJobs;
+    return jobs;
   } catch (err) {
     console.error('[naukri] fetch failed:', err instanceof Error ? err.message : err);
     return [];

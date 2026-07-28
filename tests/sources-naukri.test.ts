@@ -3,10 +3,10 @@ import {
   buildNaukriSearchUrl,
   extractNaukriJobId,
   parseNaukriCards,
-  fetchNaukriJobs,
+  fetchNaukri,
   resolveApplyUrl,
 } from '../src/sources/naukri.js';
-import { openDb, isSeen, saveJob } from '../src/db.js';
+import { openDb, isSeen } from '../src/db.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -155,9 +155,8 @@ function makeFakeApplyContext(companySiteButtonFound: boolean, resolvedUrl: stri
   };
 }
 
-describe('fetchNaukriJobs', () => {
-  it('scrapes cards, dedups against the db, and uses the listing URL as apply_url when no session file exists', async () => {
-    const db = openDb(':memory:');
+describe('fetchNaukri', () => {
+  it('scrapes cards and uses the listing URL as apply_url when no session file exists', async () => {
     const rawCards = [
       {
         titleText: 'Full Stack Developer',
@@ -171,33 +170,25 @@ describe('fetchNaukriJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(searchContext), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchNaukriJobs(
+    const jobs = await fetchNaukri(
       { role: 'Full Stack Developer', location: 'India' },
-      { chromium: chromiumStub, db, sessionStatePath: '/nonexistent/naukri-state.json' }
+      { chromium: chromiumStub, sessionStatePath: '/nonexistent/naukri-state.json' }
     );
 
     expect(jobs).toHaveLength(1);
     expect(jobs[0].apply_url).toBe('https://www.naukri.com/job-listings-full-stack-developer-acme-12345');
-    expect(isSeen(db, 'naukri:12345')).toBe(true);
     expect(browser.close).toHaveBeenCalled();
   });
 
-  it('excludes a job already marked seen in the db', async () => {
-    const db = openDb(':memory:');
-    saveJob(db, {
-      id: 'naukri:99999',
-      source: 'naukri',
-      title: 'Already Seen',
-      company: 'Acme',
-      url: 'https://www.naukri.com/job-listings-foo-99999',
-      apply_url: 'https://www.naukri.com/job-listings-foo-99999',
-      description: '',
-    });
+  it('never touches the db — a job it returns is not marked seen in a fresh db', async () => {
+    // This is the regression test for the Critical #1 bug: fetchNaukri used to call saveJob
+    // itself, which meant a caller's own isSeen/saveJob dedup (job-fetch.ts's list_new_jobs)
+    // filtered every Naukri job out as "already seen" before the pipeline ever got to it.
     const rawCards = [
       {
-        titleText: 'Already Seen',
+        titleText: 'Full Stack Developer',
         companyText: 'Acme',
-        hrefRaw: 'https://www.naukri.com/job-listings-foo-99999',
+        hrefRaw: 'https://www.naukri.com/job-listings-full-stack-developer-acme-77777',
         descriptionText: null,
       },
     ];
@@ -206,16 +197,17 @@ describe('fetchNaukriJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(searchContext), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchNaukriJobs(
+    const jobs = await fetchNaukri(
       { role: 'Full Stack Developer' },
-      { chromium: chromiumStub, db, sessionStatePath: '/nonexistent/naukri-state.json' }
+      { chromium: chromiumStub, sessionStatePath: '/nonexistent/naukri-state.json' }
     );
 
-    expect(jobs).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    const freshDb = openDb(':memory:');
+    expect(isSeen(freshDb, jobs[0].id)).toBe(false);
   });
 
   it('returns [] (not a throw) if the search page fails to load', async () => {
-    const db = openDb(':memory:');
     const searchPage = {
       goto: vi.fn().mockRejectedValue(new Error('net::ERR_CONNECTION_RESET')),
       waitForSelector: vi.fn(),
@@ -226,9 +218,9 @@ describe('fetchNaukriJobs', () => {
     const browser = { newContext: vi.fn().mockResolvedValue(searchContext), close: vi.fn().mockResolvedValue(undefined) };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchNaukriJobs(
+    const jobs = await fetchNaukri(
       { role: 'Full Stack Developer' },
-      { chromium: chromiumStub, db, sessionStatePath: '/nonexistent/naukri-state.json' }
+      { chromium: chromiumStub, sessionStatePath: '/nonexistent/naukri-state.json' }
     );
 
     expect(jobs).toEqual([]);
@@ -236,7 +228,6 @@ describe('fetchNaukriJobs', () => {
   });
 
   it('resolves apply_url via the company-site button when a session file exists', async () => {
-    const db = openDb(':memory:');
     const tmpDir = mkdtempSync(path.join(tmpdir(), 'naukri-test-'));
     const sessionStatePath = path.join(tmpDir, 'naukri-state.json');
     writeFileSync(sessionStatePath, '{}');
@@ -258,7 +249,7 @@ describe('fetchNaukriJobs', () => {
     };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchNaukriJobs({ role: 'Full Stack Developer' }, { chromium: chromiumStub, db, sessionStatePath });
+    const jobs = await fetchNaukri({ role: 'Full Stack Developer' }, { chromium: chromiumStub, sessionStatePath });
 
     expect(jobs).toHaveLength(1);
     expect(jobs[0].apply_url).toBe('https://acme.com/careers/apply/123');
@@ -267,7 +258,6 @@ describe('fetchNaukriJobs', () => {
   });
 
   it('falls back to the Naukri listing URL when the company-site button is not found', async () => {
-    const db = openDb(':memory:');
     const tmpDir = mkdtempSync(path.join(tmpdir(), 'naukri-test-'));
     const sessionStatePath = path.join(tmpDir, 'naukri-state.json');
     writeFileSync(sessionStatePath, '{}');
@@ -289,10 +279,77 @@ describe('fetchNaukriJobs', () => {
     };
     const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
 
-    const jobs = await fetchNaukriJobs({ role: 'Full Stack Developer' }, { chromium: chromiumStub, db, sessionStatePath });
+    const jobs = await fetchNaukri({ role: 'Full Stack Developer' }, { chromium: chromiumStub, sessionStatePath });
 
     expect(jobs).toHaveLength(1);
     expect(jobs[0].apply_url).toBe('https://www.naukri.com/job-listings-full-stack-developer-acme-66666');
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does NOT attempt apply-URL resolution for a job the injected isNewJob predicate says is not new', async () => {
+    const tmpDir = mkdtempSync(path.join(tmpdir(), 'naukri-test-'));
+    const sessionStatePath = path.join(tmpDir, 'naukri-state.json');
+    writeFileSync(sessionStatePath, '{}');
+
+    const rawCards = [
+      {
+        titleText: 'Full Stack Developer',
+        companyText: 'Acme',
+        hrefRaw: 'https://www.naukri.com/job-listings-full-stack-developer-acme-88888',
+        descriptionText: null,
+      },
+    ];
+    const searchPage = makeFakeSearchPage(rawCards);
+    const searchContext = { newPage: vi.fn().mockResolvedValue(searchPage), close: vi.fn().mockResolvedValue(undefined) };
+    const applyContext = makeFakeApplyContext(true, 'https://acme.com/careers/apply/999');
+    const browser = {
+      newContext: vi.fn().mockResolvedValueOnce(searchContext).mockResolvedValueOnce(applyContext),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchNaukri(
+      { role: 'Full Stack Developer' },
+      { chromium: chromiumStub, sessionStatePath, isNewJob: () => false }
+    );
+
+    expect(jobs).toHaveLength(1);
+    // Falls back to the listing URL — resolution never ran because isNewJob said "not new".
+    expect(jobs[0].apply_url).toBe('https://www.naukri.com/job-listings-full-stack-developer-acme-88888');
+    // Only the search-phase context was ever created — no apply-phase context.
+    expect(browser.newContext).toHaveBeenCalledTimes(1);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('attempts apply-URL resolution when no isNewJob predicate is given (defaults to "always new")', async () => {
+    const tmpDir = mkdtempSync(path.join(tmpdir(), 'naukri-test-'));
+    const sessionStatePath = path.join(tmpDir, 'naukri-state.json');
+    writeFileSync(sessionStatePath, '{}');
+
+    const rawCards = [
+      {
+        titleText: 'Full Stack Developer',
+        companyText: 'Acme',
+        hrefRaw: 'https://www.naukri.com/job-listings-full-stack-developer-acme-11111',
+        descriptionText: null,
+      },
+    ];
+    const searchPage = makeFakeSearchPage(rawCards);
+    const searchContext = { newPage: vi.fn().mockResolvedValue(searchPage), close: vi.fn().mockResolvedValue(undefined) };
+    const applyContext = makeFakeApplyContext(true, 'https://acme.com/careers/apply/111');
+    const browser = {
+      newContext: vi.fn().mockResolvedValueOnce(searchContext).mockResolvedValueOnce(applyContext),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const chromiumStub = { launch: vi.fn().mockResolvedValue(browser) };
+
+    const jobs = await fetchNaukri({ role: 'Full Stack Developer' }, { chromium: chromiumStub, sessionStatePath });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].apply_url).toBe('https://acme.com/careers/apply/111');
+    expect(browser.newContext).toHaveBeenCalledTimes(2);
 
     rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -331,6 +388,36 @@ describe('resolveApplyUrl', () => {
     const button = { count: vi.fn().mockResolvedValue(1), click: vi.fn().mockResolvedValue(undefined) };
     const page = { locator: vi.fn().mockReturnValue({ first: vi.fn().mockReturnValue(button) }) };
     const context = { waitForEvent: vi.fn().mockRejectedValue(new Error('Timeout')) };
+
+    const result = await resolveApplyUrl(page as never, context as never);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the new tab is still on about:blank (never actually navigated)', async () => {
+    const button = { count: vi.fn().mockResolvedValue(1), click: vi.fn().mockResolvedValue(undefined) };
+    const page = { locator: vi.fn().mockReturnValue({ first: vi.fn().mockReturnValue(button) }) };
+    const newPage = {
+      url: vi.fn().mockReturnValue('about:blank'),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = { waitForEvent: vi.fn().mockResolvedValue(newPage) };
+
+    const result = await resolveApplyUrl(page as never, context as never);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the new tab is still on naukri.com (redirector, not the real ATS)', async () => {
+    const button = { count: vi.fn().mockResolvedValue(1), click: vi.fn().mockResolvedValue(undefined) };
+    const page = { locator: vi.fn().mockReturnValue({ first: vi.fn().mockReturnValue(button) }) };
+    const newPage = {
+      url: vi.fn().mockReturnValue('https://www.naukri.com/job-listings-foo-123'),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = { waitForEvent: vi.fn().mockResolvedValue(newPage) };
 
     const result = await resolveApplyUrl(page as never, context as never);
 
