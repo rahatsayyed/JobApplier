@@ -11,7 +11,7 @@ const server = new McpServer({ name: 'job-fetch', version: '0.1.0' });
 server.registerTool(
   'search_jobs',
   {
-    description: 'Search job boards (Adzuna, Remotive, RemoteOK) for a role',
+    description: 'Search job boards (Adzuna, Remotive, RemoteOK, Naukri) for a role',
     inputSchema: {
       role: z.string(),
       location: z.string().optional(),
@@ -28,7 +28,8 @@ server.registerTool(
 server.registerTool(
   'list_new_jobs',
   {
-    description: 'Fetch jobs from all sources and return only ones not seen before, saving them to the db',
+    description:
+      'Fetch jobs from all sources (Adzuna, Remotive, RemoteOK, Naukri) and return only ones not seen before, saving them to the db',
     inputSchema: {
       role: z.string(),
       location: z.string().optional(),
