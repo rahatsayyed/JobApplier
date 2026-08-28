@@ -243,7 +243,7 @@ export interface Connection {
   profile_url: string;
   headline?: string | null;
   note: string;
-  status: 'drafted' | 'approved' | 'sent' | 'skipped';
+  status: 'drafted' | 'approved' | 'sent' | 'skipped' | 'messaged';
   sent_at?: string | null;
 }
 

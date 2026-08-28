@@ -343,12 +343,23 @@ gate was removed project-wide (see above). "Manual" here means "you trigger it f
 hand-picked job/profile," not "requires a review step." Steps, for a hand-picked job:
 
 1. Call `connect.find_linkedin_profile({company, role_hint})` → up to 3 candidate profiles.
-2. Invoke the `draft-connect-note` skill with the job and the chosen candidate profile → a note
-   (≤300 chars, references the job/role by name).
-3. Call `connect.connect_send({profile_url, note, job_id, company})` immediately — no approval
-   wait, per above. `connect_send`'s own fail-closed recipient-name/URL verification still runs.
-4. Report the result (`sent`/`rate_limited`/`failed`) to Telegram per the "Communication"
-   section.
+2. For the chosen candidate, call `connect.check_connection_status({profile_url})` FIRST —
+   read-only, before drafting anything. This decides which skill and which send tool to use
+   below; never draft or send without checking status first.
+3. If `status: "connected"`:
+   - Invoke the `draft-linkedin-message` skill with the job and the candidate profile → a
+     message (no character cap, phrased as a DM to an existing contact, not a connection ask).
+   - Call `connect.send_linkedin_message({profile_url, message, job_id, company})` immediately
+     — no separate approval step, per above.
+   - Report the result (`sent`/`rate_limited`/`failed`) to Telegram.
+4. If `status: "not_connected"`:
+   - Invoke the `draft-connect-note` skill with the job and the candidate profile → a note
+     (≤300 chars, references the job/role by name).
+   - Call `connect.connect_send({profile_url, note, job_id, company})` immediately — no
+     approval wait, per above. `connect_send`'s own fail-closed recipient-name/URL verification
+     still runs.
+   - Report the result (`sent`/`rate_limited`/`failed`) to Telegram.
+5. If `status: "failed"`: report the failure to Telegram — do not guess which path to take.
 
 ### `connect_send` reliability
 
@@ -356,7 +367,33 @@ hand-picked job/profile," not "requires a review step." Steps, for a hand-picked
 to dismiss) before reporting `sent` — a click that silently no-ops correctly returns `failed`
 instead of a false `sent`. `connect_send`'s own selector-miss points (More button, Connect menu
 item, Send button) can escalate to the bounded Claude fallback, gated by
-`CONNECT_HYBRID_FALLBACK=true` (off by default).
+`CONNECT_HYBRID_FALLBACK=true` (off by default). It has no knowledge of connection status at
+all — callers must call `check_connection_status` first (see above) and only invoke
+`connect_send` for a profile already confirmed `not_connected`.
+
+### Connection-status check (decided BEFORE drafting, not discovered mid-send)
+
+`connect.check_connection_status({profile_url})` is read-only (never clicks or sends anything)
+and returns `status: "connected" | "not_connected" | "failed"`. It checks the profile header for
+the "Manage notifications about `<Name>`" bell — LinkedIn shows this only for an existing
+1st-degree connection. This replaced an earlier design (embedding an already-connected check
+directly inside `connect_send`, keyed off Message-button presence) after a live false positive:
+`linkedin.com/in/abhiknag1` is a 2nd-degree (not connected) profile that shows BOTH "Connect"
+and "Message" (a Premium/InMail feature that opens messaging to non-connections) — Message
+presence alone does not imply already-connected, but the bell reliably does (live-confirmed
+present only on a real connection's profile, absent on that same not-connected profile).
+Checking status up front — before drafting — also avoids drafting the wrong kind of content
+(a connection-request note when a DM was needed, or vice versa) and re-drafting after the fact.
+`send_linkedin_message` is gated by its own daily `MAX_MESSAGES_PER_DAY` counter
+(`linkedin_message_send`), separate from `MAX_CONNECTS_PER_DAY`, and records the sent message to
+the `connections` table with `status: "messaged"`. Live-verified 2026-08-28
+(`linkedin.com/in/faizanshaikh-here`): a real test message sent and appeared correctly in the
+conversation thread; a send-confirmation false negative (the tool reported `failed` for a
+message that had actually sent, due to reading the compose box before it finished clearing) was
+found and fixed the same day. The automated `sender` stage (hunt-pipeline "Execute" step) does
+NOT auto-draft a DM on `connected` — it has no `Skill` tool access, so it calls
+`check_connection_status` itself, and on `connected` records the status and flags the job in its
+summary for a manual `/connect` follow-up instead (see `sender.md`).
 
 The full autonomous execute-stage flow (queue → email → connect → apply → cap-overrun Telegram
 prompt) is now live-verified end-to-end (2026-07-20): a real 5-job hunt run sent 2 real emails

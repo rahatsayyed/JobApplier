@@ -3,6 +3,8 @@ import {
   validateNoteLength,
   findLinkedinProfile,
   connectSend,
+  checkConnectionStatus,
+  sendLinkedinMessage,
   recordConnectionStatus,
   extractNameAndHeadline,
   pickButtonShapedIndex,
@@ -135,6 +137,7 @@ function makeConnectPage(
   const page: any = {
     goto: vi.fn().mockResolvedValue(undefined),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
     waitForResponse: opts.waitForResponse ?? vi.fn().mockRejectedValue(new Error('no matching response')),
     title: vi.fn().mockResolvedValue(`${name} | LinkedIn`),
     url: vi.fn().mockReturnValue(opts.url ?? DEFAULT_TEST_PROFILE_URL),
@@ -251,6 +254,25 @@ describe('SELECTORS', () => {
 
   it('does not modify the already-live-verified noteTextarea selector', () => {
     expect(SELECTORS.noteTextarea).toBe('#custom-message, textarea[name="message"]');
+  });
+
+  it('matches the real invitation dialog\'s native <dialog> tag, not just [role="dialog"] (INCIDENT 2026-08-28: LinkedIn now renders this dialog as a bare <dialog> element with no explicit role attribute — [role="dialog"] never matches its IMPLICIT ARIA role, so recipient-name verification silently failed with "could not verify" on every real profile tried, live-confirmed on abhiknag1 and michiel-bellen)', () => {
+    expect(SELECTORS.noteDialogContainer).toContain('dialog:visible');
+    expect(SELECTORS.noteDialogContainer).toContain('[role="dialog"]:visible');
+  });
+
+  it('uses an EXACT text match for connectMenuItem, not a substring match (INCIDENT 2026-08-28: ":has-text(\'Connect\')" substring-matched "Remove connection" on an already-connected profile\'s More menu)', () => {
+    expect(SELECTORS.connectMenuItem).not.toContain(':has-text(');
+    expect(SELECTORS.connectMenuItem).toContain(':text-is("Connect")');
+  });
+
+  it('matches the real header Message button by visible text, not aria-label (INCIDENT 2026-08-28: the real button has NO aria-label at all — only sidebar decoys do; and Playwright\'s :text-is() found zero matches live in this project\'s pinned version, so :has-text() is used instead, relying on proximity to reject decoys)', () => {
+    expect(SELECTORS.messageButton).toContain(':has-text("Message")');
+    expect(SELECTORS.messageButton).not.toContain('aria-label');
+  });
+
+  it('uses the "Manage notifications about" bell for connection-status detection (live-confirmed present only on a real connected profile, absent on a real not-connected one)', () => {
+    expect(SELECTORS.bellButton).toBe('a[aria-label^="Manage notifications about " i]');
   });
 });
 
@@ -954,6 +976,66 @@ describe('connectSend control flow', () => {
     expect(result.status).toBe('sent');
     expect(directConnectButton.click).toHaveBeenCalledTimes(1);
     expect(moreButton.click).not.toHaveBeenCalled();
+  });
+
+  it('retries via a native DOM click when a sponsored ad element blocks the normal click, instead of failing outright (INCIDENT 2026-08-28, live-confirmed on linkedin.com/in/abhiknag1: an svg#ads-small overlay intercepted every normal click attempt for 30s — AND a coordinate-based force:true retry silently no-op\'d by clicking the ad instead, so the fix dispatches a real element.click() with no coordinate/hit-testing step)', async () => {
+    const addNoteButton = makeFakeElement();
+    const noteInput = makeFakeElement();
+    const sendButton = makeFakeElement();
+    let directConnectClickCalls = 0;
+
+    const directConnectLocator: any = makeFakeLocator(makeFakeElement());
+    directConnectLocator.click = vi.fn(async () => {
+      directConnectClickCalls++;
+      throw new Error(
+        'locator.click: Timeout 30000ms exceeded.\n' +
+          'Call log:\n' +
+          '  - <svg id="ads-small" ...> intercepts pointer events'
+      );
+    });
+    directConnectLocator.evaluate = vi.fn().mockResolvedValue(undefined);
+
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.directConnectButton) return directConnectLocator;
+      if (selector === SELECTORS.addNoteButton) return makeFakeLocator(addNoteButton);
+      if (selector === SELECTORS.noteTextarea) return makeFakeLocator(noteInput);
+      if (selector === SELECTORS.sendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch }, pendingConfirmationTimeoutMs: 20, pendingConfirmationPollMs: 10 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(directConnectClickCalls).toBe(1);
+    expect(directConnectLocator.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT retry with force when the click fails for an unrelated reason (never masks a genuine failure as an ad-interception retry)', async () => {
+    const directConnectLocator: any = makeFakeLocator(makeFakeElement());
+    directConnectLocator.click = vi.fn().mockRejectedValue(new Error('element is detached from the DOM'));
+
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.directConnectButton) return directConnectLocator;
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await connectSend(
+      { profile_url: 'https://linkedin.com/in/example', note: 'Hi, would love to connect!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/detached from the DOM/);
+    expect(directConnectLocator.click).toHaveBeenCalledTimes(1);
   });
 
   it('picks the profile-card "Connect" link closest to the name (2D distance), not a sidebar duplicate at a similar Y (INCIDENT regression #2: X matters, not just Y)', async () => {
@@ -1663,5 +1745,254 @@ describe('recordConnectionStatus (Finding 3: drafted/skipped bookkeeping)', () =
     expect(row.status).toBe('skipped');
     expect(row.job_id).toBeNull();
     expect(row.company).toBeNull();
+  });
+});
+
+describe('checkConnectionStatus (standalone, read-only, checked BEFORE drafting)', () => {
+  // 2026-08-28 redesign: already-connected detection moved OUT of connectSend entirely, into
+  // its own read-only tool, using the "Manage notifications about <Name>" bell
+  // (SELECTORS.bellButton) instead of Message-button presence — live-confirmed present ONLY on
+  // a real connected profile (linkedin.com/in/faizanshaikh-here) and absent on a real
+  // not-connected profile (linkedin.com/in/abhiknag1), including one that also shows a Message
+  // button (Premium/InMail) — the exact false-positive case that motivated moving off
+  // Message-button as the signal. connectSend no longer knows about connection status at all.
+
+  it('returns connected when the bell is present', async () => {
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.bellButton) return makeFakeLocator(makeFakeElement());
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await checkConnectionStatus(
+      { profile_url: 'https://linkedin.com/in/example' },
+      { chromium: { launch } }
+    );
+
+    expect(result.status).toBe('connected');
+  });
+
+  it('returns not_connected when the bell is absent, even if a Message control is present (INCIDENT 2026-08-28 false positive this replaces: linkedin.com/in/abhiknag1 shows Message but no bell)', async () => {
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.messageButton) return makeFakeLocator(makeFakeElement());
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await checkConnectionStatus(
+      { profile_url: 'https://linkedin.com/in/example' },
+      { chromium: { launch } }
+    );
+
+    expect(result.status).toBe('not_connected');
+  });
+
+  it('returns failed (not throw) when the browser launch itself errors', async () => {
+    const launch = vi.fn().mockRejectedValue(new Error('browser launch failed: no such executable'));
+
+    const result = await checkConnectionStatus(
+      { profile_url: 'https://linkedin.com/in/example' },
+      { chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/browser launch failed/);
+  });
+});
+
+describe('sendLinkedinMessage control flow', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  it('returns rate_limited and never touches Playwright when the daily message limit is already reached', async () => {
+    const launch = vi.fn();
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: 'Good to be connected — question about the role.' },
+      { db, maxMessagesPerDay: 0, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('rate_limited');
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('returns failed and never touches Playwright when the message is empty', async () => {
+    const launch = vi.fn();
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: '   ' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/empty/);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('does not burn a quota slot on the empty-message pre-flight rejection', async () => {
+    const launch = vi.fn();
+
+    await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: '' },
+      { db, chromium: { launch } }
+    );
+
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('linkedin_message_send') as { count: number } | undefined;
+    expect(row).toBeUndefined();
+  });
+
+  it('returns failed when no Message button is found on the profile', async () => {
+    const page = makeConnectPage(() => makeFakeLocator(null));
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: 'Good to be connected!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Message button not found/);
+  });
+
+  it('clicks Message, types the message, clicks Send, and records a "messaged" row on the happy path', async () => {
+    const messageButton = makeFakeElement();
+    const composeBox = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.messageButton) return makeFakeLocator(messageButton);
+      if (selector === SELECTORS.messageComposeTextarea) return makeFakeLocator(composeBox);
+      if (selector === SELECTORS.messageSendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: 'Good to be connected — quick question about the role.', job_id: 'job-1', company: 'Acme Corp' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(messageButton.click).toHaveBeenCalledTimes(1);
+    expect(composeBox.fill).toHaveBeenCalledWith('Good to be connected — quick question about the role.');
+    expect(sendButton.click).toHaveBeenCalledTimes(1);
+
+    const row = db
+      .prepare('SELECT * FROM connections WHERE profile_url = ?')
+      .get('https://linkedin.com/in/example') as any;
+    expect(row.status).toBe('messaged');
+    expect(row.note).toBe('Good to be connected — quick question about the role.');
+    expect(row.job_id).toBe('job-1');
+    expect(row.company).toBe('Acme Corp');
+  });
+
+  it('aborts before typing or sending when the browser navigated away from the requested profile', async () => {
+    const messageButton = makeFakeElement();
+    const composeBox = makeFakeElement();
+    const sendButton = makeFakeElement();
+
+    const page = makeConnectPage(
+      (selector: string) => {
+        if (selector === SELECTORS.messageButton) return makeFakeLocator(messageButton);
+        if (selector === SELECTORS.messageComposeTextarea) return makeFakeLocator(composeBox);
+        if (selector === SELECTORS.messageSendButton) return makeFakeLocator(sendButton);
+        return makeFakeLocator(null);
+      },
+      { url: 'https://www.linkedin.com/in/someone-else/' }
+    );
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: 'Good to be connected!' },
+      { db, chromium: { launch } }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/profile URL mismatch/);
+    expect(composeBox.fill).not.toHaveBeenCalled();
+    expect(sendButton.click).not.toHaveBeenCalled();
+  });
+
+  it('returns failed (not a false-positive sent) when the compose box still holds the typed text after clicking Send', async () => {
+    const messageButton = makeFakeElement();
+    const sendButton = makeFakeElement();
+    // A compose box whose textContent still reports the typed message after Send is clicked —
+    // models a click that silently no-op'd.
+    const stillFullComposeBox: any = makeFakeLocator(makeFakeElement());
+    stillFullComposeBox.textContent = vi.fn().mockResolvedValue('Good to be connected!');
+    stillFullComposeBox.first = vi.fn(() => stillFullComposeBox);
+
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.messageButton) return makeFakeLocator(messageButton);
+      if (selector === SELECTORS.messageComposeTextarea) return stillFullComposeBox;
+      if (selector === SELECTORS.messageSendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: 'Good to be connected!' },
+      { db, chromium: { launch }, messageComposeClearTimeoutMs: 20, messageComposeClearPollMs: 5 }
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/send was not confirmed/);
+  });
+
+  it('does NOT false-negative when the compose box clears a moment after Send, not immediately (INCIDENT 2026-08-28: a real message sent successfully on linkedin.com/in/faizanshaikh-here, but a single immediate read reported it as unconfirmed — LinkedIn clears the box asynchronously)', async () => {
+    const messageButton = makeFakeElement();
+    const sendButton = makeFakeElement();
+    // Reports non-empty on the first read, then empty on every read after — models the real
+    // async-clear race the incident exposed.
+    let reads = 0;
+    const delayedClearComposeBox: any = makeFakeLocator(makeFakeElement());
+    delayedClearComposeBox.textContent = vi.fn().mockImplementation(async () => {
+      reads++;
+      return reads === 1 ? 'Good to be connected!' : '';
+    });
+    delayedClearComposeBox.first = vi.fn(() => delayedClearComposeBox);
+
+    const page = makeConnectPage((selector: string) => {
+      if (selector === SELECTORS.messageButton) return makeFakeLocator(messageButton);
+      if (selector === SELECTORS.messageComposeTextarea) return delayedClearComposeBox;
+      if (selector === SELECTORS.messageSendButton) return makeFakeLocator(sendButton);
+      return makeFakeLocator(null);
+    });
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await sendLinkedinMessage(
+      { profile_url: 'https://linkedin.com/in/example', message: 'Good to be connected!' },
+      { db, chromium: { launch }, messageComposeClearTimeoutMs: 2000, messageComposeClearPollMs: 5 }
+    );
+
+    expect(result.status).toBe('sent');
+    expect(reads).toBeGreaterThanOrEqual(2);
   });
 });

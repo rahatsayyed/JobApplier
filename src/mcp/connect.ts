@@ -19,6 +19,7 @@ const MAIN_STATE_PATH = path.join(projectRoot, 'secrets', 'linkedin-main-state.j
 
 const DEFAULT_MAX_LINKEDIN_SEARCHES_PER_DAY = 20;
 const DEFAULT_MAX_CONNECTS_PER_DAY = 10;
+const DEFAULT_MAX_MESSAGES_PER_DAY = 10;
 
 // Explicit viewport (Playwright otherwise defaults to 1280x720) — this size is the one
 // live-verified to work end-to-end for this file's selectors; a shorter viewport was found
@@ -51,6 +52,16 @@ export interface ConnectSendResult {
   reason?: string;
 }
 
+export interface ConnectionStatusResult {
+  status: 'connected' | 'not_connected' | 'failed';
+  reason?: string;
+}
+
+export interface SendLinkedinMessageResult {
+  status: 'sent' | 'rate_limited' | 'failed';
+  reason?: string;
+}
+
 export interface RecordConnectionStatusResult {
   status: 'ok' | 'failed';
   reason?: string;
@@ -60,6 +71,7 @@ export interface ConnectDeps {
   db?: BetterSqlite3.Database;
   maxSearchesPerDay?: number;
   maxConnectsPerDay?: number;
+  maxMessagesPerDay?: number;
   /** Injectable Playwright `chromium` launcher, for testing without a real browser. */
   chromium?: { launch: typeof chromium.launch };
   /** Hybrid Claude fallback for selector-miss escalation (see domFallback.ts); off by default. */
@@ -71,6 +83,10 @@ export interface ConnectDeps {
   pendingConfirmationTimeoutMs?: number;
   /** How long each individual poll attempt waits before reloading and trying again. */
   pendingConfirmationPollMs?: number;
+  /** Total time to keep polling for the message compose box to clear after Send. Injectable for tests. */
+  messageComposeClearTimeoutMs?: number;
+  /** How long each individual compose-box-clear poll attempt waits before checking again. */
+  messageComposeClearPollMs?: number;
 }
 
 async function captureDebugScreenshot(
@@ -85,6 +101,34 @@ async function captureDebugScreenshot(
     await page.screenshot({ path: path.join(DEBUG_SCREENSHOT_DIR, `${timestamp}-${label}.png`) });
   } catch {
     // Best-effort diagnostic only — never let a screenshot failure break the real flow.
+  }
+}
+
+/**
+ * Clicks a locator, retrying once via a native DOM `element.click()` if the first attempt
+ * times out because something else intercepts the pointer event. INCIDENT 2026-08-28
+ * (linkedin.com/in/abhiknag1, live-confirmed, reproduced three times): a sponsored ad icon
+ * (`svg#ads-small`) sat on top of the real "Invite ... to connect" button and blocked every
+ * normal click attempt for the full 30s timeout. A `{ force: true }` retry was tried first and
+ * was WORSE than the timeout: Playwright's forced click still dispatches a coordinate-based
+ * mouse event, which the real browser then routes to whatever element is topmost at that
+ * point — the ad, not our target — so it silently "succeeded" (no exception) while doing
+ * nothing (no dialog ever opened). Dispatching a real DOM click directly on the already-resolved
+ * element (`locator.evaluate(el => el.click())`) has no coordinate/hit-testing step at all, so
+ * it cannot be redirected to an overlapping element.
+ */
+async function clickWithForceRetry(locator: {
+  click: (opts?: { force?: boolean }) => Promise<void>;
+  evaluate: (fn: (el: HTMLElement) => void) => Promise<void>;
+}): Promise<void> {
+  try {
+    await locator.click();
+  } catch (err) {
+    if (err instanceof Error && /intercepts pointer events|Timeout.*exceeded/.test(err.message)) {
+      await locator.evaluate((el) => el.click());
+    } else {
+      throw err;
+    }
   }
 }
 
@@ -109,7 +153,7 @@ async function escalateClick(
 
   const fallbackLocator = clickableLocator.filter({ hasText: chosenText });
   if ((await fallbackLocator.count()) === 0) return false;
-  await fallbackLocator.first().click();
+  await clickWithForceRetry(fallbackLocator.first());
   return true;
 }
 
@@ -127,7 +171,7 @@ async function findAndClickControl(
 ): Promise<boolean> {
   const primaryLocator = page.locator(selector);
   if ((await primaryLocator.count()) > 0) {
-    await primaryLocator.first().click();
+    await clickWithForceRetry(primaryLocator.first());
     return true;
   }
   if (!fallback.enabled) return false;
@@ -152,8 +196,20 @@ export const SELECTORS = {
   // "More" button from small post "…more" text toggles that also match this selector.
   moreButton: 'main button:has-text("More")',
   // Scoped to [role="menu"] so it never matches unrelated sidebar "Invite X to connect" links.
-  connectMenuItem: '[role="menu"] [role="menuitem"]:has-text("Connect")',
-  addNoteButton: 'button[aria-label*="add a note" i], button:has-text("Add a note")',
+  // `:text-is()` (exact, whitespace-normalized match) — NOT `:has-text()`. INCIDENT
+  // 2026-08-28: `:has-text("Connect")` is a substring match, and a real already-connected
+  // profile's More menu has a "Remove connection" item — "connection" contains "connect" as a
+  // substring, so the old selector clicked "Remove connection" instead of finding no match.
+  // The recipient-name verification gate caught it before the real "Remove connection" button
+  // (the resulting dialog's copy doesn't match the "invitation to <Name>" pattern), so nothing
+  // was actually removed, but the selector itself was wrong independent of that safety net.
+  connectMenuItem: '[role="menu"] [role="menuitem"]:text-is("Connect")',
+  // INCIDENT 2026-08-28: LinkedIn now renders "Add a note" as an <a>, not a <button>, on the
+  // intermediate "Add a note to your invitation?" screen (confirmed live on
+  // linkedin.com/in/michiel-bellen) — a button-only selector silently matched nothing, so the
+  // click was skipped and the code correctly refused rather than send without a note.
+  addNoteButton:
+    'button[aria-label*="add a note" i], button:has-text("Add a note"), a:has-text("Add a note")',
   noteTextarea: '#custom-message, textarea[name="message"]',
   // The Send button's accessible name ("Send invitation") lives only in its aria-label, not
   // its visible text ("Send") — hence the aria-label-based alternatives.
@@ -170,6 +226,31 @@ export const SELECTORS = {
   // by proximity, not a DOM-ancestor guess (two different ancestor-based guesses have each
   // failed on a different real profile). See pickNearestLocator below.
   directConnectButton: 'a[aria-label^="Invite " i][aria-label$=" to connect" i]',
+  // LinkedIn shows a "Message" control in the profile header ONLY for an existing 1st-degree
+  // connection (in place of "Connect"/"Follow") — used to detect "already connected" before
+  // connectSend attempts a Connect click that could never succeed. Live-confirmed 2026-08-28
+  // (linkedin.com/in/faizanshaikh-here): the REAL header button has NO aria-label at all — its
+  // accessible name is the visible text "Message" only. `:text-is("Message")` (exact) found
+  // ZERO matches live despite the button's textContent being exactly "Message" (likely
+  // unsupported/behaves differently in this project's pinned Playwright version) —
+  // `:has-text("Message")` (substring, case-insensitive) DID match it live, at the cost of
+  // also matching sidebar "More profiles for you" decoy links and unrelated feed posts that
+  // merely mention "message" — same tradeoff directConnectButton already accepts, resolved the
+  // same way: pickNearestLocator's 2D-proximity check picks the real near-the-name match
+  // regardless of how many far-away decoys also matched.
+  messageButton: 'main a:has-text("Message"), main button:has-text("Message")',
+  // The "Manage notifications about <Name>" bell — live-confirmed 2026-08-28 present ONLY on a
+  // real 1st-degree connection's profile (linkedin.com/in/faizanshaikh-here) and absent entirely
+  // on a real not-connected profile (linkedin.com/in/abhiknag1, 2nd-degree). Used by
+  // checkConnectionStatus as the primary "already connected" signal — more reliable than
+  // Message-button presence, which some Premium/InMail-enabled non-connections also show.
+  bellButton: 'a[aria-label^="Manage notifications about " i]',
+  // The message-compose box that opens after clicking messageButton. Not live-verified —
+  // LinkedIn's real messaging UI uses a contenteditable div, not a plain textarea/input.
+  messageComposeTextarea:
+    'div.msg-form__contenteditable[contenteditable="true"], [aria-label*="message" i][contenteditable="true"], textarea[name="message"]',
+  // The Send button inside the message compose box. Not live-verified.
+  messageSendButton: 'button.msg-form__send-button, button[type="submit"]:has-text("Send")',
   // LinkedIn doesn't consistently render the profile's own name in one heading tag (a real
   // profile was confirmed to have ZERO `<h1>` anywhere, with the name in an `<h2>` instead)
   // — search both. Used only to locate the name's position for proximity-based picks.
@@ -180,7 +261,14 @@ export const SELECTORS = {
   // dialog elements that may share this role elsewhere on the page — INCIDENT 2026-07-17
   // (#2): `.first()` on an unfiltered match is a plausible way to silently grab the wrong
   // one, the same class of bug as directConnectButton's.
-  noteDialogContainer: '[role="dialog"]:visible, [role="alertdialog"]:visible',
+  // INCIDENT 2026-08-28: `[role="dialog"]`/`[role="alertdialog"]` alone silently matched
+  // NOTHING live (confirmed on linkedin.com/in/abhiknag1 and linkedin.com/in/michiel-bellen —
+  // the dialog visibly rendered, per debug screenshots, but recipient-name verification always
+  // failed with "could not verify"). Root cause: LinkedIn now renders this as a native HTML
+  // `<dialog>` element with no explicit `role` attribute — CSS attribute selectors don't know
+  // about `<dialog>`'s IMPLICIT ARIA dialog role, so `[role="dialog"]` never matches it. The
+  // `dialog` tag selector is added first to catch this directly.
+  noteDialogContainer: 'dialog:visible, [role="dialog"]:visible, [role="alertdialog"]:visible',
 } as const;
 
 /**
@@ -272,6 +360,7 @@ async function pickNearestLocator(page: Pick<Page, 'locator'>, selector: string,
   const index = pickNearestToNameIndex(namePoint, candidates);
   return candidatesLocator.nth(index === -1 ? count : index);
 }
+
 
 /**
  * Pure: extracts the recipient name from LinkedIn's "...invitation to <Name>" dialog copy.
@@ -524,6 +613,46 @@ export async function findLinkedinProfile(
   }
 }
 
+/**
+ * Read-only: determines whether `profile_url` is already a 1st-degree LinkedIn connection,
+ * BEFORE any drafting or send decision is made — the caller uses this to choose which skill to
+ * draft with (draft-connect-note vs draft-linkedin-message) and which send tool to call
+ * (connect_send vs send_linkedin_message), rather than discovering it mid-send. Uses the
+ * "Manage notifications about <Name>" bell (SELECTORS.bellButton) as the sole signal —
+ * live-confirmed present only on a real connection's profile and absent on a real
+ * not-connected profile (see SELECTORS.bellButton's doc comment). No rate limit: a single
+ * profile-page navigation is no heavier than what connectSend/sendLinkedinMessage already do.
+ */
+export async function checkConnectionStatus(
+  { profile_url }: { profile_url: string },
+  deps: ConnectDeps = {}
+): Promise<ConnectionStatusResult> {
+  const browserLauncher = deps.chromium ?? chromium;
+
+  if (!existsSync(MAIN_STATE_PATH)) {
+    return { status: 'failed', reason: 'main LinkedIn session state not found' };
+  }
+
+  let browser;
+  try {
+    browser = await browserLauncher.launch({ headless: true });
+    const context = await browser.newContext({ storageState: MAIN_STATE_PATH, viewport: BROWSER_VIEWPORT });
+    const page = await context.newPage();
+    await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle', { timeout: PROFILE_HEADER_SETTLE_TIMEOUT_MS }).catch(() => {});
+
+    const isConnected = (await page.locator(SELECTORS.bellButton).count()) > 0;
+    return { status: isConnected ? 'connected' : 'not_connected' };
+  } catch (err) {
+    return {
+      status: 'failed',
+      reason: (err as Error).message ?? 'unknown error during connection status check',
+    };
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
 export async function connectSend(
   {
     profile_url,
@@ -590,7 +719,7 @@ export async function connectSend(
     const hasDirectConnect = (await directConnectLocator.count()) > 0;
 
     if (hasDirectConnect) {
-      await directConnectLocator.click();
+      await clickWithForceRetry(directConnectLocator);
       await captureDebugScreenshot(page, debugScreenshots, '02-direct-connect-clicked');
     } else {
       // Step 1: click the profile-header "More" button, filtered to the button-shaped
@@ -606,7 +735,7 @@ export async function connectSend(
       }
 
       if (moreButtonIndex !== -1) {
-        await moreButtonsLocator.nth(moreButtonIndex).click();
+        await clickWithForceRetry(moreButtonsLocator.nth(moreButtonIndex));
       } else {
         // No button-shaped match — escalate directly (this check isn't a plain
         // `count() > 0`, so it can't go through findAndClickControl's shared handling).
@@ -684,7 +813,7 @@ export async function connectSend(
 
     const addNoteButtonLocator = page.locator(SELECTORS.addNoteButton);
     if ((await addNoteButtonLocator.count()) > 0) {
-      await addNoteButtonLocator.first().click();
+      await clickWithForceRetry(addNoteButtonLocator.first());
       await waitForNoteDialogTransition(page);
       const noteInputLocator = page.locator(SELECTORS.noteTextarea);
       if ((await noteInputLocator.count()) > 0) {
@@ -782,6 +911,165 @@ export async function connectSend(
   }
 }
 
+// Bounded wait for the message compose box to render after clicking the Message button.
+const MESSAGE_COMPOSE_TIMEOUT_MS = 8000;
+
+// Bounded poll (after clicking Send) for the compose box to actually clear — see the
+// 2026-08-28 incident note at its call site.
+const MESSAGE_COMPOSE_CLEAR_TIMEOUT_MS = 5000;
+const MESSAGE_COMPOSE_CLEAR_POLL_MS = 300;
+
+/**
+ * Sends a LinkedIn direct message to a profile that is ALREADY a 1st-degree connection — the
+ * counterpart to checkConnectionStatus returning 'connected'. Live-verified 2026-08-28
+ * (linkedin.com/in/faizanshaikh-here): a real test message sent and appeared correctly in the
+ * conversation thread — a send-confirmation false negative was found and fixed the same day
+ * (see MESSAGE_COMPOSE_CLEAR_TIMEOUT_MS below).
+ *
+ * Safety net: same profile-URL fail-closed check as connectSend (verifyProfileUrl) runs before
+ * anything is typed or sent. There is no separate recipient-name dialog check here (unlike
+ * connectSend) because the message overlay's exact recipient-name markup is unknown; the
+ * proximity-based messageButton pick (pickNearestLocator, same mechanism connectSend uses for
+ * directConnectButton) plus the URL check are the safety net until live inspection can add a
+ * dedicated name check.
+ */
+export async function sendLinkedinMessage(
+  { profile_url, message, job_id, company }: { profile_url: string; message: string; job_id?: string; company?: string },
+  deps: ConnectDeps = {}
+): Promise<SendLinkedinMessageResult> {
+  const database = deps.db ?? db;
+  const browserLauncher = deps.chromium ?? chromium;
+  const maxPerDay =
+    deps.maxMessagesPerDay ?? Number(process.env.MAX_MESSAGES_PER_DAY ?? DEFAULT_MAX_MESSAGES_PER_DAY);
+  const fallback = {
+    enabled: deps.fallbackEnabled ?? (Boolean(deps.fallback) || process.env.LINKEDIN_MESSAGE_HYBRID_FALLBACK === 'true'),
+    deps: deps.fallback,
+  };
+  const debugScreenshots = deps.debugScreenshots ?? process.env.CONNECT_DEBUG_SCREENSHOTS === 'true';
+
+  if (message.trim().length === 0) {
+    return { status: 'failed', reason: 'message is empty' };
+  }
+
+  if (!existsSync(MAIN_STATE_PATH)) {
+    return { status: 'failed', reason: 'main LinkedIn session state not found' };
+  }
+
+  const allowed = checkAndIncrement(database, 'linkedin_message_send', maxPerDay);
+  if (!allowed) {
+    return { status: 'rate_limited', reason: `daily message limit (${maxPerDay}) reached` };
+  }
+
+  let browser;
+  try {
+    browser = await browserLauncher.launch({ headless: true });
+    const context = await browser.newContext({ storageState: MAIN_STATE_PATH, viewport: BROWSER_VIEWPORT });
+    const page = await context.newPage();
+    await page.goto(profile_url, { timeout: 30000, waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle', { timeout: PROFILE_HEADER_SETTLE_TIMEOUT_MS }).catch(() => {});
+    await captureDebugScreenshot(page, debugScreenshots, 'm01-profile-loaded');
+
+    const expectedName = extractExpectedNameFromTitle((await page.title().catch(() => '')) ?? '');
+    const namePoint = await getProfileNamePoint(page, expectedName);
+
+    const messageButtonLocator = await pickNearestLocator(page, SELECTORS.messageButton, namePoint);
+    if ((await messageButtonLocator.count()) === 0) {
+      return {
+        status: 'failed',
+        reason: 'Message button not found on profile — target may not be a 1st-degree connection',
+      };
+    }
+    await clickWithForceRetry(messageButtonLocator);
+    await captureDebugScreenshot(page, debugScreenshots, 'm02-message-button-clicked');
+
+    // Fail-closed profile-URL check, same rationale as connectSend's — before typing or
+    // sending anything, confirm the browser is still on the requested profile.
+    const urlCheck = verifyProfileUrl(profile_url, page.url());
+    if (!urlCheck.ok) {
+      await captureDebugScreenshot(page, debugScreenshots, 'm02a-url-mismatch');
+      return {
+        status: 'failed',
+        reason:
+          `profile URL mismatch: expected profile slug "${urlCheck.expectedSlug}" but the ` +
+          `browser is currently on "${urlCheck.actualSlug}" — aborting before typing or sending`,
+      };
+    }
+
+    const composeTextareaLocator = page.locator(SELECTORS.messageComposeTextarea);
+    await composeTextareaLocator
+      .first()
+      .waitFor({ state: 'visible', timeout: MESSAGE_COMPOSE_TIMEOUT_MS })
+      .catch(() => {});
+    if ((await composeTextareaLocator.count()) === 0) {
+      return { status: 'failed', reason: 'message compose box not found after clicking Message' };
+    }
+    await clickWithForceRetry(composeTextareaLocator.first());
+    await composeTextareaLocator.first().fill(message);
+    await captureDebugScreenshot(page, debugScreenshots, 'm03-message-typed');
+
+    const clickedSend = await findAndClickControl(
+      page,
+      SELECTORS.messageSendButton,
+      'Click the Send button in the currently open LinkedIn message compose box',
+      fallback
+    );
+    if (!clickedSend) {
+      await captureDebugScreenshot(page, debugScreenshots, 'm04-send-button-not-found');
+      return { status: 'failed', reason: 'Send button not found in message compose box' };
+    }
+    await captureDebugScreenshot(page, debugScreenshots, 'm05-send-clicked');
+
+    // Never trust a click alone (a click can silently no-op — the same class of bug
+    // connectSend's Pending-button polling guards against). Best-effort confirmation: LinkedIn
+    // clears the compose box after a successful send, so an input still holding the typed text
+    // is treated as an unconfirmed send. INCIDENT 2026-08-28 (live-verified): a single immediate
+    // read here false-negatived a message that actually sent successfully — LinkedIn clears the
+    // box asynchronously, slightly after the Send click resolves. Poll (bounded) instead of a
+    // single read, same shape as connectSend's pending-button poll.
+    const composeClearTimeoutMs = deps.messageComposeClearTimeoutMs ?? MESSAGE_COMPOSE_CLEAR_TIMEOUT_MS;
+    const composeClearPollMs = deps.messageComposeClearPollMs ?? MESSAGE_COMPOSE_CLEAR_POLL_MS;
+    const clearDeadline = Date.now() + composeClearTimeoutMs;
+    let stillHasText = true;
+    do {
+      stillHasText = await composeTextareaLocator
+        .first()
+        .textContent()
+        .then((t) => (t ?? '').trim().length > 0)
+        .catch(() => true);
+      if (!stillHasText) break;
+      await page.waitForTimeout(composeClearPollMs);
+    } while (Date.now() < clearDeadline);
+    if (stillHasText) {
+      await captureDebugScreenshot(page, debugScreenshots, 'm06-send-not-confirmed');
+      return {
+        status: 'failed',
+        reason:
+          'clicked Send but the message compose box still holds the typed text — send was not ' +
+          'confirmed. Verify manually on LinkedIn.',
+      };
+    }
+
+    saveConnection(database, {
+      job_id: job_id ?? null,
+      company: company ?? null,
+      profile_url,
+      headline: null,
+      note: message,
+      status: 'messaged',
+      sent_at: new Date().toISOString(),
+    });
+
+    return { status: 'sent' };
+  } catch (err) {
+    return {
+      status: 'failed',
+      reason: (err as Error).message ?? 'unknown error during message send',
+    };
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
 /**
  * Pure bookkeeping write for a connection draft that was never sent — records a
  * `drafted`/`skipped` row so the orchestrator has a tool to call without ever touching
@@ -839,16 +1127,36 @@ server.registerTool(
 );
 
 server.registerTool(
+  'check_connection_status',
+  {
+    description:
+      'Read-only: checks whether profile_url is already a 1st-degree LinkedIn connection, using the ' +
+      'MAIN LinkedIn account session. Call this BEFORE drafting anything — the result decides which ' +
+      "skill to draft with (draft-connect-note if 'not_connected', draft-linkedin-message if " +
+      "'connected') and which send tool to use afterward (connect_send vs send_linkedin_message). " +
+      'Never sends or clicks anything. No rate limit.',
+    inputSchema: {
+      profile_url: z.string(),
+    },
+  },
+  async ({ profile_url }) => {
+    const result = await checkConnectionStatus({ profile_url });
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  }
+);
+
+server.registerTool(
   'connect_send',
   {
     description:
       'Sends a LinkedIn connection request with a note, using the MAIN LinkedIn account session. ' +
       'This performs the real action immediately when called — it does NOT wait for approval itself. ' +
       'The orchestrating agent (CLAUDE.md) must only call this AFTER an explicit human "send" reply ' +
-      'to a posted draft; never call this speculatively. Gated by a daily connect_send rate limit and ' +
-      "LinkedIn's 300-character note cap. Set debug_screenshots=true to save a screenshot at each " +
-      'step to debug/connect/ (gitignored) — useful when investigating a suspected false-positive ' +
-      "'sent' result.",
+      'to a posted draft, and only for a profile check_connection_status has already confirmed is ' +
+      "'not_connected'; never call this speculatively or on a profile you haven't status-checked. " +
+      "Gated by a daily connect_send rate limit and LinkedIn's 300-character note cap. Set " +
+      'debug_screenshots=true to save a screenshot at each step to debug/connect/ (gitignored) — ' +
+      "useful when investigating a suspected false-positive 'sent' result.",
     inputSchema: {
       profile_url: z.string(),
       note: z.string(),
@@ -860,6 +1168,34 @@ server.registerTool(
   async ({ profile_url, note, job_id, company, debug_screenshots }) => {
     const result = await connectSend(
       { profile_url, note, job_id, company },
+      { debugScreenshots: debug_screenshots }
+    );
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  }
+);
+
+server.registerTool(
+  'send_linkedin_message',
+  {
+    description:
+      'Sends a LinkedIn direct message to a profile that is ALREADY a 1st-degree connection, using ' +
+      'the MAIN LinkedIn account session — call this only for a profile check_connection_status has ' +
+      "already confirmed is 'connected'. Performs the real action immediately when called; the " +
+      'orchestrating agent must only call this after an explicit human "send" reply to a posted ' +
+      'draft, same as connect_send. Gated by a daily linkedin_message_send rate limit ' +
+      '(MAX_MESSAGES_PER_DAY). Live-verified 2026-08-28. Set debug_screenshots=true to save a ' +
+      'screenshot at each step to debug/connect/ (gitignored).',
+    inputSchema: {
+      profile_url: z.string(),
+      message: z.string(),
+      job_id: z.string().optional(),
+      company: z.string().optional(),
+      debug_screenshots: z.boolean().optional(),
+    },
+  },
+  async ({ profile_url, message, job_id, company, debug_screenshots }) => {
+    const result = await sendLinkedinMessage(
+      { profile_url, message, job_id, company },
       { debugScreenshots: debug_screenshots }
     );
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
