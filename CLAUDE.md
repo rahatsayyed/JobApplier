@@ -345,16 +345,19 @@ hand-picked job/profile," not "requires a review step." Steps, for a hand-picked
 1. Call `connect.find_linkedin_profile({company, role_hint})` → up to 3 candidate profiles.
 2. For the chosen candidate, call `connect.check_connection_status({profile_url})` FIRST —
    read-only, before drafting anything. This decides which skill and which send tool to use
-   below; never draft or send without checking status first.
+   below; never draft or send without checking status first. It also returns
+   `profileContext.about` (scraped from the same page load, see "Connection-status check"
+   below) — pass this through to whichever drafting skill runs next.
 3. If `status: "connected"`:
-   - Invoke the `draft-linkedin-message` skill with the job and the candidate profile → a
-     message (no character cap, phrased as a DM to an existing contact, not a connection ask).
+   - Invoke the `draft-linkedin-message` skill with the job, the candidate profile, and
+     `profileContext` from step 2 → a message (no character cap, phrased as a DM to an
+     existing contact, not a connection ask).
    - Call `connect.send_linkedin_message({profile_url, message, job_id, company})` immediately
      — no separate approval step, per above.
    - Report the result (`sent`/`rate_limited`/`failed`) to Telegram.
 4. If `status: "not_connected"`:
-   - Invoke the `draft-connect-note` skill with the job and the candidate profile → a note
-     (≤300 chars, references the job/role by name).
+   - Invoke the `draft-connect-note` skill with the job, the candidate profile, and
+     `profileContext` from step 2 → a note (≤300 chars, references the job/role by name).
    - Call `connect.connect_send({profile_url, note, job_id, company})` immediately — no
      approval wait, per above. `connect_send`'s own fail-closed recipient-name/URL verification
      still runs.
@@ -394,6 +397,14 @@ found and fixed the same day. The automated `sender` stage (hunt-pipeline "Execu
 NOT auto-draft a DM on `connected` — it has no `Skill` tool access, so it calls
 `check_connection_status` itself, and on `connected` records the status and flags the job in its
 summary for a manual `/connect` follow-up instead (see `sender.md`).
+
+`check_connection_status` also scrapes the profile's "About" section text from the same page
+load (no extra navigation) and returns it as `profileContext: {about}` when present. This feeds
+`draft-connect-note`/`draft-linkedin-message` a real, verifiable detail about the person so the
+note/message isn't generic — both skills are instructed to reference one concrete detail from
+`about` when present, and to never invent one when it's absent. Live-verified 2026-08-29
+(`linkedin.com/in/michiel-bellen`) that the "About" heading's parent `<section>` reliably holds
+the body text, with no separator between heading and body in raw `textContent`.
 
 The full autonomous execute-stage flow (queue → email → connect → apply → cap-overrun Telegram
 prompt) is now live-verified end-to-end (2026-07-20): a real 5-job hunt run sent 2 real emails

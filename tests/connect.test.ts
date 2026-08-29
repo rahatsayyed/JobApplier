@@ -7,6 +7,7 @@ import {
   sendLinkedinMessage,
   recordConnectionStatus,
   extractNameAndHeadline,
+  extractAboutText,
   pickButtonShapedIndex,
   extractDialogRecipientName,
   namesPlausiblyMatch,
@@ -335,6 +336,25 @@ describe('extractNameAndHeadline', () => {
 
   it('handles no matches at all without throwing', () => {
     expect(extractNameAndHeadline([], [])).toEqual({ name: '', headline: '' });
+  });
+});
+
+describe('extractAboutText', () => {
+  // LinkedIn's About section textContent has no separator between the heading and the body —
+  // live-confirmed 2026-08-29 on linkedin.com/in/michiel-bellen.
+  it('strips the leading "About" heading text', () => {
+    expect(extractAboutText('AboutBlockchain enthousiast Cardano developer')).toBe(
+      'Blockchain enthousiast Cardano developer'
+    );
+  });
+
+  it('is case-insensitive on the "About" prefix', () => {
+    expect(extractAboutText('ABOUTSome bio text')).toBe('Some bio text');
+  });
+
+  it('returns null when the section is heading-only (empty About)', () => {
+    expect(extractAboutText('About')).toBeNull();
+    expect(extractAboutText('About   ')).toBeNull();
   });
 });
 
@@ -1761,6 +1781,7 @@ describe('checkConnectionStatus (standalone, read-only, checked BEFORE drafting)
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockResolvedValue(null),
       locator: vi.fn().mockImplementation((selector: string) => {
         if (selector === SELECTORS.bellButton) return makeFakeLocator(makeFakeElement());
         return makeFakeLocator(null);
@@ -1782,6 +1803,7 @@ describe('checkConnectionStatus (standalone, read-only, checked BEFORE drafting)
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockResolvedValue(null),
       locator: vi.fn().mockImplementation((selector: string) => {
         if (selector === SELECTORS.messageButton) return makeFakeLocator(makeFakeElement());
         return makeFakeLocator(null);
@@ -1797,6 +1819,52 @@ describe('checkConnectionStatus (standalone, read-only, checked BEFORE drafting)
     );
 
     expect(result.status).toBe('not_connected');
+  });
+
+  it('scrapes profileContext.about from the About section when present (2026-08-29)', async () => {
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      // Live-confirmed shape (linkedin.com/in/michiel-bellen): the About section's raw
+      // textContent has no separator between the heading and the body.
+      evaluate: vi.fn().mockResolvedValue('AboutBlockchain enthousiast Cardano developer'),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.bellButton) return makeFakeLocator(makeFakeElement());
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await checkConnectionStatus(
+      { profile_url: 'https://linkedin.com/in/example' },
+      { chromium: { launch } }
+    );
+
+    expect(result.profileContext?.about).toBe('Blockchain enthousiast Cardano developer');
+  });
+
+  it('omits profileContext when the profile has no About section', async () => {
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      waitForLoadState: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockResolvedValue(null),
+      locator: vi.fn().mockImplementation((selector: string) => {
+        if (selector === SELECTORS.bellButton) return makeFakeLocator(makeFakeElement());
+        return makeFakeLocator(null);
+      }),
+    };
+    const context = { newPage: vi.fn().mockResolvedValue(page) };
+    const browser = { newContext: vi.fn().mockResolvedValue(context), close: vi.fn().mockResolvedValue(undefined) };
+    const launch = vi.fn().mockResolvedValue(browser);
+
+    const result = await checkConnectionStatus(
+      { profile_url: 'https://linkedin.com/in/example' },
+      { chromium: { launch } }
+    );
+
+    expect(result.profileContext).toBeUndefined();
   });
 
   it('returns failed (not throw) when the browser launch itself errors', async () => {

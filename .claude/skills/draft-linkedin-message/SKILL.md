@@ -32,6 +32,11 @@ already connected.
    relevant to the candidate right now — the tailored-resume angle, or a specific posting
    detail worth mentioning. Must be traceable to real facts (the job posting or base resume) —
    never invented.
+4. `profileContext` (optional) — `{about?: string}`, scraped by `connect.check_connection_status`
+   from the target's LinkedIn "About" section. When `about` has real content, reference ONE
+   concrete detail from it to make the message feel personal instead of generic. When
+   `profileContext` is absent or `about` is empty, skip this — never invent a detail about the
+   person that isn't in `about`, `job`, or `context`.
 
 ## Step A — DRAFT
 
@@ -51,7 +56,10 @@ already connected.
      like a cover letter.
    - Do NOT use buzzwords or filler such as "passionate about", "team player",
      "results-driven", "synergy", "leverage", "dynamic", "go-getter", "hit the ground running".
-   - Do NOT fabricate any company name, job title, or fact not present in `job` or `context`.
+   - Do NOT fabricate any company name, job title, or fact not present in `job`, `context`, or
+     `profileContext.about`.
+   - If `profileContext.about` has usable content, weave in one specific detail from it instead
+     of a generic opener.
    - No hard character cap (unlike connect notes), but keep it to 2-4 short sentences — a wall
      of text in a DM reads as a mail-merge blast, not a real message.
 2. This produces a draft `message` string.
@@ -66,7 +74,8 @@ already connected.
      specific detail from `job` or `context`.
    - Does it ask for a referral, introduction, or favor rather than a soft, specific ask? If
      yes, rewrite the ask.
-   - Does it contain a fact not traceable to `job` or `context`? If yes, remove or correct it.
+   - Does it contain a fact not traceable to `job`, `context`, or `profileContext.about`? If
+     yes, remove or correct it.
    - Does it contain banned buzzwords? If yes, replace with plain language.
    - Does it have more than one ask, or no ask at all? If yes, collapse to exactly one.
    - Is it needlessly long (more than ~4 short sentences)? If yes, tighten it.

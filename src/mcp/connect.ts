@@ -55,6 +55,9 @@ export interface ConnectSendResult {
 export interface ConnectionStatusResult {
   status: 'connected' | 'not_connected' | 'failed';
   reason?: string;
+  /** Scraped from the profile's "About" section, same page load as the status check — feeds a
+   *  personalized connect note / message. Absent when the profile has no About section. */
+  profileContext?: { about?: string };
 }
 
 export interface SendLinkedinMessageResult {
@@ -529,6 +532,37 @@ export function extractNameAndHeadline(
   return { name, headline };
 }
 
+/**
+ * Pure: strips the leading "About" heading text from the About section's raw textContent.
+ * LinkedIn's DOM has no separator between the heading and the body — e.g. the real textContent
+ * reads "AboutBlockchain enthousiast Cardano developer" (live-confirmed 2026-08-29, see
+ * scrapeAboutText). Returns null for empty/heading-only content. Exported for unit testing
+ * without a live page.
+ */
+export function extractAboutText(rawSectionText: string): string | null {
+  const stripped = rawSectionText.replace(/^about\s*/i, '').trim();
+  return stripped || null;
+}
+
+/**
+ * Scrapes the profile's "About" section raw text (heading + body, unseparated) from the
+ * currently-loaded page, or null if the profile has no About section. Live-confirmed
+ * 2026-08-29 (linkedin.com/in/michiel-bellen): finding the <h2> whose exact text is "About"
+ * and reading its closest <section> ancestor's textContent works; LinkedIn does not
+ * consistently mark this section with an id or role, so no CSS selector alone can find it.
+ */
+async function scrapeAboutText(page: Pick<Page, 'evaluate'>): Promise<string | null> {
+  return page
+    .evaluate(() => {
+      const heading = Array.from(document.querySelectorAll('main h2')).find(
+        (h) => (h.textContent || '').trim().toLowerCase() === 'about'
+      );
+      const section = heading?.closest('section');
+      return section ? (section.textContent || '').trim().replace(/\s+/g, ' ') : null;
+    })
+    .catch(() => null);
+}
+
 export async function findLinkedinProfile(
   { company, role_hint }: { company: string; role_hint?: string },
   deps: ConnectDeps = {}
@@ -642,7 +676,12 @@ export async function checkConnectionStatus(
     await page.waitForLoadState('networkidle', { timeout: PROFILE_HEADER_SETTLE_TIMEOUT_MS }).catch(() => {});
 
     const isConnected = (await page.locator(SELECTORS.bellButton).count()) > 0;
-    return { status: isConnected ? 'connected' : 'not_connected' };
+    const aboutRaw = await scrapeAboutText(page);
+    const about = aboutRaw ? extractAboutText(aboutRaw) : null;
+    return {
+      status: isConnected ? 'connected' : 'not_connected',
+      ...(about ? { profileContext: { about } } : {}),
+    };
   } catch (err) {
     return {
       status: 'failed',
@@ -1134,6 +1173,9 @@ server.registerTool(
       'MAIN LinkedIn account session. Call this BEFORE drafting anything — the result decides which ' +
       "skill to draft with (draft-connect-note if 'not_connected', draft-linkedin-message if " +
       "'connected') and which send tool to use afterward (connect_send vs send_linkedin_message). " +
+      'Also returns profileContext.about (the profile\'s "About" section text, if present) ' +
+      'scraped from the same page load — pass it to the drafting skill so the note/message can ' +
+      'reference something real about the person instead of staying generic. ' +
       'Never sends or clicks anything. No rate limit.',
     inputSchema: {
       profile_url: z.string(),

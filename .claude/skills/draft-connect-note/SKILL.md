@@ -23,6 +23,11 @@ orchestration layer, after explicit human approval.
    relevant to the candidate: e.g. the tailored-resume angle, or the specific job posting
    detail worth mentioning. Must be traceable to real facts (the job posting or base resume) —
    never invented.
+4. `profileContext` (optional) — `{about?: string}`, scraped by `connect.check_connection_status`
+   from the target's LinkedIn "About" section. When `about` has real content, reference ONE
+   concrete detail from it (a technology, project, or focus area they mention) to make the note
+   feel personal instead of generic. When `profileContext` is absent or `about` is empty, skip
+   this — never invent a detail about the person that isn't in `about`, `job`, or `context`.
 
 ## Step A — DRAFT
 
@@ -41,7 +46,10 @@ orchestration layer, after explicit human approval.
      stiff corporate phrasing.
    - Do NOT use buzzwords or filler such as "passionate about", "team player",
      "results-driven", "synergy", "leverage", "dynamic", "go-getter", "hit the ground running".
-   - Do NOT fabricate any company name, job title, or fact not present in `job` or `context`.
+   - Do NOT fabricate any company name, job title, or fact not present in `job`, `context`, or
+     `profileContext.about`.
+   - If `profileContext.about` has usable content, weave in one specific detail from it — this
+     replaces a generic opener, it doesn't get bolted on as an extra clause.
 2. This produces a draft `note` string.
 
 ## Step B — REVIEWER pass (hard 300-character cap)
@@ -56,7 +64,8 @@ orchestration layer, after explicit human approval.
      specific detail from `job` or `context`.
    - Does it ask for a referral, introduction, or favor rather than a connection/chat? If yes,
      rewrite the ask to be a soft connection ask only.
-   - Does it contain a fact not traceable to `job` or `context`? If yes, remove or correct it.
+   - Does it contain a fact not traceable to `job`, `context`, or `profileContext.about`? If
+     yes, remove or correct it.
    - Does it contain banned buzzwords? If yes, replace with plain language.
    - Does it have more than one ask, or no ask at all? If yes, collapse to exactly one.
 2. Rewrite the draft ONCE, incorporating all fixes. This produces a revised `note` string that
