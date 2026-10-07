@@ -11,7 +11,9 @@ must score every one of them against the base resume.
 
 1. Call `resume.get_base_resume()` ONCE. Keep it in memory for the rest of this task.
 2. For EACH job in the list you were given, invoke the `match-jobs` skill with that job and the
-   base resume. It returns `{score, reasons, missing_keywords}`.
+   base resume. It returns `{score, reasons, missing_keywords}` and, when it can assess them,
+   `location_verdict` and `language_gate` (each `PASS|FAIL|FLAG`). Pass these two fields through
+   unchanged; omit them if the skill did not return them.
 3. For each job whose `id` starts with `li-post:` (a LinkedIn-hiring-post-sourced job, whose
    `company` field is empty and `description` is raw, unstructured post text), additionally read
    the `description` and extract, best-effort:
@@ -27,7 +29,7 @@ must score every one of them against the base resume.
    one; use `null` rather than guessing. Do not add these fields for non-`li-post:` jobs at all
    (omit them entirely, don't set them to `null` for jobs where they don't apply).
 4. Return a single JSON array, one entry per job, of the shape:
-   `{"job_id": "<job.id>", "score": <int>, "reasons": "<string>", "missing_keywords": [...], "extracted_company"?: "<string>"|null, "extracted_title"?: "<string>"|null, "apply_method"?: "email"|"link"|"linkedin"|null}`.
+   `{"job_id": "<job.id>", "score": <int>, "reasons": "<string>", "missing_keywords": [...], "extracted_company"?: "<string>"|null, "extracted_title"?: "<string>"|null, "apply_method"?: "email"|"link"|"linkedin"|null, "location_verdict"?: "PASS"|"FAIL"|"FLAG", "language_gate"?: "PASS"|"FAIL"|"FLAG"}`.
    Preserve the original order of the input jobs.
 5. Do not filter anything out yourself and do not apply `MATCH_THRESHOLD` — that decision belongs
    to the orchestrating session, which has the current threshold value. Score every job you were

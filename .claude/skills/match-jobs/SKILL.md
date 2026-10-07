@@ -31,18 +31,22 @@ Given ONE Job object and the base resume JSON, decide how good a fit this job is
 5. List every required/preferred skill or keyword from the job description that is MISSING from the resume, as `missing_keywords` (an array of short strings, e.g. `"GraphQL"`, `"Kubernetes"`). If nothing is missing, use an empty array.
 6. Write a short `reasons` string (1-3 sentences) explaining the score: call out which sub-areas were strong and which were weak. Be specific and honest, not generic praise.
 7. Do NOT round up to make the job look more promising than it is. If in doubt about a sub-score, score it lower rather than higher.
+8. Decide two separate veto verdicts. These are independent of `score` (a high score never overrides a FAIL), and each is exactly `"PASS"`, `"FAIL"`, or `"FLAG"`:
+   - `location_verdict`: `"FAIL"` ONLY when the posting explicitly requires onsite/in-office work outside India AND offers no remote option. `"FLAG"` when the location requirement is ambiguous or hybrid and you cannot tell whether it is workable. Otherwise `"PASS"`.
+   - `language_gate`: `"FAIL"` ONLY when the posting explicitly requires a language (spoken/written, e.g. fluent German) that the resume does not list. `"FLAG"` when a required language is listed on the resume but the posting's requirement looks above the resume's declared level (e.g. "native" or "C1" vs. a basic level). Otherwise `"PASS"`. Never infer a language requirement that the posting does not state.
 
 ## Output format
 
 Output ONLY the following STRICT JSON object, with no extra text before or after it, no markdown code fences, and no commentary:
 
 ```
-{"score": <integer 0-100>, "reasons": "<string>", "missing_keywords": ["<string>", ...]}
+{"score": <integer 0-100>, "reasons": "<string>", "missing_keywords": ["<string>", ...], "location_verdict": "PASS"|"FAIL"|"FLAG", "language_gate": "PASS"|"FAIL"|"FLAG"}
 ```
 
 Rules for the output:
 - `score` must be an integer between 0 and 100 inclusive.
 - `reasons` must be a plain string (no nested JSON).
 - `missing_keywords` must be an array of strings (can be empty `[]`).
-- Do not add any keys other than `score`, `reasons`, and `missing_keywords`.
+- `location_verdict` and `language_gate` are optional, each `"PASS"`, `"FAIL"`, or `"FLAG"` per step 8. Include both whenever you can assess them.
+- Do not add any keys other than `score`, `reasons`, `missing_keywords`, `location_verdict`, and `language_gate`.
 - Do not wrap the JSON in ```json fences. Output raw JSON only.
