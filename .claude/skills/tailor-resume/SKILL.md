@@ -40,8 +40,11 @@ reference; this skill is the operative checklist.
 4. Mirror the job description's exact keywords and technology names wherever the candidate
    genuinely has that skill (e.g. if the JD says "React.js" and the resume says "React", you
    may write "React.js" to match; never add a technology the candidate has never used).
+   This mirroring applies to bullet text and `summary` only. Skill item strings and every
+   numeral are kept verbatim from the base resume, and NEW skills may not be added to
+   `skills[]` (the render step now rejects unsupported claims).
 5. Reorder the skills list so skills mentioned in the job description appear first, most
-   relevant to least relevant.
+   relevant to least relevant. Reorder only: do not rename, rewrite or add skill items.
 6. Job fit: for each experience bullet, apply the litmus test — "would this matter to someone
    hiring for this specific role/JD?" Yes → keep. Partially → rewrite to foreground the
    JD-relevant angle (same underlying fact, different emphasis — never a new fact). No → cut it
@@ -74,9 +77,10 @@ reference; this skill is the operative checklist.
 11. Bullet punctuation must be consistent across the whole tailored resume: either every bullet
     ends with a period, or none do — never a mix.
 12. If the caller supplies a genuinely new, verified fact about the candidate not present in
-    `base_resume` (e.g. "I also know Redis"), it's fine to add it to the tailored resume's
-    skills — but flag to the caller that the base resume itself is missing this and ask whether
-    it should be added there too, so future tailoring runs don't need to be told again.
+    `base_resume` (e.g. "I also know Redis"), the user must first add it to the base resume
+    file. Until then it must NOT appear in the tailored JSON (the render step rejects
+    unsupported claims); only flag it in your report to the caller as missing from the base
+    resume.
 
 ## Steps
 

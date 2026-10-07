@@ -9,7 +9,16 @@ function strings(v: unknown, out: string[] = []): string[] {
   else if (v && typeof v === 'object') Object.values(v).forEach(x => strings(x, out));
   return out;
 }
-const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+const norm = (s: unknown) =>
+  String(s ?? '')
+    .replace(/[‐-―−]/g, '-')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const tokens = (s: string): string[] => norm(s).replace(/\.js\b/g, '').split(/[^a-z0-9]+/).filter(Boolean);
 
 function metrics(v: unknown): Set<string> {
   const found = new Set<string>();
@@ -26,8 +35,8 @@ function metrics(v: unknown): Set<string> {
 function field(arr: any, key: string): Set<string> {
   return new Set((Array.isArray(arr) ? arr : []).map((x: any) => norm(x?.[key])).filter(Boolean));
 }
-function skillItems(r: any): Set<string> {
-  return new Set((r?.skills ?? []).flatMap((s: any) => (s?.items ?? []).map(norm)));
+function skillItems(r: any): string[] {
+  return (r?.skills ?? []).flatMap((s: any) => (s?.items ?? []).map(norm)).filter(Boolean);
 }
 
 export function checkFacts(base: Record<string, any>, tailored: Record<string, any>): FactCheckResult {
@@ -43,8 +52,18 @@ export function checkFacts(base: Record<string, any>, tailored: Record<string, a
     const allowed = field(base.education, key);
     for (const v of field(tailored.education, key)) if (!allowed.has(v)) invented.push(`education-${key}:${v}`);
   }
-  const allowedSkills = skillItems(base);
-  for (const s of skillItems(tailored)) if (!allowedSkills.has(s)) invented.push(`skill:${s}`);
+  // Token pool: a tailored skill passes iff every word in it appears somewhere in the base skills.
+  const pool = new Set(skillItems(base).flatMap(tokens));
+  for (const s of new Set(skillItems(tailored))) {
+    const t = tokens(s);
+    if (!t.length || !t.every(w => pool.has(w))) invented.push(`skill:${s}`);
+  }
+
+  const contacts: Array<[string, unknown, unknown]> = [
+    ['name', base.name, tailored.name], ['email', base.email, tailored.email],
+    ['phone', base.phone, tailored.phone], ['website', base.website?.url, tailored.website?.url],
+  ];
+  for (const [k, b, t] of contacts) if (norm(t) && norm(t) !== norm(b)) invented.push(`contact:${k}`);
 
   return { verdict: invented.length ? 'block' : 'pass', invented };
 }

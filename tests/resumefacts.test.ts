@@ -38,6 +38,37 @@ describe('checkFacts', () => {
     const t = clone(); t.summary = 'Since 2022 I built apps serving 10k users.';
     expect(checkFacts(base, t).verdict).toBe('pass');
   });
+  it('passes a curly-apostrophe education degree', () => {
+    const b = clone(); b.education[0].degree = "Bachelor's of Engineering";
+    const t = clone(); t.education[0].degree = 'Bachelor’s of Engineering';
+    expect(checkFacts(b, t).verdict).toBe('pass');
+  });
+  it('passes en-dash vs hyphen in a skill', () => {
+    const b = clone(); b.skills[0].items.push('Client-Server Rendering Patterns');
+    const t = clone(); t.skills[0].items.push('Client–Server Rendering Patterns');
+    expect(checkFacts(b, t).verdict).toBe('pass');
+  });
+  it('passes a parenthesised skill when the base has it split across items', () => {
+    const b = clone(); b.skills[0].items.push('NoSQL (MongoDB', 'Firestore)');
+    const t = clone(); t.skills[0].items.push('NoSQL (MongoDB, Firestore)');
+    expect(checkFacts(b, t).verdict).toBe('pass');
+  });
+  it('passes React.js when the base has React', () => {
+    const t = clone(); t.skills[0].items[0] = 'React.js';
+    expect(checkFacts(base, t).verdict).toBe('pass');
+  });
+  it('still blocks a skill with a brand-new word', () => {
+    const t = clone(); t.skills[0].items.push('Kafka');
+    expect(checkFacts(base, t).invented).toContain('skill:kafka');
+  });
+  it('blocks a changed contact field and passes identical ones', () => {
+    const b = { ...clone(), email: 'a@x.com', phone: '+91 90000 00000', website: { url: 'https://x.dev' } };
+    expect(checkFacts(b, JSON.parse(JSON.stringify(b))).verdict).toBe('pass');
+    const t = JSON.parse(JSON.stringify(b)); t.email = 'b@x.com';
+    expect(checkFacts(b, t).invented).toContain('contact:email');
+    const t2 = JSON.parse(JSON.stringify(b)); delete t2.phone;
+    expect(checkFacts(b, t2).verdict).toBe('pass');
+  });
   it('passes the real base resume against itself', () => {
     expect(checkFacts(getBaseResume(), getBaseResume()).verdict).toBe('pass');
   });
