@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { classifyLiveness, checkLiveness } from '../src/liveness.js';
+import { classifyLiveness, checkLiveness, isSafeFetchUrl } from '../src/liveness.js';
 import { vetoResults } from '../src/vetoes.js';
 
 const base = { status: 200, requestedUrl: 'https://x.com/jobs/123456', finalUrl: 'https://x.com/jobs/123456' };
@@ -27,8 +27,25 @@ describe('classifyLiveness', () => {
   it('a live page with an apply control is active', () => {
     expect(classifyLiveness(body('Senior Dev. Apply now'))).toBe('active');
   });
-  it('a tiny body is expired only when no other signal says otherwise', () => {
-    expect(classifyLiveness({ ...base, bodyText: 'ok' })).toBe('expired');
+  it('a tiny body with no hard-expired phrase is uncertain, never expired', () => {
+    expect(classifyLiveness({ ...base, bodyText: 'ok' })).toBe('uncertain');
+    expect(classifyLiveness({ ...base, bodyText: '<div id="root"></div>' })).toBe('uncertain');
+  });
+  it('a short body with a hard-expired phrase is still expired', () => {
+    expect(classifyLiveness({ ...base, bodyText: 'Job no longer available' })).toBe('expired');
+  });
+});
+
+describe('isSafeFetchUrl', () => {
+  it.each(['https://x.com/jobs/1', 'http://x.com/jobs/1', 'http://172.32.0.1/x', 'http://172.15.0.1/x'])('allows %s', (u) => {
+    expect(isSafeFetchUrl(u)).toBe(true);
+  });
+  it.each([
+    'file:///etc/passwd', 'ftp://x.com/a', 'http://localhost/x', 'http://127.0.0.1/x', 'http://169.254.169.254/latest',
+    'http://10.1.2.3/x', 'http://192.168.1.1/x', 'http://172.16.0.1/x', 'http://172.31.255.1/x', 'http://[::1]/x',
+    'http://0.0.0.0/x', 'http://printer.local/x', 'http://svc.internal/x', 'not a url', '',
+  ])('refuses %s', (u) => {
+    expect(isSafeFetchUrl(u)).toBe(false);
   });
 });
 
@@ -37,6 +54,12 @@ describe('checkLiveness', () => {
   it('404 response is expired', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 404, url: 'https://x.com/jobs/123456', text: async () => '' }));
     expect(await checkLiveness('https://x.com/jobs/123456')).toBe('expired');
+  });
+  it('a non-public url is uncertain and never fetched', async () => {
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    expect(await checkLiveness('http://127.0.0.1/x')).toBe('uncertain');
+    expect(f).toHaveBeenCalledTimes(0);
   });
   it('a thrown error is uncertain', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
