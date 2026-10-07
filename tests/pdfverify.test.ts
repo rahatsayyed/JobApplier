@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { checkText, verifyPdf } from '../src/pdfVerify.js';
+import { checkText, checkWarnings, verifyPdf } from '../src/pdfVerify.js';
 
 const ok = 'Test User test@example.com +91 90000 00000 Engineer Jan 2022 - Present '.repeat(5);
 const opts = { pages: 1, mustContain: ['Test User', 'test@example.com', '+91 90000 00000'] };
@@ -18,9 +18,14 @@ describe('checkText', () => {
     expect(checkText(ok + '(cid:123)', 1, opts).join()).toMatch(/cid/);
     expect(checkText(ok + '�', 1, opts).join()).toMatch(/replacement/);
   });
-  it('flags a unicode dash joined to a year', () => {
-    expect(checkText(ok + ' 2021–2023', 1, opts).join()).toMatch(/date/i);
+  it('does not block on a unicode dash joined to a year, but warns', () => {
+    expect(checkText(ok + ' 2021–2023', 1, opts)).toEqual([]);
+    expect(checkWarnings(ok + ' 2021–2023').join()).toMatch(/date/i);
   });
+  it('does not block a real-looking en-dash date line', () => {
+    expect(checkText(ok + ' Konma DaoFeb 2023 – Jun 2025', 1, opts)).toEqual([]);
+  });
+  it('has no warnings for ASCII hyphen dates', () => { expect(checkWarnings(ok)).toEqual([]); });
 });
 
 describe('checkText digitsContain', () => {

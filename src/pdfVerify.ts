@@ -29,8 +29,14 @@ export function checkText(text: string, numPages: number, opts: PdfCheckOpts): s
   }
   if (/\(cid:\d+\)/.test(text)) fails.push('garbled glyph markers (cid:NNN) in text layer');
   if (text.includes('�')) fails.push('replacement characters in text layer');
-  if (DATE_DASH.test(text)) fails.push('date range uses a non-ASCII dash, which ATS importers may drop');
   return fails;
+}
+
+/** Non-blocking findings: logged by verifyPdf, never thrown. */
+export function checkWarnings(text: string): string[] {
+  const warnings: string[] = [];
+  if (DATE_DASH.test(text)) warnings.push('date range uses a non-ASCII dash, which some ATS importers may drop');
+  return warnings;
 }
 
 export async function verifyPdf(pdfPath: string, opts: PdfCheckOpts): Promise<void> {
@@ -38,5 +44,7 @@ export async function verifyPdf(pdfPath: string, opts: PdfCheckOpts): Promise<vo
   // pdf.js ignores byteOffset, so it would otherwise read unrelated bytes.
   const data = await pdfParse(Uint8Array.from(readFileSync(pdfPath)));
   const fails = checkText(data.text, data.numpages, opts);
+  // stderr only: MCP servers use stdout for the protocol.
+  for (const w of checkWarnings(data.text)) console.error(`[pdfVerify] warning: ${w}`);
   if (fails.length) throw new Error(`PDF verification failed: ${fails.join('; ')}`);
 }
