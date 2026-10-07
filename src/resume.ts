@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkFacts } from './resumeFacts.js';
+import { verifyPdf } from './pdfVerify.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,5 +34,11 @@ export async function renderResume(resumeJson: any): Promise<string> {
   if (!existsSync(pdfPath)) {
     throw new Error(`Expected PDF not found at ${pdfPath}`);
   }
+  const { name, email, phone } = resumeJson ?? {};
+  await verifyPdf(pdfPath, {
+    pages: 1,
+    mustContain: [name, email].filter(Boolean),
+    digitsContain: [phone].filter(Boolean),
+  });
   return pdfPath;
 }
