@@ -15,6 +15,7 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       description TEXT,
       score INTEGER,
       status TEXT,
+      excluded_reason TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -100,6 +101,8 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       note TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE INDEX IF NOT EXISTS idx_job_outcomes_job ON job_outcomes(job_id);
   `);
 
   // Migration: older databases created before `method`/`account` existed on
@@ -123,11 +126,10 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
   }
 
   const jobCols = new Set((db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map(c => c.name));
-  for (const [col, type] of [['match_reasons','TEXT'],['match_missing','TEXT'],['location_verdict','TEXT'],['language_gate','TEXT']] as const) {
+  for (const [col, type] of [['match_reasons','TEXT'],['match_missing','TEXT'],['location_verdict','TEXT'],['language_gate','TEXT'],['excluded_reason','TEXT']] as const) {
     if (!jobCols.has(col)) db.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${type}`);
   }
-  const queueCols = new Set((db.prepare('PRAGMA table_info(outreach_queue)').all() as { name: string }[]).map(c => c.name));
-  if (!queueCols.has('resume_json')) db.exec('ALTER TABLE outreach_queue ADD COLUMN resume_json TEXT');
+  if (!outreachQueueColumnNames.has('resume_json')) db.exec('ALTER TABLE outreach_queue ADD COLUMN resume_json TEXT');
 
   return db;
 }
@@ -188,6 +190,12 @@ export interface MatchResultInput {
 export function saveMatchResult(db: BetterSqlite3.Database, r: MatchResultInput): void {
   db.prepare(`UPDATE jobs SET score = ?, match_reasons = ?, match_missing = ?, location_verdict = ?, language_gate = ? WHERE id = ?`)
     .run(r.score, r.reasons, JSON.stringify(r.missing_keywords), r.location_verdict ?? null, r.language_gate ?? null, r.job_id);
+}
+
+// Persists a pre-apply veto: a non-null excluded_reason means /apply and /applyall skip the job.
+// Returns false when the job_id does not exist.
+export function setJobExcluded(db: BetterSqlite3.Database, jobId: string, reason: string): boolean {
+  return db.prepare('UPDATE jobs SET excluded_reason = ? WHERE id = ?').run(reason, jobId).changes > 0;
 }
 
 export interface Contact {
@@ -375,6 +383,40 @@ export type Outcome = 'replied' | 'interview' | 'offer' | 'hired' | 'rejected' |
 
 export function recordOutcome(db: BetterSqlite3.Database, jobId: string, outcome: Outcome, note?: string): void {
   db.prepare('INSERT INTO job_outcomes (job_id, outcome, note) VALUES (?, ?, ?)').run(jobId, outcome, note ?? null);
+}
+
+// Records the outcome even for an unknown job_id, but flags it so a typo'd id is visible.
+export function recordOutcomeChecked(
+  db: BetterSqlite3.Database,
+  jobId: string,
+  outcome: Outcome,
+  note?: string
+): { recorded: true; warning?: string } {
+  const known = db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId) !== undefined;
+  recordOutcome(db, jobId, outcome, note);
+  return known ? { recorded: true } : { recorded: true, warning: 'unknown job_id' };
+}
+
+export function saveMatchResults(db: BetterSqlite3.Database, results: MatchResultInput[]): number {
+  db.transaction((rs: MatchResultInput[]) => {
+    for (const r of rs) saveMatchResult(db, r);
+  })(results);
+  return results.length;
+}
+
+export function markExcluded(
+  db: BetterSqlite3.Database,
+  exclusions: { job_id: string; reason: string }[]
+): { marked: number; unknown: string[] } {
+  const unknown: string[] = [];
+  let marked = 0;
+  db.transaction(() => {
+    for (const e of exclusions) {
+      if (setJobExcluded(db, e.job_id, e.reason)) marked++;
+      else unknown.push(e.job_id);
+    }
+  })();
+  return { marked, unknown };
 }
 
 export function getCalibrationRows(db: BetterSqlite3.Database): { score: number; outcome: Outcome }[] {

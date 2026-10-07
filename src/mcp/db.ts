@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { enqueueOutreach, getCalibrationRows, listQueuedOutreach, openDb, recordOutcome, saveMatchResult, updateOutreachStatus } from '../db.js';
+import { enqueueOutreach, getCalibrationRows, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, saveMatchResults, updateOutreachStatus } from '../db.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
@@ -216,7 +216,7 @@ server.registerTool(
     inputSchema: {
       results: z.array(z.object({
         job_id: z.string(),
-        score: z.number(),
+        score: z.number().min(0).max(100),
         reasons: z.string(),
         missing_keywords: z.array(z.string()),
         location_verdict: z.enum(['PASS', 'FAIL', 'FLAG']).optional(),
@@ -225,8 +225,21 @@ server.registerTool(
     },
   },
   async ({ results }) => {
-    for (const r of results) saveMatchResult(db, r);
-    return { content: [{ type: 'text', text: JSON.stringify({ saved: results.length }) }] };
+    const saved = saveMatchResults(db, results);
+    return { content: [{ type: 'text', text: JSON.stringify({ saved }) }] };
+  }
+);
+
+server.registerTool(
+  'mark_excluded',
+  {
+    description: 'Persist veto results: mark jobs as excluded (jobs.excluded_reason) so /apply and /applyall skip them. Call after gates.apply_vetoes for every excluded job. Unknown job ids are reported in `unknown`.',
+    inputSchema: {
+      exclusions: z.array(z.object({ job_id: z.string(), reason: z.string().min(1) })),
+    },
+  },
+  async ({ exclusions }) => {
+    return { content: [{ type: 'text', text: JSON.stringify(markExcluded(db, exclusions)) }] };
   }
 );
 
@@ -241,8 +254,8 @@ server.registerTool(
     },
   },
   async ({ job_id, outcome, note }) => {
-    recordOutcome(db, job_id, outcome, note);
-    return { content: [{ type: 'text', text: JSON.stringify({ recorded: true, job_id, outcome }) }] };
+    const result = recordOutcomeChecked(db, job_id, outcome, note);
+    return { content: [{ type: 'text', text: JSON.stringify({ ...result, job_id, outcome }) }] };
   }
 );
 
