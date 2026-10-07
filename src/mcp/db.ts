@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { enqueueOutreach, getCalibrationRows, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, saveMatchResults, updateOutreachStatus } from '../db.js';
+import { enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, saveMatchResults, updateOutreachStatus } from '../db.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
@@ -12,22 +12,15 @@ const server = new McpServer({ name: 'db', version: '1.0.0' });
 server.registerTool(
   'list_jobs',
   {
-    description: 'List jobs from the database with optional filters',
+    description: 'List jobs from the database with optional filters. Each row includes excluded_reason (non-null = vetoed; /apply and /applyall skip it). Set exclude_vetoed to hide vetoed jobs.',
     inputSchema: {
       status: z.string().optional(),
       limit: z.number().optional().default(100),
+      exclude_vetoed: z.boolean().optional().default(false),
     },
   },
-  async ({ status, limit }) => {
-    let sql = 'SELECT id, source, title, company, score, status, created_at FROM jobs';
-    const params: (string | number)[] = [];
-    if (status) {
-      sql += ' WHERE status = ?';
-      params.push(status);
-    }
-    sql += ' ORDER BY created_at DESC LIMIT ?';
-    params.push(limit);
-    const results = db.prepare(sql).all(...params);
+  async ({ status, limit, exclude_vetoed }) => {
+    const results = listJobs(db, { status, limit, excludeVetoed: exclude_vetoed });
     return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
   }
 );

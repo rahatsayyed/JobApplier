@@ -198,6 +198,28 @@ export function setJobExcluded(db: BetterSqlite3.Database, jobId: string, reason
   return db.prepare('UPDATE jobs SET excluded_reason = ? WHERE id = ?').run(reason, jobId).changes > 0;
 }
 
+export interface JobListRow {
+  id: string; source: string; title: string; company: string; score: number | null;
+  status: string; created_at: string; excluded_reason: string | null;
+}
+
+// Backs db.list_jobs. excludeVetoed hides jobs with a non-null excluded_reason.
+export function listJobs(
+  db: BetterSqlite3.Database,
+  opts: { status?: string; limit?: number; excludeVetoed?: boolean } = {}
+): JobListRow[] {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (opts.status) { where.push('status = ?'); params.push(opts.status); }
+  if (opts.excludeVetoed) where.push('excluded_reason IS NULL');
+  const sql =
+    'SELECT id, source, title, company, score, status, created_at, excluded_reason FROM jobs' +
+    (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+    ' ORDER BY created_at DESC LIMIT ?';
+  params.push(opts.limit ?? 100);
+  return db.prepare(sql).all(...params) as JobListRow[];
+}
+
 export interface Contact {
   company: string;
   email: string;

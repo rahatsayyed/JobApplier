@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   openDb, saveJob, getJob, enqueueOutreach, setJobExcluded, markExcluded,
-  recordOutcomeChecked, saveMatchResults,
+  recordOutcomeChecked, saveMatchResults, listJobs,
 } from '../src/db.js';
 
 const cols = (db: Database.Database, table: string) =>
@@ -133,5 +133,27 @@ describe('db helpers', () => {
     expect(saveMatchResults(db, [good, { ...bad, reasons: 'ok' }])).toBe(2);
     expect(getJob(db, 'm1')!.score).toBe(80);
     expect(getJob(db, 'm2')!.score).toBe(70);
+  });
+});
+
+describe('listJobs', () => {
+  const mk = () => {
+    const db = openDb(':memory:');
+    saveJob(db, job('a'));
+    saveJob(db, job('b'));
+    setJobExcluded(db, 'b', 'veto: location');
+    return db;
+  };
+
+  it('includes excluded_reason in each row', () => {
+    const rows = listJobs(mk());
+    expect(rows.find((r) => r.id === 'a')!.excluded_reason).toBeNull();
+    expect(rows.find((r) => r.id === 'b')!.excluded_reason).toBe('veto: location');
+  });
+
+  it('exclude_vetoed hides vetoed jobs; default keeps them', () => {
+    const db = mk();
+    expect(listJobs(db).map((r) => r.id).sort()).toEqual(['a', 'b']);
+    expect(listJobs(db, { excludeVetoed: true }).map((r) => r.id)).toEqual(['a']);
   });
 });
