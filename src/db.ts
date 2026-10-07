@@ -349,7 +349,11 @@ export function enqueueOutreach(
 
 export function listQueuedOutreach(db: BetterSqlite3.Database): OutreachQueueItem[] {
   return db
-    .prepare(`SELECT * FROM outreach_queue WHERE status = 'queued' ORDER BY created_at ASC`)
+    // Explicit columns: omit resume_json (several KB per row, no consumer in the sender).
+    .prepare(`SELECT id, job_id, resume_pdf_path, email_subject, email_body, email_to, email_status,
+      connect_note, connect_profile_url, connect_category, connect_company, connect_status,
+      apply_platform, apply_url, apply_status, status, created_at, updated_at
+      FROM outreach_queue WHERE status = 'queued' ORDER BY created_at ASC`)
     .all() as OutreachQueueItem[];
 }
 

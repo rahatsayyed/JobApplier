@@ -163,4 +163,27 @@ describe('outreach_queue', () => {
     expect(queued.every((r) => r.job_id === 'job-d')).toBe(true);
     expect(queued.map((r) => r.connect_category).sort()).toEqual(['peer', 'recruiter']);
   });
+
+  it('listQueuedOutreach omits resume_json but keeps every other column', () => {
+    const db = openDb(':memory:');
+    enqueueOutreach(db, {
+      job_id: 'job-e', resume_pdf_path: '/tmp/e.pdf', email_subject: 'S', email_body: 'B',
+      email_to: 'e@y.com', connect_note: 'note', connect_profile_url: 'https://linkedin.com/in/e',
+      connect_category: 'peer', connect_company: 'Echo', apply_platform: 'greenhouse',
+      apply_url: 'https://boards.greenhouse.io/echo/jobs/1', resume_json: '{"name":"Test User"}',
+    });
+    const [row] = listQueuedOutreach(db);
+    expect('resume_json' in row).toBe(false);
+    expect(row).toMatchObject({
+      resume_pdf_path: '/tmp/e.pdf', email_subject: 'S', email_body: 'B', email_to: 'e@y.com',
+      connect_note: 'note', connect_profile_url: 'https://linkedin.com/in/e', connect_category: 'peer',
+      connect_company: 'Echo', apply_platform: 'greenhouse',
+      apply_url: 'https://boards.greenhouse.io/echo/jobs/1', status: 'queued',
+    });
+    expect(Object.keys(row).sort()).toEqual([
+      'apply_platform', 'apply_status', 'apply_url', 'connect_category', 'connect_company', 'connect_note',
+      'connect_profile_url', 'connect_status', 'created_at', 'email_body', 'email_status', 'email_subject',
+      'email_to', 'id', 'job_id', 'resume_pdf_path', 'status', 'updated_at',
+    ]);
+  });
 });
