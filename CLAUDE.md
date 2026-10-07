@@ -181,7 +181,12 @@ see "Safety" rule 2).
    a. Call `db.save_match_result` with the full result array (persists every score).
    b. Call `gates.apply_vetoes` with the results and their Job objects (`{id, title,
       description}` from step 1). Drop every job it returns with `excluded: true` and report it
-      as "Excluded: <reason>". Keep each job's `flags` as warning markers for the summary.
+      as "Excluded: <reason>". Keep each job's `flags` as warning markers for the summary. Pass
+      `""` as `description` when a job's description is null.
+      If `db.save_match_result` or `gates.apply_vetoes` errors, retry once, then STOP the
+      pipeline for this run: no matched job proceeds to step 3, and report the error to
+      Telegram. A gate that cannot run must not be skipped (an explicit exception to Safety
+      rule 4's "continue with the next job").
    c. Then filter the survivors: any `job_id` with `score < MATCH_THRESHOLD` (env var, default
       60) is SKIPPED — not contacted, not tailored, not drafted. Keep the list of MATCHED
       job_ids and their full Job objects (from step 1) for step 3.
@@ -458,7 +463,9 @@ rules inline, so a future change only needs to happen in one place.
    explicit, informed design decision, not an oversight. Do not attempt any OTHER outreach
    channel (e.g. LinkedIn direct messages) as part of that flow.
 4. If any tool call fails or returns an error, do not retry silently more than once; log the
-   failure and continue with the next job rather than aborting the whole run.
+   failure and continue with the next job rather than aborting the whole run. Exception: if
+   `db.save_match_result` or `gates.apply_vetoes` (step 2) fails after one retry, stop the run
+   instead, since a veto gate that cannot run must not be skipped.
 5. `connect_send` is called automatically by the `sender` stage as part of every hunt run — no
    per-note human approval is required (see "Connecting"). The automated recipient-verification
    safety net inside `connect.ts` (`verifyRecipientName`, `verifyProfileUrl`, fail-closed) still

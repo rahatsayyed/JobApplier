@@ -38,11 +38,11 @@ export function loadDealBreakers(file: string = dealBreakersPath): string[] {
 /** Run applyVetoes per result. `keywords` overrides the config file (for tests). */
 export function vetoResults(
   results: { job_id: string; score: number; location_verdict?: Verdict; language_gate?: Verdict }[],
-  jobs: { id: string; title: string; description: string }[],
+  jobs: { id: string; title: string; description?: string | null }[],
   keywords?: string[],
 ): { job_id: string; excluded: boolean; reason?: string; flags: string[] }[] {
   const dealBreakers = (keywords ?? loadDealBreakers()).map((k) => k.trim()).filter(Boolean);
-  const byId = new Map(jobs.map((j) => [j.id, j]));
+  const byId = new Map(jobs.map((j) => [j.id, { title: j.title, description: j.description ?? '' }]));
   return results.map((r) => {
     const job = byId.get(r.job_id) ?? { title: '', description: '' };
     return { job_id: r.job_id, ...applyVetoes(r, job, dealBreakers) };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyVetoes } from '../src/vetoes.js';
+import { applyVetoes, vetoResults } from '../src/vetoes.js';
 
 const job = { title: 'Full Stack Dev', description: 'React and Node. Onsite in Berlin. Unpaid trial week.' };
 
@@ -21,5 +21,23 @@ describe('applyVetoes', () => {
   });
   it('passes when no verdict fields are present (old matcher output)', () => {
     expect(applyVetoes({ job_id: 'a', score: 80 }, job, [])).toEqual({ excluded: false, flags: [] });
+  });
+});
+
+describe('vetoResults null/undefined description mapping', () => {
+  it('treats a null or missing description as empty and does not throw', () => {
+    const r = vetoResults(
+      [{ job_id: 'a', score: 80 }, { job_id: 'b', score: 80 }],
+      [{ id: 'a', title: 'Dev', description: null }, { id: 'b', title: 'Dev' }],
+      ['unpaid'],
+    );
+    expect(r).toEqual([
+      { job_id: 'a', excluded: false, flags: [] },
+      { job_id: 'b', excluded: false, flags: [] },
+    ]);
+  });
+  it('still matches deal-breakers in the title when description is null', () => {
+    const r = vetoResults([{ job_id: 'a', score: 80 }], [{ id: 'a', title: 'Unpaid Dev', description: null }], ['unpaid']);
+    expect(r[0].excluded).toBe(true);
   });
 });
