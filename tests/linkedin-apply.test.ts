@@ -14,6 +14,20 @@ const answers: EasyApplyAnswers = {
   linkedin_profile_url: 'https://linkedin.com/in/example',
 };
 
+describe('resolveAnswer unset and falsy values', () => {
+  it('an UNSET fixed answer key resolves to null, not undefined', () => {
+    const r = resolveAnswer('What is your notice period?', {} as EasyApplyAnswers);
+    expect(r).toBeNull();
+  });
+
+  it('preserves empty string, 0 and false', () => {
+    const a = { notice_period_days: 0, expected_salary: '', willing_to_relocate: false } as unknown as EasyApplyAnswers;
+    expect(resolveAnswer('What is your notice period?', a)).toBe(0);
+    expect(resolveAnswer('Expected salary?', a)).toBe('');
+    expect(resolveAnswer('Are you willing to relocate?', a)).toBe(false);
+  });
+});
+
 describe('resolveAnswer', () => {
   it('matches "years of experience" style questions', () => {
     expect(resolveAnswer('How many years of experience do you have with React?', answers)).toBe(5);

@@ -79,6 +79,7 @@ export async function checkLiveness(url: string): Promise<Liveness> {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const res = await fetch(current, { redirect: 'manual', signal, headers: { 'User-Agent': USER_AGENT } });
       if (res.status >= 300 && res.status < 400) {
+        try { await res.body?.cancel(); } catch { /* best effort: release the unread redirect body */ }
         const location = res.headers?.get?.('location');
         if (!location) return 'uncertain';
         let next: string;

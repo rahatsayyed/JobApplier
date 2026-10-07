@@ -83,6 +83,27 @@ describe('checkLiveness', () => {
     ]);
     expect(f.mock.calls.every((c) => c[1].redirect === 'manual')).toBe(true);
   });
+  it('cancels the body of each 3xx hop before following it', async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const redirect = { status: 302, headers: new Headers({ location: 'https://x.com/jobs/123456/' }), body: { cancel } };
+    const f = vi.fn()
+      .mockResolvedValueOnce(redirect)
+      .mockResolvedValueOnce(new Response('<button>Apply now</button>', { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    expect(await checkLiveness('https://x.com/jobs/123456')).toBe('active');
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+  it('a throwing body cancel does not break redirect following', async () => {
+    const redirect = {
+      status: 302, headers: new Headers({ location: 'https://x.com/jobs/123456/' }),
+      body: { cancel: () => { throw new Error('boom'); } },
+    };
+    const f = vi.fn()
+      .mockResolvedValueOnce(redirect)
+      .mockResolvedValueOnce(new Response('<button>Apply now</button>', { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    expect(await checkLiveness('https://x.com/jobs/123456')).toBe('active');
+  });
   it('gives up (uncertain) after more than 5 redirects', async () => {
     const f = vi.fn().mockImplementation(async () => new Response(null, { status: 302, headers: { location: 'https://x.com/loop' } }));
     vi.stubGlobal('fetch', f);

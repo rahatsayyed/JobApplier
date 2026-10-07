@@ -130,5 +130,5 @@ export async function resolveAnswerTopicWithFallback(
   const parsed = extractJson(raw, AnswerChoiceSchema);
   if (!parsed?.matchedKey) return null;
   const topic = topics.find((t) => t.key === parsed.matchedKey);
-  return topic ? topic.value : null;
+  return topic?.value ?? null;
 }

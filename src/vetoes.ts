@@ -15,7 +15,7 @@ export function applyVetoes(
   const hay = `${job.title}\n${job.description}`.toLowerCase();
   for (const raw of dealBreakers) {
     const kw = raw?.trim();
-    if (kw &&hay.includes(kw.toLowerCase())) return { excluded: true, reason: `deal-breaker: ${kw}`, flags };
+    if (kw && hay.includes(kw.toLowerCase())) return { excluded: true, reason: `deal-breaker: ${kw}`, flags };
   }
   if (m.location_verdict === 'FLAG') flags.push('location FLAG');
   if (m.language_gate === 'FLAG') flags.push('language FLAG');

@@ -17,7 +17,7 @@ describe('checkText', () => {
     expect(out.join()).toMatch(/missing digits: 9876543210/);
     expect(checkText(ok, 1, { pages: 1, mustContain: [null as any, undefined as any], digitsContain: [null as any] })).toEqual([]);
   });
-  it('fails on wrong page count',() => { expect(checkText(ok, 2, opts)[0]).toMatch(/pages/); });
+  it('fails on wrong page count', () => { expect(checkText(ok, 2, opts)[0]).toMatch(/pages/); });
   it('fails closed on an empty text layer', () => { expect(checkText('', 1, opts).join()).toMatch(/text layer/); });
   it('fails when email is missing as literal text', () => {
     expect(checkText(ok.replaceAll('test@example.com', ''), 1, opts).join()).toMatch(/test@example.com/);
