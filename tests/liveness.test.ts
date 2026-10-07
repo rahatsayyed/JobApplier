@@ -65,6 +65,41 @@ describe('checkLiveness', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
     expect(await checkLiveness('https://x.com/jobs/123456')).toBe('uncertain');
   });
+  it('a redirect to a private host is uncertain and the second fetch is never made', async () => {
+    const f = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/admin' } }));
+    vi.stubGlobal('fetch', f);
+    expect(await checkLiveness('https://x.com/jobs/123456')).toBe('uncertain');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+  it('follows a redirect chain (relative Location) to a safe host and classifies the final page', async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 301, headers: { location: '/jobs/123456/' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://y.com/jobs/123456/view' } }))
+      .mockResolvedValueOnce(new Response('<button>Apply now</button>', { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    expect(await checkLiveness('https://x.com/old/123456')).toBe('active');
+    expect(f.mock.calls.map((c) => c[0])).toEqual([
+      'https://x.com/old/123456', 'https://x.com/jobs/123456/', 'https://y.com/jobs/123456/view',
+    ]);
+    expect(f.mock.calls.every((c) => c[1].redirect === 'manual')).toBe(true);
+  });
+  it('gives up (uncertain) after more than 5 redirects', async () => {
+    const f = vi.fn().mockImplementation(async () => new Response(null, { status: 302, headers: { location: 'https://x.com/loop' } }));
+    vi.stubGlobal('fetch', f);
+    expect(await checkLiveness('https://x.com/start')).toBe('uncertain');
+    expect(f).toHaveBeenCalledTimes(6);
+  });
+  it('truncates the body at 200 KB but still classifies the readable part', async () => {
+    const body = 'Apply now ' + 'x'.repeat(300 * 1024) + ' this job has expired';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+    expect(await checkLiveness('https://x.com/careers')).toBe('active');
+  });
+  it('sends a browser-like User-Agent', async () => {
+    const f = vi.fn().mockResolvedValue(new Response('Apply now', { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    await checkLiveness('https://x.com/careers');
+    expect(f.mock.calls[0][1].headers['User-Agent']).toMatch(/^Mozilla\/5\.0 .*Chrome/);
+  });
 });
 
 describe('vetoResults', () => {

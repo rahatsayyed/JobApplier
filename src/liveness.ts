@@ -49,11 +49,51 @@ export function isSafeFetchUrl(url: string): boolean {
   return true;
 }
 
+const MAX_REDIRECTS = 5;
+const MAX_BODY_BYTES = 200 * 1024;
+const USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+async function readBodyCapped(res: Response): Promise<string> {
+  const reader = res.body?.getReader?.();
+  if (!reader) return (await res.text()).slice(0, MAX_BODY_BYTES);
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  while (received < MAX_BODY_BYTES) {
+    const { done, value } = await reader.read();
+    if (done || !value) break;
+    const chunk = value.length > MAX_BODY_BYTES - received ? value.subarray(0, MAX_BODY_BYTES - received) : value;
+    received += chunk.length;
+    text += decoder.decode(chunk, { stream: true });
+  }
+  await reader.cancel().catch(() => {});
+  return text + decoder.decode();
+}
+
 export async function checkLiveness(url: string): Promise<Liveness> {
   if (!isSafeFetchUrl(url)) return 'uncertain';
   try {
-    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(10_000) });
-    return classifyLiveness({ status: res.status, requestedUrl: url, finalUrl: res.url, bodyText: await res.text() });
+    const signal = AbortSignal.timeout(10_000);
+    let current = url;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const res = await fetch(current, { redirect: 'manual', signal, headers: { 'User-Agent': USER_AGENT } });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers?.get?.('location');
+        if (!location) return 'uncertain';
+        let next: string;
+        try {
+          next = new URL(location, current).toString();
+        } catch {
+          return 'uncertain';
+        }
+        if (!isSafeFetchUrl(next)) return 'uncertain';
+        current = next;
+        continue;
+      }
+      return classifyLiveness({ status: res.status, requestedUrl: url, finalUrl: current, bodyText: await readBodyCapped(res) });
+    }
+    return 'uncertain';
   } catch {
     return 'uncertain';
   }
