@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { enqueueOutreach, listQueuedOutreach, openDb, updateOutreachStatus } from '../db.js';
+import { enqueueOutreach, listQueuedOutreach, openDb, saveMatchResult, updateOutreachStatus } from '../db.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
 const db = openDb('data.sqlite');
@@ -186,6 +186,7 @@ server.registerTool(
       connect_company: z.string().optional(),
       apply_platform: z.enum(['linkedin', 'greenhouse', 'lever', 'workday', 'ashby', 'none']).optional(),
       apply_url: z.string().optional(),
+      resume_json: z.string().optional(),
     },
   },
   async (params) => {
@@ -201,8 +202,30 @@ server.registerTool(
       connect_company: params.connect_company ?? null,
       apply_platform: params.apply_platform ?? null,
       apply_url: params.apply_url ?? null,
+      resume_json: params.resume_json ?? null,
     });
     return { content: [{ type: 'text', text: JSON.stringify({ id }) }] };
+  }
+);
+
+server.registerTool(
+  'save_match_result',
+  {
+    description: 'Persist match-stage results (score, reasons, missing keywords, location/language verdicts) onto the jobs table. Unknown job ids are ignored.',
+    inputSchema: {
+      results: z.array(z.object({
+        job_id: z.string(),
+        score: z.number(),
+        reasons: z.string(),
+        missing_keywords: z.array(z.string()),
+        location_verdict: z.enum(['PASS', 'FAIL', 'FLAG']).optional(),
+        language_gate: z.enum(['PASS', 'FAIL', 'FLAG']).optional(),
+      })),
+    },
+  },
+  async ({ results }) => {
+    for (const r of results) saveMatchResult(db, r);
+    return { content: [{ type: 'text', text: JSON.stringify({ saved: results.length }) }] };
   }
 );
 

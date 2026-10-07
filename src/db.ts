@@ -114,6 +114,13 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
     db.exec('ALTER TABLE outreach_queue ADD COLUMN connect_company TEXT');
   }
 
+  const jobCols = new Set((db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map(c => c.name));
+  for (const [col, type] of [['match_reasons','TEXT'],['match_missing','TEXT'],['location_verdict','TEXT'],['language_gate','TEXT']] as const) {
+    if (!jobCols.has(col)) db.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${type}`);
+  }
+  const queueCols = new Set((db.prepare('PRAGMA table_info(outreach_queue)').all() as { name: string }[]).map(c => c.name));
+  if (!queueCols.has('resume_json')) db.exec('ALTER TABLE outreach_queue ADD COLUMN resume_json TEXT');
+
   return db;
 }
 
@@ -164,6 +171,15 @@ export function getJob(db: BetterSqlite3.Database, id: string): Job | undefined 
     score: result.score,
     status: result.status,
   } : undefined;
+}
+
+export interface MatchResultInput {
+  job_id: string; score: number; reasons: string; missing_keywords: string[];
+  location_verdict?: 'PASS' | 'FAIL' | 'FLAG'; language_gate?: 'PASS' | 'FAIL' | 'FLAG';
+}
+export function saveMatchResult(db: BetterSqlite3.Database, r: MatchResultInput): void {
+  db.prepare(`UPDATE jobs SET score = ?, match_reasons = ?, match_missing = ?, location_verdict = ?, language_gate = ? WHERE id = ?`)
+    .run(r.score, r.reasons, JSON.stringify(r.missing_keywords), r.location_verdict ?? null, r.language_gate ?? null, r.job_id);
 }
 
 export interface Contact {
@@ -297,14 +313,15 @@ export function enqueueOutreach(
     connect_company: string | null;
     apply_platform: string | null;
     apply_url: string | null;
+    resume_json?: string | null;
   }
 ): number {
   const result = db.prepare(`
     INSERT INTO outreach_queue (
       job_id, resume_pdf_path, email_subject, email_body, email_to,
       connect_note, connect_profile_url, connect_category, connect_company,
-      apply_platform, apply_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      apply_platform, apply_url, resume_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     item.job_id,
     item.resume_pdf_path,
@@ -316,7 +333,8 @@ export function enqueueOutreach(
     item.connect_category,
     item.connect_company,
     item.apply_platform,
-    item.apply_url
+    item.apply_url,
+    item.resume_json ?? null
   );
   return Number(result.lastInsertRowid);
 }
