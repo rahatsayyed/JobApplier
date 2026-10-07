@@ -9,7 +9,15 @@ const opts = { pages: 1, mustContain: ['Test User', 'test@example.com', '+91 900
 
 describe('checkText', () => {
   it('passes a clean one-page layer', () => { expect(checkText(ok, 1, opts)).toEqual([]); });
-  it('fails on wrong page count', () => { expect(checkText(ok, 2, opts)[0]).toMatch(/pages/); });
+  it('coerces non-string mustContain/digitsContain entries instead of throwing', () => {
+    const bad = { pages: 1, mustContain: [12345 as any, { a: 1 } as any], digitsContain: [9876543210 as any] };
+    let out: string[] = [];
+    expect(() => { out = checkText(ok, 1, bad); }).not.toThrow();
+    expect(out.join()).toMatch(/missing literal text: 12345/);
+    expect(out.join()).toMatch(/missing digits: 9876543210/);
+    expect(checkText(ok, 1, { pages: 1, mustContain: [null as any, undefined as any], digitsContain: [null as any] })).toEqual([]);
+  });
+  it('fails on wrong page count',() => { expect(checkText(ok, 2, opts)[0]).toMatch(/pages/); });
   it('fails closed on an empty text layer', () => { expect(checkText('', 1, opts).join()).toMatch(/text layer/); });
   it('fails when email is missing as literal text', () => {
     expect(checkText(ok.replaceAll('test@example.com', ''), 1, opts).join()).toMatch(/test@example.com/);

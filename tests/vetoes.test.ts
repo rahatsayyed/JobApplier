@@ -19,6 +19,28 @@ describe('applyVetoes', () => {
     expect(r.excluded).toBe(true);
     expect(r.reason).toBe('deal-breaker: unpaid');
   });
+  it('ignores whitespace-only and empty keywords (they must not match everything)', () => {
+    expect(applyVetoes({ job_id: 'a', score: 80 }, job, ['   ', '', '\t'])).toEqual({ excluded: false, flags: [] });
+  });
+  it('trims keywords before matching and in the reason', () => {
+    expect(applyVetoes({ job_id: 'a', score: 80 }, job, ['  unpaid  '])).toEqual({
+      excluded: true, reason: 'deal-breaker: unpaid', flags: [],
+    });
+  });
+  it('FAIL verdicts take precedence over a deal-breaker match', () => {
+    expect(applyVetoes({ job_id: 'a', score: 80, location_verdict: 'FAIL' }, job, ['unpaid']).reason).toBe('location FAIL');
+    expect(applyVetoes({ job_id: 'a', score: 80, language_gate: 'FAIL' }, job, ['unpaid']).reason).toBe('language FAIL');
+  });
+  it('keeps a location FLAG with a marker', () => {
+    expect(applyVetoes({ job_id: 'a', score: 70, location_verdict: 'FLAG' }, job, [])).toEqual({
+      excluded: false, flags: ['location FLAG'],
+    });
+  });
+  it('language FAIL reason string', () => {
+    expect(applyVetoes({ job_id: 'a', score: 90, language_gate: 'FAIL' }, job, [])).toEqual({
+      excluded: true, reason: 'language FAIL', flags: [],
+    });
+  });
   it('passes when no verdict fields are present (old matcher output)', () => {
     expect(applyVetoes({ job_id: 'a', score: 80 }, job, [])).toEqual({ excluded: false, flags: [] });
   });

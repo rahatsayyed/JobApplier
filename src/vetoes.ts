@@ -13,8 +13,9 @@ export function applyVetoes(
   if (m.location_verdict === 'FAIL') return { excluded: true, reason: 'location FAIL', flags };
   if (m.language_gate === 'FAIL') return { excluded: true, reason: 'language FAIL', flags };
   const hay = `${job.title}\n${job.description}`.toLowerCase();
-  for (const kw of dealBreakers) {
-    if (kw && hay.includes(kw.toLowerCase())) return { excluded: true, reason: `deal-breaker: ${kw}`, flags };
+  for (const raw of dealBreakers) {
+    const kw = raw?.trim();
+    if (kw &&hay.includes(kw.toLowerCase())) return { excluded: true, reason: `deal-breaker: ${kw}`, flags };
   }
   if (m.location_verdict === 'FLAG') flags.push('location FLAG');
   if (m.language_gate === 'FLAG') flags.push('language FLAG');

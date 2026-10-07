@@ -21,10 +21,14 @@ export function checkText(text: string, numPages: number, opts: PdfCheckOpts): s
   if (numPages !== opts.pages) fails.push(`expected ${opts.pages} pages, got ${numPages}`);
   if (text.trim().length < (opts.minChars ?? 200)) fails.push('text layer empty or too short (image-only PDF?)');
   const folded = fold(text);
-  for (const s of opts.mustContain) if (s && !folded.includes(fold(s))) fails.push(`missing literal text: ${s}`);
+  for (const raw of opts.mustContain) {
+    if (raw == null || raw === '') continue;
+    const s = String(raw);
+    if (!folded.includes(fold(s))) fails.push(`missing literal text: ${s}`);
+  }
   const textDigits = text.replace(/\D/g, '');
   for (const s of opts.digitsContain ?? []) {
-    const d = (s ?? '').replace(/\D/g, '');
+    const d = String(s ?? '').replace(/\D/g, '');
     if (d && !textDigits.includes(d)) fails.push(`missing digits: ${s}`);
   }
   if (/\(cid:\d+\)/.test(text)) fails.push('garbled glyph markers (cid:NNN) in text layer');
