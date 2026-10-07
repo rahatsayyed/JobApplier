@@ -14,7 +14,11 @@ yourself; that is the `sender` stage's job, later and separately.
 1. Invoke the `tailor-resume` skill with the job and the base resume JSON. It handles all
    tailoring rules (schema preservation, no fabrication, one-page trim, humanizer pass) and
    returns `{resume_json, pdf_path}` — do not re-derive or duplicate those rules here; that
-   skill is the single source of truth for resume tailoring.
+   skill is the single source of truth for resume tailoring. `render_resume` now THROWS on
+   unsupported resume claims ("fact check failed") or a failed PDF check ("PDF verification
+   failed"). Retry at most once, and only if you can fix the tailoring (e.g. remove an
+   unsupported number). Otherwise skip this job entirely: do NOT enqueue it, and return
+   `{"job_id": "<job.id>", "queued_rows": 0, "error": "resume gate failed: <error>"}`.
 2. If `contact` is present (not `null`): invoke the `draft-outreach` skill with the job, a short
    summary of the tailored resume, and the contact. It returns `{subject, body}` — `body`
    already includes the contact-footer per that skill's Step D. If `contact` is `null`, skip
@@ -30,7 +34,8 @@ yourself; that is the `sender` stage's job, later and separately.
    posting, one of `"greenhouse"`, `"lever"`, `"workday"`, `"ashby"` if it matches a known
    external-ATS URL pattern, or `"none"` if it matches none of these (an unrecognized platform
    is not attempted here — that is out of scope for this stage).
-5. Call `db.enqueue_outreach` — if you have both a `contact` and one or more `linkedin_profiles`,
+5. Call `db.enqueue_outreach` (on EVERY call, also pass `resume_json` = the tailored resume's JSON
+   string from step 1, so the exact resume sent is persisted) — if you have both a `contact` and one or more `linkedin_profiles`,
    call it ONCE PER LinkedIn profile entry (so a job with a recruiter AND a peer profile becomes
    TWO queue rows, both carrying the same `job_id`/`resume_pdf_path`/`email_*` fields but
    different `connect_note`/`connect_profile_url`/`connect_category`/`connect_company`, per step

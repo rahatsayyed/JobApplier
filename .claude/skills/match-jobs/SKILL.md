@@ -34,6 +34,7 @@ Given ONE Job object and the base resume JSON, decide how good a fit this job is
 8. Decide two separate veto verdicts. These are independent of `score` (a high score never overrides a FAIL), and each is exactly `"PASS"`, `"FAIL"`, or `"FLAG"`:
    - `location_verdict`: `"FAIL"` ONLY when the posting explicitly requires onsite/in-office work outside India AND offers no remote option. `"FLAG"` when the location requirement is ambiguous or hybrid and you cannot tell whether it is workable. Otherwise `"PASS"`.
    - `language_gate`: `"FAIL"` ONLY when the posting explicitly requires a language (spoken/written, e.g. fluent German) that the resume does not list. `"FLAG"` when a required language is listed on the resume but the posting's requirement looks above the resume's declared level (e.g. "native" or "C1" vs. a basic level). Otherwise `"PASS"`. Never infer a language requirement that the posting does not state.
+   - Whenever `location_verdict` or `language_gate` is `"FAIL"`, `reasons` MUST quote the explicit posting text that triggered it (e.g. `location FAIL: "must be onsite in Berlin, no remote"`).
 
 ## Output format
 
