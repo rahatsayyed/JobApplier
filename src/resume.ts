@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkFacts } from './resumeFacts.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,6 +18,10 @@ export function getBaseResume(): any {
 }
 
 export async function renderResume(resumeJson: any): Promise<string> {
+  const facts = checkFacts(getBaseResume(), resumeJson);
+  if (facts.verdict === 'block') {
+    throw new Error(`Resume fact check failed, refusing to render. Unsupported claims: ${facts.invented.join(', ')}`);
+  }
   const id = randomUUID();
   const outputDir = path.join(rendererDir, 'automation', id);
   mkdirSync(outputDir, { recursive: true });
