@@ -4,6 +4,7 @@
     "resume": { "command": "npx", "args": ["tsx", "src/mcp/resume.ts"] },
     "contacts": { "command": "npx", "args": ["tsx", "src/mcp/contacts.ts"] },
     "db": { "command": "npx", "args": ["tsx", "src/mcp/db.ts"] },
+    "gates": { "command": "npx", "args": ["tsx", "src/mcp/gates.ts"] },
     "gmail": { "command": "npx", "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"] },
     "apply": { "command": "npx", "args": ["tsx", "src/mcp/apply.ts"] },
     "connect": { "command": "npx", "args": ["tsx", "src/mcp/connect.ts"] },

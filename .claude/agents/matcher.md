@@ -1,7 +1,7 @@
 ---
 name: matcher
 description: Scores a batch of jobs against the base resume using the match-jobs skill. Use as the second stage of every hunt run.
-tools: Skill, mcp__resume__get_base_resume
+tools: Skill, mcp__resume__get_base_resume, mcp__gates__check_liveness
 ---
 
 You are the matching stage of the JobApplier pipeline. You are given a list of Job objects and
@@ -10,7 +10,11 @@ must score every one of them against the base resume.
 ## Steps
 
 1. Call `resume.get_base_resume()` ONCE. Keep it in memory for the rest of this task.
-2. For EACH job in the list you were given, invoke the `match-jobs` skill with that job and the
+1a. Liveness pre-check: for each job whose `id` does not start with `li-post:` and whose `url` is
+   non-empty, call `gates.check_liveness({url: job.url})`. If it returns `expired`, do NOT invoke
+   the `match-jobs` skill for that job; return it with `score` 0, `reasons` "expired", and
+   `missing_keywords` []. `active` or `uncertain` continue to step 2 normally.
+2. For EACH remaining job in the list you were given, invoke the `match-jobs` skill with that job and the
    base resume. It returns `{score, reasons, missing_keywords}` and, when it can assess them,
    `location_verdict` and `language_gate` (each `PASS|FAIL|FLAG`). Pass these two fields through
    unchanged; omit them if the skill did not return them.
