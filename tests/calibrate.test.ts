@@ -16,6 +16,22 @@ describe('calibrate', () => {
     const high = rows(85, ['interview', 'interview', 'interview', 'rejected', 'offer']);
     expect(calibrate([...low, ...high]).verdict).toMatch(/predict/i);
   });
+  it.each([
+    [59, null], [60, '60-69'], [69, '60-69'], [69.5, '60-69'], [70, '70-79'], [79, '70-79'], [79.9, '70-79'],
+    [80, '80+'], [100, '80+'],
+  ])('places score %s in band %s', (score, label) => {
+    const r = calibrate(rows(score as number, ['interview']), 1);
+    const hit = r.bands.filter((b) => b.n === 1).map((b) => b.label);
+    expect(hit).toEqual(label ? [label] : []);
+  });
+  it('uses minN in the not-enough-data message', () => {
+    expect(calibrate([], 8).verdict).toBe('Not enough data: need at least 8 resolved jobs in two score bands.');
+  });
+  it('reports a negative gap (top band worse than bottom) as not predictive', () => {
+    const low = rows(62, ['interview', 'interview', 'interview', 'interview', 'offer']);
+    const high = rows(85, ['rejected', 'rejected', 'rejected', 'rejected', 'interview']);
+    expect(calibrate([...low, ...high]).verdict).toBe('Scores do not clearly predict outcomes (gap -80 points). Review the match rubric.');
+  });
   it('excludes jobs with no resolved outcome', () => {
     expect(calibrate(rows(70, ['replied'])).bands.every(b => b.n === 0)).toBe(true);
   });
