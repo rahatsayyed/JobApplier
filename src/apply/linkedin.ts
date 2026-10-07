@@ -3,7 +3,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, getJob, saveApplication } from '../db.js';
+import { openDb, getJob, getExcludedReason, saveApplication } from '../db.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 import {
   resolveControlWithFallback,
@@ -383,6 +383,10 @@ export async function applyEasyApply(
   const job = getJob(database, job_id);
   if (!job || !job.url) {
     return recordAndReturn(database, job_id, 'manual_review', 'job not found or missing url');
+  }
+  const vetoReason = getExcludedReason(database, job_id);
+  if (vetoReason) {
+    return recordAndReturn(database, job_id, 'manual_review', `excluded by veto: ${vetoReason}`);
   }
 
   let answers: EasyApplyAnswers;

@@ -198,6 +198,14 @@ export function setJobExcluded(db: BetterSqlite3.Database, jobId: string, reason
   return db.prepare('UPDATE jobs SET excluded_reason = ? WHERE id = ?').run(reason, jobId).changes > 0;
 }
 
+// Returns the veto reason for a job, or null when the job is unknown or not vetoed.
+export function getExcludedReason(db: BetterSqlite3.Database, jobId: string): string | null {
+  const row = db.prepare('SELECT excluded_reason FROM jobs WHERE id = ?').get(jobId) as
+    | { excluded_reason: string | null }
+    | undefined;
+  return row?.excluded_reason ?? null;
+}
+
 export interface JobListRow {
   id: string; source: string; title: string; company: string; score: number | null;
   status: string; created_at: string; excluded_reason: string | null;

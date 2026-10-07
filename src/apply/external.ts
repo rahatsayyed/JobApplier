@@ -1,6 +1,6 @@
 import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
-import { openDb, getJob, saveApplication } from '../db.js';
+import { openDb, getJob, getExcludedReason, saveApplication } from '../db.js';
 import { getBaseResume } from '../resume.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 import { resolveControlWithFallback, type FallbackDeps } from '../lib/domFallback.js';
@@ -214,6 +214,10 @@ export async function applyExternal(
   const job = getJob(database, job_id);
   if (!job || !job.apply_url) {
     return recordAndReturn(database, job_id, null, 'manual_review', 'job not found or missing apply_url');
+  }
+  const vetoReason = getExcludedReason(database, job_id);
+  if (vetoReason) {
+    return recordAndReturn(database, job_id, null, 'manual_review', `excluded by veto: ${vetoReason}`);
   }
 
   const prepared = findPreparedApplicationMaterials(database, job_id);
