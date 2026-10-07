@@ -36,10 +36,10 @@ yourself; that is the `sender` stage's job, later and separately.
    is not attempted here — that is out of scope for this stage).
 5. Call `db.enqueue_outreach` (on EVERY call, also pass `resume_json` = the tailored resume's
    JSON string from step 1, so the exact resume sent is persisted) — if you have both a
-   `contact` and one or more `linkedin_profiles`, call it ONCE PER LinkedIn profile entry (so a job with a recruiter AND a peer profile becomes
-   TWO queue rows, both carrying the same `job_id`/`resume_pdf_path`/`email_*` fields but
-   different `connect_note`/`connect_profile_url`/`connect_category`/`connect_company`, per step
-   3). If there are NO `linkedin_profiles` at all but there IS a `contact`, call it ONCE with
+   `contact` and one or more `linkedin_profiles`, call it ONCE PER LinkedIn profile entry (so a
+   job with a recruiter AND a peer profile becomes TWO queue rows, both carrying the same
+   `job_id`/`resume_pdf_path`/`email_*` fields but different
+   `connect_note`/`connect_profile_url`/`connect_category`/`connect_company`, per step 3). If there are NO `linkedin_profiles` at all but there IS a `contact`, call it ONCE with
    only the email fields set (all `connect_*` fields omitted). If there is no `contact` AND no
    `linkedin_profiles`,
    still call it ONCE if `apply_platform` is not `"none"` (so an apply-only row still gets
