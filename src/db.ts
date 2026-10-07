@@ -241,7 +241,7 @@ export interface Application {
   platform: string | null;
   method?: string | null;
   account?: string | null;
-  status: 'submitted' | 'manual_review' | 'failed';
+  status: 'submitted' | 'manual_review' | 'failed' | 'needs_answer';
   reason?: string | null;
   applied_at?: string | null;
 }

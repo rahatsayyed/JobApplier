@@ -73,7 +73,7 @@ function normalizeQuestion(question: string): string {
 export function resolveAnswer(question: string, answers: EasyApplyAnswers): AnswerValue | null {
   for (const { pattern, key } of QUESTION_PATTERNS) {
     if (pattern.test(question)) {
-      return answers[key];
+      return (answers[key] as AnswerValue | undefined) ?? null;
     }
   }
   if (answers.custom) {
