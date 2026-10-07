@@ -103,8 +103,8 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
 | `/runhunt` or "run hunt", "find jobs" | Run the full hunt pipeline (below). |
 | `/status` or "status", "summary" | Query the `db` MCP: count of jobs (total/matched/by-source), outreach (sent/queued/failed), etc. No side effects, instant response. |
 | `/followups` | Phase 1.5 — send follow-up nudges to old sent emails (if implemented). |
-| `/apply #N` or "apply to job #N" | Apply to one matched job (see "Applying" below). |
-| `/applyall` | Apply to all of today's matched jobs (see "Applying" below). |
+| `/apply #N` or "apply to job #N" | Apply to one matched job (see "Applying" below). Skip any job whose `excluded_reason` is non-null (vetoed). |
+| `/applyall` | Apply to all of today's matched jobs (see "Applying" below). Skip any job whose `excluded_reason` is non-null (vetoed). |
 | `/connect` | Draft and send a LinkedIn connection request for a matched job (see "Connecting" below). |
 | `/outcome <job_id> <outcome> [note]` | Record what happened to a job (`replied`, `interview`, `offer`, `hired`, `rejected`, `no_response`) via `db.record_outcome`. Confirm to Telegram. |
 | `/calibrate` | Call `db.calibration`; format the score bands + verdict concisely for Telegram (do match scores predict interviews?). |
@@ -154,12 +154,12 @@ When told `/status` or "show status", query the `db` MCP for stats (no tool side
 ## Running the hunt (subagent-per-stage)
 
 When told "run hunt" (see Commands above), run the pipeline below. **You (the orchestrating
-session) do not call `job-fetch`, `contacts`, `resume`, or `gmail` tools yourself; the only
-tools you call directly are `db.save_match_result` and `gates.apply_vetoes`, in step 2.** Instead,
-dispatch a fresh subagent per stage using the Task tool, so each stage's tool output and
-reasoning stay out of your own context — you only see the compact JSON each stage returns. Do
-not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails (enforced as a daily counter —
-see "Safety" rule 2).
+session) do not call `job-fetch`, `contacts`, `resume`, or `gmail` tools yourself; within the
+hunt pipeline, the only tools you call directly are `db.save_match_result`,
+`gates.apply_vetoes`, and `db.mark_excluded`, all in step 2.** Instead, dispatch a fresh subagent per stage using the Task tool, so each
+stage's tool output and reasoning stay out of your own context — you only see the compact JSON
+each stage returns. Do not skip stages. Do not exceed `SEND_LIMIT_PER_RUN` real emails
+(enforced as a daily counter — see "Safety" rule 2).
 
 1. **Discover** — dispatch `subagent_type: discoverer` with the Role and Location from
    Preferences. It calls `job-fetch.list_new_jobs` (Adzuna/Remotive/RemoteOK) plus
@@ -182,11 +182,13 @@ see "Safety" rule 2).
    b. Call `gates.apply_vetoes` with the results and their Job objects (`{id, title,
       description}` from step 1). Drop every job it returns with `excluded: true` and report it
       as "Excluded: <reason>". Keep each job's `flags` as warning markers for the summary. Pass
-      `""` as `description` when a job's description is null.
-      If `db.save_match_result` or `gates.apply_vetoes` errors, retry once, then STOP the
-      pipeline for this run: no matched job proceeds to step 3, and report the error to
-      Telegram. A gate that cannot run must not be skipped (an explicit exception to Safety
-      rule 4's "continue with the next job").
+      `""` as `description` when a job's description is null. Then call `db.mark_excluded` with
+      `{exclusions: [{job_id, reason}, ...]}` for every excluded job, so the veto is persisted
+      and a later `/apply` or `/applyall` skips it (skip the call if nothing was excluded).
+      If `db.save_match_result`, `gates.apply_vetoes`, or `db.mark_excluded` errors, retry
+      once, then STOP the pipeline for this run: no matched job proceeds to step 3, and report
+      the error to Telegram. A gate that cannot run must not be skipped (an explicit exception
+      to Safety rule 4's "continue with the next job").
    c. Then filter the survivors: any `job_id` with `score < MATCH_THRESHOLD` (env var, default
       60) is SKIPPED — not contacted, not tailored, not drafted. Keep the list of MATCHED
       job_ids and their full Job objects (from step 1) for step 3.
