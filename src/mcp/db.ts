@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { enqueueOutreach, listQueuedOutreach, openDb, saveMatchResult, updateOutreachStatus } from '../db.js';
+import { enqueueOutreach, getCalibrationRows, listQueuedOutreach, openDb, recordOutcome, saveMatchResult, updateOutreachStatus } from '../db.js';
+import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
 const db = openDb('data.sqlite');
@@ -226,6 +227,33 @@ server.registerTool(
   async ({ results }) => {
     for (const r of results) saveMatchResult(db, r);
     return { content: [{ type: 'text', text: JSON.stringify({ saved: results.length }) }] };
+  }
+);
+
+server.registerTool(
+  'record_outcome',
+  {
+    description: 'Record a real-world outcome for a job (replied, interview, offer, hired, rejected, no_response). The latest outcome per job is used for score calibration.',
+    inputSchema: {
+      job_id: z.string(),
+      outcome: z.enum(['replied', 'interview', 'offer', 'hired', 'rejected', 'no_response']),
+      note: z.string().optional(),
+    },
+  },
+  async ({ job_id, outcome, note }) => {
+    recordOutcome(db, job_id, outcome, note);
+    return { content: [{ type: 'text', text: JSON.stringify({ recorded: true, job_id, outcome }) }] };
+  }
+);
+
+server.registerTool(
+  'calibration',
+  {
+    description: 'Report interview rate per match-score band from recorded outcomes, with a verdict on whether scores predict outcomes.',
+    inputSchema: {},
+  },
+  async () => {
+    return { content: [{ type: 'text', text: JSON.stringify(calibrate(getCalibrationRows(db)), null, 2) }] };
   }
 );
 

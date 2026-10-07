@@ -92,6 +92,14 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS job_outcomes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration: older databases created before `method`/`account` existed on
@@ -357,4 +365,18 @@ export function updateOutreachStatus(
     throw new Error(`updateOutreachStatus: invalid field "${field}"`);
   }
   db.prepare(`UPDATE outreach_queue SET ${field} = ?, updated_at = datetime('now') WHERE id = ?`).run(value, id);
+}
+
+export type Outcome = 'replied' | 'interview' | 'offer' | 'hired' | 'rejected' | 'no_response';
+
+export function recordOutcome(db: BetterSqlite3.Database, jobId: string, outcome: Outcome, note?: string): void {
+  db.prepare('INSERT INTO job_outcomes (job_id, outcome, note) VALUES (?, ?, ?)').run(jobId, outcome, note ?? null);
+}
+
+export function getCalibrationRows(db: BetterSqlite3.Database): { score: number; outcome: Outcome }[] {
+  return db.prepare(`
+    SELECT j.score AS score, o.outcome AS outcome
+    FROM jobs j JOIN job_outcomes o ON o.job_id = j.id
+    WHERE j.score IS NOT NULL AND o.id = (SELECT MAX(id) FROM job_outcomes WHERE job_id = j.id)
+  `).all() as { score: number; outcome: Outcome }[];
 }
