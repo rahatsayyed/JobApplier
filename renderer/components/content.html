@@ -33,7 +33,7 @@
               /></svg></span></a
         >{{else}}{{company}}{{/if}}
       </span>
-      <span class="dates">{{start}}{{#if end}} – {{end}}{{/if}}</span>
+      <span class="dates">{{start}}{{#if end}} - {{end}}{{/if}}</span>
     </div>
 
     <ul>
@@ -73,7 +73,7 @@
         </a>
         {{else}} {{title}} {{/if}}
       </span>
-      <span class="project-dates">{{start}}{{#if end}} – {{end}}{{/if}}</span>
+      <span class="project-dates">{{start}}{{#if end}} - {{end}}{{/if}}</span>
     </div>
 
     <ul>
@@ -108,7 +108,7 @@
   <div class="skills-section">
     {{#each skills}}
     <div class="skill-category-row">
-      <span class="skills-group-label">{{category}}</span> — {{#each
+      <span class="skills-group-label">{{category}}</span>: {{#each
       items}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}
     </div>
     {{/each}}

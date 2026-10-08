@@ -18,6 +18,20 @@ export function getBaseResume(): any {
   return JSON.parse(readFileSync(resumePath, 'utf8'));
 }
 
+/** ATS-safe text: some importers drop non-ASCII dashes in date ranges (ai-job-search verify_pdf origin story). */
+export function normalizeForAts<T>(v: T): T {
+  const fix = (s: string) => s
+    .replace(/[‐-―−]/g, '-')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/…/g, '...')
+    .replace(/[  ]/g, ' ')
+    .replace(/[​-‍﻿]/g, '')
+    .replace(/\s*→\s*/g, ' to ');
+  const walk = (x: any): any => (typeof x === 'string' ? fix(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, val]) => [k, walk(val)])) : x);
+  return walk(v);
+}
+
 export async function renderResume(resumeJson: any): Promise<string> {
   const facts = checkFacts(getBaseResume(), resumeJson);
   if (facts.verdict === 'block') {
