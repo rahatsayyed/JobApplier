@@ -83,6 +83,8 @@ const defaultFactGatePath = path.join(path.resolve(path.dirname(fileURLToPath(im
 export function loadFactGateConfig(file: string = defaultFactGatePath): { config: FactGateConfig; missing: boolean } {
   if (!existsSync(file)) return { config: { ...EMPTY_FACT_GATE }, missing: true };
   const raw = JSON.parse(readFileSync(file, 'utf8'));
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('config/fact-gate.json: top level must be an object');
+  for (const k of Object.keys(raw)) if (!(k in EMPTY_FACT_GATE)) throw new Error(`config/fact-gate.json: unknown key "${k}"`);
   const config: FactGateConfig = { ...EMPTY_FACT_GATE };
   for (const k of Object.keys(EMPTY_FACT_GATE) as Array<keyof FactGateConfig>) {
     const v = raw?.[k];
@@ -116,14 +118,46 @@ function allowedMetricSet(sourceText: string, allow: string[]): Set<string> {
   }
   return s;
 }
-/** Replace each phrase (the posting title, the company) with a space so quoting it is not read as a claim. */
-function blankOut(text: string, phrases: Array<string | undefined>): string {
-  let out = text;
-  for (const p of phrases) {
-    const t = (p ?? '').trim();
-    if (t.length < 3) continue;
-    out = out.replace(new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+'), 'gi'), ' ');
+const POSTING_CUES = /\b(?:openings?|roles?|positions?|postings?|listings?|vacanc(?:y|ies)|jobs?|opportunit(?:y|ies)|hiring|adverts?|advertised|applying|apply|applications?|saw|noticed|came across|found)\b/;
+const QUOTES = `"'“”‘’`;
+const TOKEN_RE = /[^\s.,&\-‐-―−"'“”‘’()]+/g;
+interface Tok { raw: string; key: string | null; start: number; end: number }
+/** Tokens split on whitespace . , & dashes and quotes. A standalone "js" is dropped and a trailing "js" is stripped, so "React js", "React.js" and "ReactJS" compare equal. */
+function tokenize(text: string): Tok[] {
+  const out: Tok[] = [];
+  for (const m of text.matchAll(TOKEN_RE)) {
+    const raw = m[0].toLowerCase();
+    let key: string | null = raw;
+    if (raw === 'js') key = null;
+    else if (raw.length > 2 && raw.endsWith('js')) key = raw.slice(0, -2);
+    out.push({ raw, key, start: m.index!, end: m.index! + m[0].length });
   }
+  return out;
+}
+/** Blank out mentions of the posting title / company, but only in posting context (quoted, or a sentence with a posting cue word within 8 tokens). Any other mention stays visible to the claim extractors. */
+function blankOut(text: string, phrases: Array<string | undefined>): string {
+  const toks = tokenize(text);
+  const kept = toks.map((t, i) => ({ t, i })).filter((x) => x.t.key !== null);
+  const ranges: Array<[number, number]> = [];
+  for (const p of phrases) {
+    if ((p ?? '').trim().length < 3) continue;
+    const pk = tokenize(p!).map((t) => t.key).filter((k): k is string => k !== null);
+    if (!pk.length) continue;
+    for (let j = 0; j + pk.length <= kept.length; j++) {
+      if (!pk.every((k, n) => kept[j + n].t.key === k)) continue;
+      const first = kept[j], last = kept[j + pk.length - 1];
+      const start = first.t.start, end = last.t.end;
+      const before = text.slice(0, start).trimEnd().slice(-1), after = text.slice(end).trimStart().charAt(0);
+      const quoted = !!before && !!after && QUOTES.includes(before) && QUOTES.includes(after);
+      let ss = start; while (ss > 0 && !/[.!?]\s/.test(text.slice(ss - 2, ss)) && text[ss - 1] !== '\n') ss--;
+      let se = end; while (se < text.length && !/[.!?](\s|$)/.test(text.slice(se, se + 2)) && text[se] !== '\n') se++;
+      const win = toks.filter((t, i) => t.start >= ss && t.end <= se + 1 && ((i < first.i && i >= first.i - 8) || (i > last.i && i <= last.i + 8))).map((t) => t.raw);
+      const cued = POSTING_CUES.test(` ${win.join(' ')} `);
+      if (quoted || cued) ranges.push([start, end]);
+    }
+  }
+  let out = text;
+  for (const [x, y] of ranges.sort((m, n) => n[0] - m[0])) out = out.slice(0, x) + ' ' + out.slice(y);
   return out;
 }
 function resolveConfig(opts: CheckOptions): { config: FactGateConfig; missing: boolean } {
@@ -179,8 +213,12 @@ export function checkResume(base: Record<string, any>, tailored: Record<string, 
 export function checkOutreachText(text: string, base: Record<string, any>, opts: CheckOptions & { extraSource?: string } = {}): FactReport {
   const { config, missing } = resolveConfig(opts);
   const clean = blankOut(String(text ?? '').replace(/https?:\/\/\S+/g, ' '), [opts.jobTitle, opts.company]);
-  const baseText = joinStatements([...strings(base), opts.extraSource ?? '']);
-  const over = oversizeBlock({ 'outreach text': clean, 'base resume': baseText }, missing);
+  const extra = opts.extraSource ?? '';
+  const baseOnly = joinStatements(strings(base));
+  const baseText = joinStatements([...strings(base), extra]);
+  const fields: Record<string, string> = { 'outreach text': clean, 'extra source': extra, 'base resume': baseOnly };
+  if (!Object.values(fields).some(exceedsScanCap)) fields['base resume plus extra source'] = baseText;
+  const over = oversizeBlock(fields, missing);
   if (over) return over;
   const allowedMetrics = allowedMetricSet(baseText, config.allow_metrics);
   const allowFacts = new Set(config.allow_facts.map(normalizeFact));
@@ -192,7 +230,8 @@ export function checkOutreachText(text: string, base: Record<string, any>, opts:
   }
   const warnings: string[] = [];
   const pseudo = { summary: clean.replace(/\s*\n+\s*/g, ' ') };
-  for (const f of proseFindings(base, pseudo, { jobDescription: opts.jobDescription })) {
+  const proseBase = extra ? { ...base, summary: `${base?.summary ?? ''}\n${extra}` } : base;
+  for (const f of proseFindings(proseBase, pseudo, { jobDescription: opts.jobDescription })) {
     if (f.kind === 'headline' || f.kind === 'posting-echo') continue; // an email may quote the role title and the posting
     if (allowFacts.has(normalizeFact(f.match))) continue;
     (f.severity === 'block' ? unsupported : warnings).push(`${f.kind}:${f.value}`);

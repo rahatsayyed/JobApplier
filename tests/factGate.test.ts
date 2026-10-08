@@ -108,6 +108,62 @@ describe('checkOutreachText', () => {
   });
 });
 
+describe('posting-context blanking (fix round 1)', () => {
+  const realTitle = 'Full Stack Developer - React js & Redux';
+  const jobdost = 'Hi Priya, I saw the Full Stack Developer - React.js & Redux opening at Jobdost. My React state refactor cut load time by 11 seconds.';
+  it('matches the undotted real title against a dotted quote', () => {
+    const r = checkOutreachText(jobdost, base, { ...O, jobTitle: realTitle, company: 'Jobdost' });
+    expect(r.unsupported).toEqual([]);
+    expect(r.verdict).not.toBe('block');
+  });
+  it('matches across an en dash and ReactJS spelling', () => {
+    const note = 'I noticed the Full Stack Developer – ReactJS & Redux role at Jobdost. My React state refactor cut load time by 11 seconds.';
+    const r = checkOutreachText(note, base, { ...O, jobTitle: realTitle, company: 'Jobdost' });
+    expect(r.unsupported).toEqual([]);
+  });
+  it('does not hide a real claim that merely repeats the title', () => {
+    expect(checkOutreachText('I have 3 years as a Kubernetes Engineer running clusters.', base, { ...O, jobTitle: 'Kubernetes Engineer' }).unsupported).toContain('tool:kubernetes');
+  });
+  it('does not hide a real claim that repeats the company', () => {
+    expect(checkOutreachText('I built the Stripe integration at Stripe.', base, { ...O, company: 'Stripe' }).unsupported).toContain('tool:stripe');
+  });
+  it('blanks a cued posting mention of title and company', () => {
+    const r = checkOutreachText('I noticed the Kubernetes Engineer opening at Stripe.', base, { ...O, jobTitle: 'Kubernetes Engineer', company: 'Stripe' });
+    expect(r.unsupported).toEqual([]);
+  });
+  it('blanks a quoted title with no cue word', () => {
+    const r = checkOutreachText('Your "Kubernetes Engineer" is a great fit for me.', base, { ...O, jobTitle: 'Kubernetes Engineer' });
+    expect(r.unsupported).toEqual([]);
+  });
+  it('still blocks the second sentence of a mixed note', () => {
+    const r = checkOutreachText('I saw the Redux Developer role. I shipped Redux stores for 3 years.', base, { ...O, jobTitle: 'Redux Developer' });
+    expect(r.unsupported).toContain('tool:redux');
+  });
+  it('extraSource also feeds the prose rules', () => {
+    const extra = 'I enjoy owning features end to end.';
+    const reply = 'As I said, I enjoy owning features end to end.';
+    const without = checkOutreachText(reply, base, O);
+    const withExtra = checkOutreachText(reply, base, { ...O, extraSource: extra });
+    expect(without.unsupported.some((x) => x.startsWith('scope:'))).toBe(true);
+    expect(withExtra.verdict).toBe('pass');
+  });
+});
+
+describe('loadFactGateConfig strictness (fix round 1)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'factgate2-'));
+  const put = (name: string, body: string) => { const f = path.join(dir, name); writeFileSync(f, body); return f; };
+  it('allows an empty object', () => {
+    expect(loadFactGateConfig(put('e.json', '{}')).missing).toBe(false);
+  });
+  it('rejects array and null top levels', () => {
+    expect(() => loadFactGateConfig(put('a.json', '[]'))).toThrow(/top level must be an object/);
+    expect(() => loadFactGateConfig(put('n.json', 'null'))).toThrow(/top level must be an object/);
+  });
+  it('rejects a misspelled key by name', () => {
+    expect(() => loadFactGateConfig(put('m.json', '{"forbidden_phrase":[]}'))).toThrow(/unknown key "forbidden_phrase"/);
+  });
+});
+
 describe('oversize inputs fail closed (Q2)', () => {
   const big = 'Built a thing. '.repeat(1400);
   const msg = (f: string) => `oversize: ${f} exceeds 20000 chars; not fact-checked`;
@@ -131,7 +187,7 @@ describe('oversize inputs fail closed (Q2)', () => {
   it('blocks outreach when the base or extraSource is oversize', () => {
     const r = checkOutreachText('Hello there.', base, { ...O, extraSource: big });
     expect(r.verdict).toBe('block');
-    expect(r.unsupported).toEqual([msg('base resume')]);
+    expect(r.unsupported).toEqual([msg('extra source')]);
   });
   it('normal 4-5k char inputs are unaffected', () => {
     const t = clone(); t.summary += ' ' + 'Built a thing. '.repeat(250);

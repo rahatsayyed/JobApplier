@@ -192,13 +192,18 @@ export async function analyze(file: string, system: string, jobIdRaw: string, ba
       const f = checkFacts(base, t);
       rec.factsVerdict = f.verdict;
       rec.invented = f.invented;
+    } catch (e: any) {
+      rec.factsVerdict = null; rec.invented = null;
+      nulls.factsVerdict = `checkFacts threw: ${e?.message ?? e}`;
+    }
+    try {
       const v2 = checkResume(base, t, { jobDescription: job?.description, jobTitle: job?.title });
       rec.factsV2Verdict = v2.verdict;
       rec.factsV2Blocks = [...v2.invented, ...v2.unsupported, ...v2.forbidden.map((p) => `forbidden:${p}`)];
       rec.factsV2Warnings = v2.warnings;
     } catch (e: any) {
-      rec.factsVerdict = null; rec.invented = null;
-      nulls.factsVerdict = `checkFacts threw: ${e?.message ?? e}`;
+      rec.factsV2Verdict = null;
+      nulls.factsV2Verdict = `checkResume threw: ${e?.message ?? e}`;
     }
   } else {
     rec.factsVerdict = null; rec.invented = null;
