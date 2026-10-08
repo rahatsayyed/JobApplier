@@ -14,6 +14,7 @@ Produce ONE final, ready-to-send cold outreach email (subject + body) for a spec
 1. `job` — object with fields `{id, source, title, company, url, apply_url, description}`.
 2. `tailored_resume_summary` — a short summary (a few sentences or bullets) of the resume that was tailored for this specific job: candidate's current/target title, 2-4 strongest matching skills or achievements relevant to this job.
 3. `contact` — the chosen contact object, at minimum `{email, type, verified, source, confidence}`. Only proceed if `contact.verified` is true; if not verified, do not draft — report back that no verified contact exists (this should normally be filtered out before this skill is invoked).
+4. `do_not_claim` (optional) — posting requirements the candidate does NOT have (the `gaps` from `tailor-resume`). Never state or imply experience with any of them. If the posting stresses one, you may name it once, honestly, as something the candidate would ramp up on (e.g. "I haven't used Go professionally yet; most of my backend work is TypeScript"), or leave it out. Keep the negation in the same sentence as the term ("haven't", "not yet", "new to"): the email fact gate treats a technology named without a nearby negation as a claim.
 
 ## Step A — DRAFT
 
@@ -38,6 +39,7 @@ Produce ONE final, ready-to-send cold outreach email (subject + body) for a spec
    - Does it contain buzzwords from the banned list above? If yes, replace with plain, concrete language.
    - Does it have more than one clear ask? If yes, collapse to a single ask.
    - Is the subject line generic or vague? If yes, make it specific.
+   - Does it state or imply any item in do_not_claim? If yes, remove it or make it an honest gap statement.
 2. Rewrite the draft ONCE, incorporating all fixes from the critique. This produces a revised `{subject, body}`. Do not do more than one rewrite pass.
 
 ## Step C — Humanize
