@@ -21,4 +21,5 @@ contain a rubric), so a rerun's BASE_A / BASE_C scores will not reproduce 3.38 /
 from the same run, never against the published headline.
 `eval:metrics` renders through `renderResumeChecked`, so a resume the v2 fact gate blocks is not rendered and gets no page count;
 "rendered OK" and "exactly 1 page" are therefore not comparable with the 2026-10-07 baseline numbers for B/C.
+`eval:metrics` renders with `maxTrims: 0`, so the auto-trimmer never hides an overflow: page counts are raw.
 Single samples per cell: treat differences under ~0.3 as noise; judge on the mean of 2 gen+judge runs.

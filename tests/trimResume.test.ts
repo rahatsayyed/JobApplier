@@ -25,6 +25,16 @@ describe('trimResume', () => {
     const tight = { experience: [{ description: ['a React thing', 'b TypeScript thing'] }, { description: ['only bullet'] }] };
     expect(pickBulletToCut(tight, kws)).toBeNull();
   });
+  it('cuts verbatim duplicates before unique bullets even when the duplicate has a keyword', () => {
+    const r = { summary: '', experience: [{ description: ['Shipped React features in TypeScript.', 'Wrote internal docs.', 'Shipped React features in TypeScript.', 'Shipped React features in TypeScript.'] }] };
+    expect(pickBulletToCut(r, kws)).toEqual({ exp: 0, idx: 3 });
+    const after = removeBullet(removeBullet(r, 0, 3), 0, 2);
+    expect(after.experience[0].description).toEqual(['Shipped React features in TypeScript.', 'Wrote internal docs.']);
+  });
+  it('counts only non-blank bullets for the per-role minimum', () => {
+    const r = { experience: [{ description: ['a React thing', 'b TypeScript thing'] }, { description: ['', 'only real bullet'] }] };
+    expect(pickBulletToCut(r, kws)).toBeNull();
+  });
   it('removes and re-inserts a bullet without mutating the input', () => {
     const cut = removeBullet(resume, 0, 3);
     expect(cut.experience[0].description).toHaveLength(3);

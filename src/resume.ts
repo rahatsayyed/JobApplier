@@ -88,7 +88,15 @@ export async function renderResumeChecked(resumeJson: any, opts: RenderOptions =
     layout = await pdfLayout(pdf);
   }
   const { name, email, phone } = current ?? {};
-  await verifyPdf(pdf, { pages: 1, mustContain: [name, email].filter(Boolean), digitsContain: [phone].filter(Boolean) });
+  try {
+    await verifyPdf(pdf, { pages: 1, mustContain: [name, email].filter(Boolean), digitsContain: [phone].filter(Boolean) });
+  } catch (e: any) {
+    if (layout.pages > 1) {
+      const list = cuts.map((c) => JSON.stringify(String(c.text).slice(0, 60))).join(', ');
+      throw new Error(`${e.message} (trimming exhausted after ${cuts.length} trims; cut: ${list || 'none'})`);
+    }
+    throw e;
+  }
   const ats = keywords.length ? classifyKeywords(keywords, proseText(current), proseText(base), skillsList(base)) : null;
   return { pdfPath: pdf, resume: current, facts, ats, atsCoverage: ats ? coveragePct(ats) : null, trimmed: cuts.map((c) => c.text), fillRatio: layout.fillRatio };
 }

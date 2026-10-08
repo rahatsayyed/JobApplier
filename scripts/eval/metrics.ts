@@ -3,7 +3,7 @@
 //   npx tsx scripts/eval/metrics.ts --selftest
 // Reads <results-dir>/<system>-<jobId>.json (jobId may use "_" instead of ":"), prints one JSON line per
 // file, then a markdown summary table (mean over jobs, per system). Run from the repo root.
-// Render step calls src/resume.ts renderResume, which writes into the git-ignored renderer/automation/.
+// Render step calls src/resume.ts renderResumeChecked, which writes into the git-ignored renderer/automation/.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { checkFacts, checkResume } from '../../src/resumeFacts.js';
@@ -233,7 +233,7 @@ export async function analyze(file: string, system: string, jobIdRaw: string, ba
       const m = /expected 1 pages, got (\d+)/.exec(rec.renderError);
       rec.pages = m ? Number(m[1]) : null;
       if (!m) nulls.pages = 'render failed before page count was known';
-      nulls.fillRatio = 'render failed, no PDF returned by renderResume';
+      nulls.fillRatio = 'render failed, no PDF returned by renderResumeChecked';
     }
   }
 

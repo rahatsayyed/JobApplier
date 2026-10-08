@@ -24,6 +24,8 @@ export function scoreBullets(resume: any, keywords: KeywordSpec[]): BulletScore[
   const sets = bullets.map((b) => new Set(contentTokens(b.text)));
   const summary = new Set(contentTokens(typeof resume?.summary === 'string' ? resume.summary : ''));
   return bullets.map((b, i) => {
+    // R1: a (near-)verbatim repeat of an EARLIER bullet carries no information; score 0 so it is cut before unique content.
+    if (sets.slice(0, i).some((s) => jaccard(sets[i], s) >= 0.9)) return { ...b, relevance: 0, uniqueness: 0, score: 0 };
     const relevance = keywords.reduce((acc, k) => acc + (termMatches(b.text, k.term) ? (k.priority === 'required' ? 2 : 1) : 0), 0);
     const overlap = Math.max(jaccard(sets[i], summary), ...sets.map((s, j) => (j === i ? 0 : jaccard(sets[i], s))));
     const uniqueness = Math.round((1 - overlap) * 100) / 100;
@@ -33,7 +35,7 @@ export function scoreBullets(resume: any, keywords: KeywordSpec[]): BulletScore[
 
 /** Lowest-scoring bullet in a role that still has more than its minimum (2 for the newest role, 1 for older ones). Ties: older role, later bullet. */
 export function pickBulletToCut(resume: any, keywords: KeywordSpec[]): { exp: number; idx: number } | null {
-  const counts = (Array.isArray(resume?.experience) ? resume.experience : []).map((e: any) => (Array.isArray(e?.description) ? e.description.length : 0));
+  const counts = (Array.isArray(resume?.experience) ? resume.experience : []).map((e: any) => (Array.isArray(e?.description) ? e.description.filter((t: unknown) => typeof t === 'string' && t.trim()).length : 0));
   const candidates = scoreBullets(resume, keywords).filter((b) => counts[b.exp] > (b.exp === 0 ? 2 : 1));
   if (!candidates.length) return null;
   candidates.sort((a, b) => a.score - b.score || b.exp - a.exp || b.idx - a.idx);
