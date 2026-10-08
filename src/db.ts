@@ -89,6 +89,11 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       apply_platform TEXT,
       apply_url TEXT,
       apply_status TEXT,
+      ats_coverage INTEGER,
+      ats_gaps TEXT,
+      fact_warnings TEXT,
+      review_applied INTEGER,
+      review_rejected INTEGER,
       status TEXT DEFAULT 'queued',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -130,6 +135,9 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
     if (!jobCols.has(col)) db.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${type}`);
   }
   if (!outreachQueueColumnNames.has('resume_json')) db.exec('ALTER TABLE outreach_queue ADD COLUMN resume_json TEXT');
+  for (const [col, type] of [['ats_coverage', 'INTEGER'], ['ats_gaps', 'TEXT'], ['fact_warnings', 'TEXT'], ['review_applied', 'INTEGER'], ['review_rejected', 'INTEGER']] as const) {
+    if (!outreachQueueColumnNames.has(col)) db.exec(`ALTER TABLE outreach_queue ADD COLUMN ${col} ${type}`);
+  }
 
   return db;
 }
@@ -360,14 +368,20 @@ export function enqueueOutreach(
     apply_platform: string | null;
     apply_url: string | null;
     resume_json?: string | null;
+    ats_coverage?: number | null;
+    ats_gaps?: string[] | null;
+    fact_warnings?: string[] | null;
+    review_applied?: number | null;
+    review_rejected?: number | null;
   }
 ): number {
   const result = db.prepare(`
     INSERT INTO outreach_queue (
       job_id, resume_pdf_path, email_subject, email_body, email_to,
       connect_note, connect_profile_url, connect_category, connect_company,
-      apply_platform, apply_url, resume_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      apply_platform, apply_url, resume_json,
+      ats_coverage, ats_gaps, fact_warnings, review_applied, review_rejected
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     item.job_id,
     item.resume_pdf_path,
@@ -380,7 +394,12 @@ export function enqueueOutreach(
     item.connect_company,
     item.apply_platform,
     item.apply_url,
-    item.resume_json ?? null
+    item.resume_json ?? null,
+    item.ats_coverage ?? null,
+    item.ats_gaps ? JSON.stringify(item.ats_gaps) : null,
+    item.fact_warnings ? JSON.stringify(item.fact_warnings) : null,
+    item.review_applied ?? null,
+    item.review_rejected ?? null
   );
   return Number(result.lastInsertRowid);
 }

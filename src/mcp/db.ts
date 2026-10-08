@@ -181,6 +181,11 @@ server.registerTool(
       apply_platform: z.enum(['linkedin', 'greenhouse', 'lever', 'workday', 'ashby', 'none']).optional(),
       apply_url: z.string().optional(),
       resume_json: z.string().optional(),
+      ats_coverage: z.number().int().min(0).max(100).optional(),
+      ats_gaps: z.array(z.string()).optional(),
+      fact_warnings: z.array(z.string()).optional(),
+      review_applied: z.number().int().min(0).optional(),
+      review_rejected: z.number().int().min(0).optional(),
     },
   },
   async (params) => {
@@ -197,6 +202,11 @@ server.registerTool(
       apply_platform: params.apply_platform ?? null,
       apply_url: params.apply_url ?? null,
       resume_json: params.resume_json ?? null,
+      ats_coverage: params.ats_coverage ?? null,
+      ats_gaps: params.ats_gaps ?? null,
+      fact_warnings: params.fact_warnings ?? null,
+      review_applied: params.review_applied ?? null,
+      review_rejected: params.review_rejected ?? null,
     });
     return { content: [{ type: 'text', text: JSON.stringify({ id }) }] };
   }
