@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { getBaseResume, renderResume } from '../resume.js';
+import { getBaseResume, renderResumeChecked } from '../resume.js';
+import { checkOutreachText } from '../resumeFacts.js';
 
 const server = new McpServer({ name: 'resume', version: '0.1.0' });
 
@@ -18,19 +19,56 @@ server.registerTool(
   }
 );
 
+const keywordSchema = z.object({
+  term: z.string(),
+  priority: z.enum(['required', 'preferred']),
+  synonyms: z.array(z.string()).optional(),
+});
+
 server.registerTool(
   'render_resume',
   {
-    description: 'Render a resume JSON to a PDF and return its file path',
+    description:
+      'Fact-check (v2) a tailored resume against the base resume, make its text ATS-safe, render a one-page PDF ' +
+      '(auto-cuts the lowest-relevance bullets on overflow), and classify posting keywords. THROWS on unsupported claims. ' +
+      'ats statuses: covered | synonym_only | missing_have_it (base prose shows it) | skills_only (base lists it only as a skill; never claim it as work) | gap. ' +
+      'Returns {pdf_path, resume_json (as rendered), facts {verdict, invented, unsupported, forbidden, warnings}, ats, ats_coverage, trimmed, fill_ratio}.',
     inputSchema: {
       resume_json: z.record(z.string(), z.any()),
+      job_description: z.string().optional(),
+      job_title: z.string().optional(),
+      keywords: z.array(keywordSchema).optional(),
     },
   },
-  async ({ resume_json }) => {
-    const p = await renderResume(resume_json);
+  async ({ resume_json, job_description, job_title, keywords }) => {
+    const r = await renderResumeChecked(resume_json, { jobDescription: job_description, jobTitle: job_title, keywords });
     return {
-      content: [{ type: 'text', text: JSON.stringify({ pdf_path: p }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ pdf_path: r.pdfPath, resume_json: r.resume, facts: r.facts, ats: r.ats, ats_coverage: r.atsCoverage, trimmed: r.trimmed, fill_ratio: r.fillRatio }),
+      }],
     };
+  }
+);
+
+server.registerTool(
+  'check_text',
+  {
+    description:
+      'Fact-check a drafted email, connect note or follow-up against the base resume (metrics, tools, titles, scope escalations, forbidden phrases). ' +
+      'extra_source = text the claims may also come from (e.g. the original sent email). job_title and company are blanked out of the text first, so quoting the posting title or the employer is not a claim; ' +
+      'honest gap lines ("I haven\'t worked with X yet") are not claims. Returns {verdict: pass|warn|block, invented, unsupported, forbidden, warnings}.',
+    inputSchema: {
+      text: z.string(),
+      job_description: z.string().optional(),
+      extra_source: z.string().optional(),
+      job_title: z.string().optional(),
+      company: z.string().optional(),
+    },
+  },
+  async ({ text, job_description, extra_source, job_title, company }) => {
+    const r = checkOutreachText(text, getBaseResume(), { jobDescription: job_description, extraSource: extra_source, jobTitle: job_title, company });
+    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
 );
 

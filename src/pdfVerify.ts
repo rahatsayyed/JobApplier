@@ -43,6 +43,31 @@ export function checkWarnings(text: string): string[] {
   return warnings;
 }
 
+export interface PdfLayout { pages: number; fillRatio: number | null }
+
+/** Page count plus the last page's text extent / page height (same proxy as the eval's fillRatio; base resume ~0.90). */
+export async function pdfLayout(pdfPath: string): Promise<PdfLayout> {
+  let top = -Infinity;
+  let bottom = Infinity;
+  let height = 0;
+  // pdf-parse renders pages one after another, so the values left at the end belong to the last page.
+  const pagerender = (pd: any) => pd.getTextContent().then((tc: any) => {
+    top = -Infinity; bottom = Infinity; height = pd.getViewport(1.0).height;
+    let s = '';
+    for (const it of tc.items) {
+      if (!String(it.str).trim()) continue;
+      const y = it.transform[5];
+      bottom = Math.min(bottom, y);
+      top = Math.max(top, y + (it.height || 0));
+      s += `${it.str} `;
+    }
+    return s;
+  });
+  const data = await pdfParse(Uint8Array.from(readFileSync(pdfPath)), { pagerender });
+  const fillRatio = height && Number.isFinite(top) && Number.isFinite(bottom) ? (top - bottom) / height : null;
+  return { pages: data.numpages as number, fillRatio };
+}
+
 export async function verifyPdf(pdfPath: string, opts: PdfCheckOpts): Promise<void> {
   // Copy into a standalone Uint8Array: small Buffers live in Node's shared 8KB pool and
   // pdf.js ignores byteOffset, so it would otherwise read unrelated bytes.

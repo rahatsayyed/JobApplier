@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { checkFacts, checkResume } from '../../src/resumeFacts.js';
-import { renderResume } from '../../src/resume.js';
+import { renderResumeChecked } from '../../src/resume.js';
 // @ts-ignore: import the lib file directly to avoid pdf-parse's debug side effect
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 
@@ -210,7 +210,7 @@ export async function analyze(file: string, system: string, jobIdRaw: string, ba
     nulls.factsVerdict = 'not computed: JSON invalid';
   }
 
-  // Render (sequential, ~10s each). renderResume itself re-runs checkFacts and verifyPdf (1 page, name/email/phone text).
+  // Render (sequential, ~10s each). renderResumeChecked (maxTrims: 0, so overflow is measured, not hidden) re-runs the v2 fact gate and verifyPdf (1 page, name/email/phone text).
   rec.rendered = null; rec.pages = null; rec.fillRatio = null; rec.bottomGapRatio = null; rec.renderError = null;
   if (!rec.jsonValid || rec.factsVerdict !== 'pass') {
     nulls.rendered = !rec.jsonValid ? 'skipped: JSON invalid' : 'skipped: failed checkFacts';
@@ -220,7 +220,7 @@ export async function analyze(file: string, system: string, jobIdRaw: string, ba
     nulls.pages = nulls.fillRatio = nulls.rendered;
   } else {
     try {
-      const pdf = await renderResume(t);
+      const pdf = (await renderResumeChecked(t, { maxTrims: 0 })).pdfPath;
       rec.rendered = true;
       const st = await pdfStats(pdf);
       rec.pages = st.pages;
