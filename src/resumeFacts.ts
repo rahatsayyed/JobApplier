@@ -118,7 +118,10 @@ function allowedMetricSet(sourceText: string, allow: string[]): Set<string> {
   }
   return s;
 }
-const POSTING_CUES = /\b(?:openings?|roles?|positions?|postings?|listings?|vacanc(?:y|ies)|jobs?|opportunit(?:y|ies)|hiring|adverts?|advertised|applying|apply|applications?|saw|noticed|came across|found)\b/;
+const POSTING_NOUNS = new Set(['role', 'opening', 'position', 'posting', 'listing', 'job', 'vacancy', 'opportunity', 'advert']);
+const OPENING_NOUNS = new Set(['opening', 'posting', 'listing', 'vacancy', 'advert', 'opportunity']);
+const REF_VERBS = [['saw'], ['noticed'], ['spotted'], ['came', 'across'], ['applied', 'for'], ['applying', 'for'], ['applying', 'to'], ['interested', 'in'], ['read']];
+const DETERMINERS = new Set(['the', 'your', 'this', 'a']);
 const QUOTES = `"'“”‘’`;
 const TOKEN_RE = /[^\s.,&\-‐-―−"'“”‘’()]+/g;
 interface Tok { raw: string; key: string | null; start: number; end: number }
@@ -134,11 +137,13 @@ function tokenize(text: string): Tok[] {
   }
   return out;
 }
-/** Blank out mentions of the posting title / company, but only in posting context (quoted, or a sentence with a posting cue word within 8 tokens). Any other mention stays visible to the claim extractors. */
+/** Blank out mentions of the posting title / company only when quoted or structurally tied to a posting reference
+ *  (after "saw the", before "role/opening/...", "the X ... role", or "opening at X"). Every other mention stays visible to the claim extractors. */
 function blankOut(text: string, phrases: Array<string | undefined>): string {
   const toks = tokenize(text);
   const kept = toks.map((t, i) => ({ t, i })).filter((x) => x.t.key !== null);
   const ranges: Array<[number, number]> = [];
+  const rawAt = (i: number) => (i >= 0 && i < toks.length ? toks[i].raw : '');
   for (const p of phrases) {
     if ((p ?? '').trim().length < 3) continue;
     const pk = tokenize(p!).map((t) => t.key).filter((k): k is string => k !== null);
@@ -149,11 +154,14 @@ function blankOut(text: string, phrases: Array<string | undefined>): string {
       const start = first.t.start, end = last.t.end;
       const before = text.slice(0, start).trimEnd().slice(-1), after = text.slice(end).trimStart().charAt(0);
       const quoted = !!before && !!after && QUOTES.includes(before) && QUOTES.includes(after);
-      let ss = start; while (ss > 0 && !/[.!?]\s/.test(text.slice(ss - 2, ss)) && text[ss - 1] !== '\n') ss--;
-      let se = end; while (se < text.length && !/[.!?](\s|$)/.test(text.slice(se, se + 2)) && text[se] !== '\n') se++;
-      const win = toks.filter((t, i) => t.start >= ss && t.end <= se + 1 && ((i < first.i && i >= first.i - 8) || (i > last.i && i <= last.i + 8))).map((t) => t.raw);
-      const cued = POSTING_CUES.test(` ${win.join(' ')} `);
-      if (quoted || cued) ranges.push([start, end]);
+      const prev = rawAt(first.i - 1);
+      const det = DETERMINERS.has(prev);
+      const verbEnd = det ? first.i - 2 : first.i - 1;
+      const afterVerb = REF_VERBS.some((v) => v.every((w, n) => rawAt(verbEnd - (v.length - 1) + n) === w));
+      const nextNoun = POSTING_NOUNS.has(rawAt(last.i + 1));
+      const detThenNoun = (prev === 'the' || prev === 'your' || prev === 'this') && [1, 2, 3].some((d) => POSTING_NOUNS.has(rawAt(last.i + d)));
+      const openingAt = ['at', 'with', 'from', 'in'].includes(prev) && OPENING_NOUNS.has(rawAt(first.i - 2));
+      if (quoted || afterVerb || nextNoun || detThenNoun || openingAt) ranges.push([start, end]);
     }
   }
   let out = text;

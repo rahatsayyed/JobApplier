@@ -149,6 +149,31 @@ describe('posting-context blanking (fix round 1)', () => {
   });
 });
 
+describe('structural posting references only (fix round 2, Q4)', () => {
+  const K = { ...O, jobTitle: 'Kubernetes Engineer', company: 'Stripe' };
+  const pass = [
+    'I am applying for the Kubernetes Engineer role.',
+    'I was drawn to the Kubernetes Engineer position.',
+    'Your Kubernetes Engineer role caught my eye.',
+    'I noticed the Kubernetes Engineer opening at Stripe.',
+    'Your "Kubernetes Engineer" is a great fit for me.',
+  ];
+  const block: Array<[string, string]> = [
+    ['I found success as a Kubernetes Engineer running clusters for 3 years.', 'tool:kubernetes'],
+    ['My job as a Kubernetes Engineer was to run clusters.', 'tool:kubernetes'],
+    ['In my last job I worked as a Kubernetes Engineer for 3 years.', 'tool:kubernetes'],
+    ['I have 3 years as a Kubernetes Engineer, a role I loved.', 'tool:kubernetes'],
+    ['I built the Stripe integration at Stripe, a job I loved.', 'tool:stripe'],
+    ['I found the Stripe integration I built at Stripe was fast.', 'tool:stripe'],
+    ['I have 3 years as a Kubernetes Engineer running clusters.', 'tool:kubernetes'],
+    ['I built the Stripe integration at Stripe.', 'tool:stripe'],
+    ['As a Kubernetes Engineer I ran clusters.', 'tool:kubernetes'],
+    ['I saw the Redux Developer role. I shipped Redux stores for 3 years.', 'tool:redux'],
+  ];
+  for (const t of pass) it(`passes: ${t}`, () => expect(checkOutreachText(t, base, K).unsupported).toEqual([]));
+  for (const [t, c] of block) it(`blocks: ${t}`, () => expect(checkOutreachText(t, base, { ...K, jobTitle: t.includes('Redux') ? 'Redux Developer' : 'Kubernetes Engineer' }).unsupported).toContain(c));
+});
+
 describe('loadFactGateConfig strictness (fix round 1)', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'factgate2-'));
   const put = (name: string, body: string) => { const f = path.join(dir, name); writeFileSync(f, body); return f; };
