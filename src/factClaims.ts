@@ -18,8 +18,11 @@ export const METRIC_NOUNS = [
   'policies', 'contracts', 'calls', 'capabilities', 'vulnerabilities', 'dashboards', 'apis', 'endpoints',
 ];
 const MODIFIER_WINDOW = 4;
+// Job-posting text is untrusted: cap what every extractor scans and bound digit runs so no regex goes quadratic.
+export const MAX_SCAN_CHARS = 20000;
+const cap = (text: string): string => String(text ?? '').slice(0, MAX_SCAN_CHARS);
 const COUNT_CLAIM_RE = new RegExp(
-  String.raw`(?<![A-Za-z]-)\b(\d[\d,.]*(?:[kKmMbB]\b)?)\s*\+?\s*(?:[A-Za-z][A-Za-z-]*\s+){0,${MODIFIER_WINDOW}}?(${METRIC_NOUNS.join('|')})\b`,
+  String.raw`(?<![A-Za-z]-)\b(\d[\d,.]{0,14}(?:[kKmMbB]\b)?)\s*\+?\s*(?:[A-Za-z][A-Za-z-]*\s+){0,${MODIFIER_WINDOW}}?(${METRIC_NOUNS.join('|')})\b`,
   'gi',
 );
 const NOUN_SYNONYMS = new Map([
@@ -27,9 +30,9 @@ const NOUN_SYNONYMS = new Map([
   ['articles', 'guides'], ['personnel', 'staff'], ['developers', 'engineers'],
 ]);
 const SIMPLE_CLAIM_PATTERNS = [
-  /\b\d+(?:\.\d+)?\s?%/g,
-  /(?<![\w$€£₹])[$€£₹]\s?\d[\d,.]*(?:\s?[kKmMbB])?/g,
-  /\b\d+(?:\.\d+)?\s?x\b/gi,
+  /\b\d{1,15}(?:\.\d{1,15})?\s?%/g,
+  /(?<![\w$€£₹])[$€£₹]\s?\d[\d,.]{0,14}(?:\s?[kKmMbB])?/g,
+  /\b\d{1,15}(?:\.\d{1,15})?\s?x\b/gi,
 ];
 const TIME_NOUNS = new Set(['days', 'weeks', 'months', 'years', 'hours', 'minutes', 'seconds']);
 const HORIZON_LEAD_RE = /\b(?:the|my|our|your)?\s*(?:first|next)\s+$/i;
@@ -142,7 +145,7 @@ function countMatches(clean: string): RegExpMatchArray[] {
 
 /** Percentages, currency, multipliers, and noun-bound counts ("50k users"), normalized. */
 export function metricClaims(text: string): Set<string> {
-  const clean = foldDigits(text);
+  const clean = foldDigits(cap(text));
   const claims = new Set<string>();
   for (const p of SIMPLE_CLAIM_PATTERNS) for (const m of clean.matchAll(p)) claims.add(normalizeClaim(m[0]));
   for (const m of countMatches(clean)) {
@@ -152,11 +155,11 @@ export function metricClaims(text: string): Set<string> {
   return claims;
 }
 
-const GENERIC_COUNT_RE = new RegExp(String.raw`(?<![\p{L}\p{N}])(\d[\d,.]*)\s*\+?\s*(?:[\p{L}][\p{L}\p{M}-]*\s+){0,${MODIFIER_WINDOW}}([\p{L}][\p{L}\p{M}]{2,})`, 'giu');
+const GENERIC_COUNT_RE = new RegExp(String.raw`(?<![\p{L}\p{N}])(\d[\d,.]{0,14})\s*\+?\s*(?:[\p{L}][\p{L}\p{M}-]*\s+){0,${MODIFIER_WINDOW}}([\p{L}][\p{L}\p{M}]{2,})`, 'giu');
 
 /** Non-null when >=2 count-shaped spans exist but the noun list recognised none of them. */
 export function diagnoseCoverage(text: string): string | null {
-  const clean = foldDigits(text);
+  const clean = foldDigits(cap(text));
   const covered: Array<[number, number]> = [];
   for (const p of SIMPLE_CLAIM_PATTERNS) for (const m of clean.matchAll(p)) covered.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
   const hit = (i: number) => covered.some(([a, b]) => i >= a && i < b);
@@ -204,26 +207,35 @@ function isLikelyTool(raw: string, sourceNormalized: string | null): boolean {
 
 export interface FactClaim { kind: 'employer' | 'title' | 'tool' | 'authorship'; value: string }
 
-function sentenceAt(text: string, index: number): string {
-  const boundary = (i: number) => text[i] === '\n' || ('.!?'.includes(text[i]) && !(/\d/.test(text[i - 1] ?? '') && /\d/.test(text[i + 1] ?? '')));
-  let start = 0;
-  for (let i = index - 1; i >= 0; i--) if (boundary(i)) { start = i + 1; break; }
-  let end = text.length;
-  for (let i = index; i < text.length; i++) if (boundary(i)) { end = i; break; }
+function sentenceBoundaries(text: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n' || ('.!?'.includes(text[i]) && !(/\d/.test(text[i - 1] ?? '') && /\d/.test(text[i + 1] ?? '')))) out.push(i);
+  }
+  return out;
+}
+
+/** Sentence containing `index`, from boundaries precomputed once per text (binary search, no rescans). */
+function sentenceAt(text: string, bounds: number[], index: number): string {
+  let lo = 0, hi = bounds.length; // first boundary >= index
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (bounds[mid] >= index) hi = mid; else lo = mid + 1; }
+  const start = lo > 0 ? bounds[lo - 1] + 1 : 0;
+  const end = lo < bounds.length ? bounds[lo] : text.length;
   return text.slice(start, end);
 }
 
 export function factClaims(text: string, sourceNormalized: string | null = null): FactClaim[] {
-  const clean = foldDigits(text);
+  const clean = foldDigits(cap(text));
+  const sentenceBounds = sentenceBoundaries(clean);
   const out: FactClaim[] = [];
   const patterns: Array<[FactClaim['kind'], RegExp]> = [
     ['employer', /\b(?:[Ww]orked [Aa]t|[Jj]oined|[Ee]mployer\s*:\s*|[Cc]ompany\s*:\s*)\s*([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})/g],
     ['title', /\b(?:[Ss]erved [Aa]s|[Ww]orked [Aa]s|[Tt]itle\s*:\s*|[Rr]ole\s*:\s*)\s*(?:an?\s+|the\s+)?([A-Z][\w/-]+(?:\s+(?:of|for|and|the)\s+[A-Z][\w/-]*|\s+[A-Z][\w/-]*){0,4})|\b(?:[Ww]orked [Aa]t|[Jj]oined)\s+[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4}\s+[Aa]s\s+(?:an?\s+|the\s+)?([A-Z][\w/-]+(?:\s+(?:of|for|and|the)\s+[A-Z][\w/-]*|\s+[A-Z][\w/-]*){0,4})/g],
-    ['tool', /\b(?:using|built with|worked with|technologies?\s*:\s*|tech stack\s*:\s*)([^.;\n]+?)(?=\s+\bfor\b|[.;\n]|$)/gi],
+    ['tool', /\b(?:using|built with|worked with|technologies?\s*:\s*|tech stack\s*:\s*)([^;\n]+?)(?=\s+\bfor\b|\.(?=\s|$)|[;\n]|$)/gi],
   ];
   for (const [kind, re] of patterns) {
     for (const m of clean.matchAll(re)) {
-      if (kind === 'tool' && NEGATION_RE.test(sentenceAt(clean, m.index ?? 0))) continue; // "I haven't worked with X yet" is a disclosure
+      if (kind === 'tool' && NEGATION_RE.test(sentenceAt(clean, sentenceBounds, m.index ?? 0))) continue; // "I haven't worked with X yet" is a disclosure
       const rawText = kind === 'tool' ? m[1].trim() : '';
       const declared = kind === 'tool' && DECLARED_TOOL_TRIGGER_RE.test(m[0]);
       const raws = kind === 'tool'
@@ -256,7 +268,7 @@ function attributionTokens(text: string): string[] {
 
 /** Base says a vendor/agency did the work; tailored text claims the candidate built it. */
 export function delegatedAuthorshipClaims(targetText: string, sourceText: string): FactClaim[] {
-  const src = factStatements(sourceText);
+  const src = factStatements(cap(sourceText));
   const direct = src.filter((s) => DIRECT_AUTHORSHIP_SIGNAL_RE.test(s) && !THIRD_PARTY_EXECUTION_RE.test(s)).map((s) => new Set(attributionTokens(s)));
   const delegated = src
     .filter((s) => DELEGATED_PARTY_RE.test(s) && DELEGATION_RE.test(s))
@@ -264,7 +276,7 @@ export function delegatedAuthorshipClaims(targetText: string, sourceText: string
     .map((s) => new Set(attributionTokens(s)));
   if (!delegated.length) return [];
   const out: FactClaim[] = [];
-  for (const st of factStatements(targetText)) {
+  for (const st of factStatements(cap(targetText))) {
     if (DELEGATED_PARTY_RE.test(st)) continue;
     DIRECT_AUTHORSHIP_CLAIM_RE.lastIndex = 0;
     for (const m of st.matchAll(DIRECT_AUTHORSHIP_CLAIM_RE)) {

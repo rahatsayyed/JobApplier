@@ -86,3 +86,20 @@ describe('delegatedAuthorshipClaims', () => {
     expect(delegatedAuthorshipClaims('Wrote the WebGL implementation for an in-store kiosk.', 'Directed vendor Acme Interactive on the WebGL build and wrote the kiosk integration layer.')).toEqual([]);
   });
 });
+
+describe('performance bounds on untrusted text', () => {
+  const ms = (fn: () => unknown) => { const t = performance.now(); fn(); return performance.now() - t; };
+  it('metricClaims on a long digit/dot run is fast', () => {
+    expect(ms(() => metricClaims('1.'.repeat(25000)))).toBeLessThan(250);
+  });
+  it('diagnoseCoverage on a long digit/dot run is fast', () => {
+    expect(ms(() => diagnoseCoverage('1.'.repeat(25000)))).toBeLessThan(250);
+  });
+  it('factClaims on many tool triggers is fast', () => {
+    expect(ms(() => factClaims('worked with the and for react '.repeat(1700)))).toBeLessThan(250);
+  });
+  it('dotted tool names both extract (Lucid.js and Mesh.js)', () => {
+    const vals = factClaims('Built integrations using Lucid.js and Mesh.js.').filter((c) => c.kind === 'tool').map((c) => c.value);
+    expect(vals).toEqual(expect.arrayContaining(['lucid.js', 'mesh.js']));
+  });
+});
