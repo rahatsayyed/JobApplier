@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { getBaseResume, renderResumeChecked } from '../resume.js';
 import { checkOutreachText } from '../resumeFacts.js';
+import { applyReviewEdits } from '../reviewEdits.js';
 
 const server = new McpServer({ name: 'resume', version: '0.1.0' });
 
@@ -68,6 +69,33 @@ server.registerTool(
   },
   async ({ text, job_description, extra_source, job_title, company }) => {
     const r = checkOutreachText(text, getBaseResume(), { jobDescription: job_description, extraSource: extra_source, jobTitle: job_title, company });
+    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+  }
+);
+
+server.registerTool(
+  'apply_review_edits',
+  {
+    description:
+      'Apply a reviewer\'s structured edits to a tailored resume (and optionally an email draft) one at a time. Each edit must quote a unique ' +
+      'old_string at its path; any edit that would add an unsupported claim (fact gate v2) is rejected, never applied. Returns {resume, email, applied, rejected, facts, emailFacts}.',
+    inputSchema: {
+      resume_json: z.record(z.string(), z.any()),
+      email: z.object({ subject: z.string(), body: z.string() }).optional(),
+      edits: z.array(z.object({
+        target: z.enum(['resume', 'email']),
+        path: z.string(),
+        old_string: z.string(),
+        new_string: z.string(),
+        reason: z.enum(['keyword', 'reframing', 'style', 'grounding', 'cut', 'fact-gate']),
+      })),
+      job_description: z.string().optional(),
+      job_title: z.string().optional(),
+      company: z.string().optional(),
+    },
+  },
+  async ({ resume_json, email, edits, job_description, job_title, company }) => {
+    const r = applyReviewEdits(getBaseResume(), resume_json, email ?? null, edits, { jobDescription: job_description, jobTitle: job_title, company });
     return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
 );
