@@ -155,3 +155,33 @@ describe('proseFindings: frozen eval corpus regression', () => {
     });
   }
 });
+
+describe('proseFindings: fail-closed size cap and performance', () => {
+  const ms = (fn: () => unknown) => { const t = performance.now(); fn(); return performance.now() - t; };
+  it('oversize tailored text blocks with the oversize reason', () => {
+    const t = clone(); t.summary = `${'x '.repeat(10500)}Worked at Google as Staff Engineer. Grew revenue by 300%.`;
+    expect(kinds(t)).toEqual(['block:oversize:oversize: tailored summary exceeds 20000 chars; not fact-checked']);
+  });
+  it('oversize bullet blocks too', () => {
+    const t = clone(); t.experience[0].description[1] = 'y'.repeat(21000);
+    expect(kinds(t)).toEqual(['block:oversize:oversize: tailored experience[0].description[1] exceeds 20000 chars; not fact-checked']);
+  });
+  it('oversize base text blocks', () => {
+    const b = clone(); b.summary = 'z '.repeat(11000);
+    expect(proseFindings(b, clone()).map((f) => `${f.severity}:${f.kind}:${f.value}`)).toEqual(['block:oversize:oversize: base summary exceeds 20000 chars; not fact-checked']);
+  });
+  it('normal-size text is unaffected', () => {
+    const t = clone(); t.summary += ' Comfortable owning features end to end.';
+    expect(kinds(t).some((k) => k.includes('oversize'))).toBe(false);
+  });
+  it('1 x 50000 digits through proseFindings is fast (oversize gate) and 19000 digits is fast (regex bound)', () => {
+    let t = clone(); t.summary = '1'.repeat(50000);
+    expect(ms(() => proseFindings(base, t))).toBeLessThan(250);
+    t = clone(); t.summary = `${'1'.repeat(19000)} years of experience`;
+    expect(ms(() => proseFindings(base, t))).toBeLessThan(250);
+  });
+  it('techClaims is linear on repeated negations', () => {
+    const t = clone(); t.summary = 'not react '.repeat(1900);
+    expect(ms(() => proseFindings(base, t))).toBeLessThan(250);
+  });
+});

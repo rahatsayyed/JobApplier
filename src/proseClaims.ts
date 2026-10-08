@@ -1,9 +1,9 @@
 // file: src/proseClaims.ts
 // Prose-level claim checks derived from the 2026-10-07 blind-judge violations (scripts/eval/fixtures/baseline/judge).
 // Pure, no I/O. Compares a tailored resume against the base resume (and optionally the job posting).
-import { foldDigits, metricClaims, NEGATION_AFTER_RE, NEGATION_RE } from './factClaims.js';
+import { exceedsScanCap, foldDigits, MAX_SCAN_CHARS, metricClaims, NEGATION_AFTER_RE, NEGATION_RE } from './factClaims.js';
 
-export type ProseKind = 'scope' | 'lead' | 'years-scope' | 'tool' | 'tool-context' | 'headline' | 'attribution' | 'posting-echo';
+export type ProseKind = 'oversize' | 'scope' | 'lead' | 'years-scope' | 'tool' | 'tool-context' | 'headline' | 'attribution' | 'posting-echo';
 export interface ProseFinding { kind: ProseKind; severity: 'block' | 'warn'; value: string; match: string; where: string }
 export interface Located { where: string; text: string }
 
@@ -73,7 +73,7 @@ const LEAD_WARN_BELOW = 0.5;   // 25-49%: warn (the reviewer fixes it)
 // Judges flagged "3+ years of commercial React and TypeScript experience" (general years made stack-specific and
 // commercial) but accepted "3+ years of experience building React ..." when the base shows React work. So a years
 // claim blocks only when its qualifier adds an escalation word, and warns when it names a skills-list-only technology.
-const YEARS_RE = /(\d+)\s*\+?\s*years?\s+(?:of\s+)?((?:[\w.+#/-]+,?\s+){0,5}?)experience\b((?:\s+(?:in|with|building|across|on)\s+(?:[\w.+#/-]+,?\s*){1,8}))?/gi;
+const YEARS_RE = /(?<!\d)(\d{1,15})\s*\+?\s*years?\s+(?:of\s+)?((?:[\w.+#/-]+,?\s+){0,5}?)experience\b((?:\s+(?:in|with|building|across|on)\s+(?:[\w.+#/-]+,?\s*){1,8}))?/gi;
 const YEARS_ESCALATION = new Set(['commercial', 'enterprise', 'professional', 'industry', 'senior', 'leadership']);
 function yearsClaims(text: string): Array<{ n: string; qualText: string; quals: string[]; raw: string }> {
   const out: Array<{ n: string; qualText: string; quals: string[]; raw: string }> = [];
@@ -129,8 +129,9 @@ function techClaims(text: string): Set<string> {
     const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
     for (const m of text.matchAll(g)) {
       const at = m.index ?? 0;
-      const before = text.slice(0, at).split(/\s+/).filter(Boolean).slice(-NEGATION_WINDOW).join(' ');
-      const after = text.slice(at + m[0].length).split(/\s+/).filter(Boolean).slice(0, NEGATION_WINDOW).join(' ');
+      // bounded windows (4 words never need more than ~80 chars of context) keep this linear on long text
+      const before = text.slice(Math.max(0, at - 80), at).split(/\s+/).filter(Boolean).slice(-NEGATION_WINDOW).join(' ');
+      const after = text.slice(at + m[0].length, at + m[0].length + 80).split(/\s+/).filter(Boolean).slice(0, NEGATION_WINDOW).join(' ');
       if (!(NEGATION_RE.test(before) || NEGATION_AFTER_RE.test(after))) { s.add(name); break; }
     }
   }
@@ -164,7 +165,24 @@ function ngrams(ws: string[], n: number): string[] {
   return out;
 }
 
+/** First prose field longer than the extractors' scan cap, as "<resume>.<field>"; null when every field fits. */
+function oversizeField(label: string, r: any): string | null {
+  const fields: Array<[string, unknown]> = [['jobTitle', r?.jobTitle], ['summary', r?.summary]];
+  for (const key of ['experience', 'projects'] as const) {
+    (Array.isArray(r?.[key]) ? r[key] : []).forEach((e: any, i: number) => {
+      const d = e?.description;
+      if (Array.isArray(d)) d.forEach((x, j) => fields.push([`${key}[${i}].description[${j}]`, x]));
+      else fields.push([`${key}[${i}].description`, d]);
+    });
+  }
+  for (const [name, v] of fields) if (typeof v === 'string' && exceedsScanCap(v)) return `${label} ${name}`;
+  return null;
+}
+
 export function proseFindings(base: any, tailored: any, opts: { jobDescription?: string; jobTitle?: string } = {}): ProseFinding[] {
+  // Fail closed: the extractors truncate at MAX_SCAN_CHARS, so unscanned text would pass unchecked.
+  const big = oversizeField('tailored', tailored) ?? oversizeField('base', base);
+  if (big) return [{ kind: 'oversize', severity: 'block', value: `oversize: ${big} exceeds ${MAX_SCAN_CHARS} chars; not fact-checked`, match: 'oversize', where: big }];
   const findings: ProseFinding[] = [];
   const add = (f: ProseFinding) => {
     if (!findings.some((x) => x.kind === f.kind && x.value === f.value && x.where === f.where)) findings.push(f);

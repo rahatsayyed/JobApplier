@@ -20,6 +20,8 @@ export const METRIC_NOUNS = [
 const MODIFIER_WINDOW = 4;
 // Job-posting text is untrusted: cap what every extractor scans and bound digit runs so no regex goes quadratic.
 export const MAX_SCAN_CHARS = 20000;
+/** True when the extractors would silently truncate this text; gates must block (fail closed) instead of trusting a partial scan. */
+export const exceedsScanCap = (text: string): boolean => String(text ?? '').length > MAX_SCAN_CHARS;
 const cap = (text: string): string => String(text ?? '').slice(0, MAX_SCAN_CHARS);
 const COUNT_CLAIM_RE = new RegExp(
   String.raw`(?<![A-Za-z]-)\b(\d[\d,.]{0,14}(?:[kKmMbB]\b)?)\s*\+?\s*(?:[A-Za-z][A-Za-z-]*\s+){0,${MODIFIER_WINDOW}}?(${METRIC_NOUNS.join('|')})\b`,
@@ -82,6 +84,7 @@ export function joinStatements(parts: string[]): string {
     .join('\n');
 }
 
+const CLAUSE_SCAN_WINDOW = 1500;
 function clauseBounds(text: string, index: number): { start: number; end: number } {
   const isBoundary = (i: number) => {
     const c = text[i];
@@ -95,13 +98,15 @@ function clauseBounds(text: string, index: number): { start: number; end: number
     if (!'.!?'.includes(c)) return false;
     return !(/\d/.test(text[i - 1] ?? '') && /\d/.test(text[i + 1] ?? ''));
   };
-  let start = 0;
-  for (let i = index - 1; i >= 0; i--) if (isBoundary(i)) { start = i + 1; break; }
-  let end = text.length;
-  for (let i = index; i < text.length; i++) if (isBoundary(i)) { end = i; break; }
+  // Scans are windowed so a long boundary-free run cannot make every match rescan the whole text.
+  const lo = Math.max(0, index - CLAUSE_SCAN_WINDOW), hi = Math.min(text.length, index + CLAUSE_SCAN_WINDOW);
+  let start = lo;
+  for (let i = index - 1; i >= lo; i--) if (isBoundary(i)) { start = i + 1; break; }
+  let end = hi;
+  for (let i = index; i < hi; i++) if (isBoundary(i)) { end = i; break; }
   if (/^\s*(?:and|or|then|plus)\b/i.test(text.slice(start, end))) {
-    let sentenceStart = 0;
-    for (let i = start - 1; i >= 0; i--) if (isSentenceEnd(i)) { sentenceStart = i + 1; break; }
+    let sentenceStart = lo;
+    for (let i = start - 1; i >= lo; i--) if (isSentenceEnd(i)) { sentenceStart = i + 1; break; }
     return { start: sentenceStart, end };
   }
   return { start, end };

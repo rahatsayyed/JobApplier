@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { delegatedAuthorshipClaims, diagnoseCoverage, factClaims, joinStatements, metricClaims, normalizeFact } from '../src/factClaims.js';
+import { exceedsScanCap, MAX_SCAN_CHARS, delegatedAuthorshipClaims, diagnoseCoverage, factClaims, joinStatements, metricClaims, normalizeFact } from '../src/factClaims.js';
 
 const m = (s: string) => [...metricClaims(s)];
 
@@ -101,5 +101,17 @@ describe('performance bounds on untrusted text', () => {
   it('dotted tool names both extract (Lucid.js and Mesh.js)', () => {
     const vals = factClaims('Built integrations using Lucid.js and Mesh.js.').filter((c) => c.kind === 'tool').map((c) => c.value);
     expect(vals).toEqual(expect.arrayContaining(['lucid.js', 'mesh.js']));
+  });
+  it('metricClaims on a 19000-digit run ending in % is fast (regex bound, not just the cap)', () => {
+    expect(ms(() => metricClaims('1'.repeat(19000) + '%'))).toBeLessThan(250);
+  });
+  it('metricClaims on "3 years of " x 50000 is fast', () => {
+    expect(ms(() => metricClaims('3 years of '.repeat(50000)))).toBeLessThan(250);
+  });
+  it('exceedsScanCap flags text the extractors would truncate (callers must block, not trust a partial scan)', () => {
+    const padded = ' '.repeat(21000) + 'Worked at Google as Staff Engineer. Grew revenue by 300%.';
+    expect(exceedsScanCap(padded)).toBe(true);
+    expect(factClaims(padded)).toEqual([]);
+    expect(exceedsScanCap('x'.repeat(MAX_SCAN_CHARS))).toBe(false);
   });
 });
