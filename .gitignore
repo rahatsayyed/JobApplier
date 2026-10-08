@@ -13,3 +13,4 @@ debug/
 .env
 .env.*
 !.env.example
+scripts/eval/runs/

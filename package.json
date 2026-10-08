@@ -17,7 +17,10 @@
     "mcp:gates": "tsx src/mcp/gates.ts",
     "mcp:apply": "tsx src/mcp/apply.ts",
     "mcp:connect": "tsx src/mcp/connect.ts",
-    "mcp:discover": "tsx src/mcp/discover.ts"
+    "mcp:discover": "tsx src/mcp/discover.ts",
+    "eval:gen": "tsx scripts/eval/generate.ts",
+    "eval:metrics": "tsx scripts/eval/metrics.ts",
+    "eval:judge": "tsx scripts/eval/judge.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
