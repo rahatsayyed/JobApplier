@@ -6,7 +6,7 @@
 // Render step calls src/resume.ts renderResume, which writes into the git-ignored renderer/automation/.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { checkFacts } from '../../src/resumeFacts.js';
+import { checkFacts, checkResume } from '../../src/resumeFacts.js';
 import { renderResume } from '../../src/resume.js';
 // @ts-ignore: import the lib file directly to avoid pdf-parse's debug side effect
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
@@ -192,6 +192,10 @@ export async function analyze(file: string, system: string, jobIdRaw: string, ba
       const f = checkFacts(base, t);
       rec.factsVerdict = f.verdict;
       rec.invented = f.invented;
+      const v2 = checkResume(base, t, { jobDescription: job?.description, jobTitle: job?.title });
+      rec.factsV2Verdict = v2.verdict;
+      rec.factsV2Blocks = [...v2.invented, ...v2.unsupported, ...v2.forbidden.map((p) => `forbidden:${p}`)];
+      rec.factsV2Warnings = v2.warnings;
     } catch (e: any) {
       rec.factsVerdict = null; rec.invented = null;
       nulls.factsVerdict = `checkFacts threw: ${e?.message ?? e}`;
@@ -294,6 +298,7 @@ function summarize(recs: any[], missingBy: Record<string, string[]>): string {
     ['jsonValid', rs => pct(rate(rs.map(r => r.jsonValid)))],
     ['schemaKeysMatch', rs => pct(rate(rs.map(r => r.schemaKeysMatch)))],
     ['checkFacts pass', rs => pct(rate(rs.map(r => (r.factsVerdict == null ? null : r.factsVerdict === 'pass'))))],
+    ['checkResume v2 not blocked', rs => pct(rate(rs.map(r => (r.factsV2Verdict == null ? null : r.factsV2Verdict !== 'block'))))],
     ['rendered OK (of attempted)', rs => pct(rate(rs.map(r => r.rendered)))],
     ['exactly 1 page (of known)', rs => pct(rate(rs.map(r => (r.pages == null ? null : r.pages === 1))))],
     ['fillRatio (text extent / page)', rs => fmt(mean(rs.map(r => r.fillRatio)))],

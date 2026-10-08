@@ -1,0 +1,13 @@
+{
+  "allow_metrics": [],
+  "allow_facts": [],
+  "forbidden_phrases": [
+    "passionate about", "results-driven", "proven track record", "team player", "go-getter",
+    "hit the ground running", "synergy", "detail-oriented", "i am writing to express",
+    "just checking in", "circling back", "touching base"
+  ],
+  "warn_phrases": [
+    "leverage", "spearheaded", "robust", "seamless", "cutting-edge", "innovative", "best practices",
+    "dynamic", "holistic", "demonstrated ability to", "results-oriented"
+  ]
+}

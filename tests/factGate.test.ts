@@ -1,0 +1,141 @@
+import { describe, it, expect } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { checkOutreachText, checkResume, loadFactGateConfig } from '../src/resumeFacts.js';
+import { getBaseResume } from '../src/resume.js';
+
+const base: any = {
+  name: 'Test User', jobTitle: null, email: 't@example.com', phone: '+91 90000 00000',
+  summary: 'Software Engineer with 3+ years of experience in frontend architecture and AI-integrated systems; architected a state management refactor that improved loading by 11 seconds.',
+  experience: [{ title: 'Software Engineer', company: 'Acme Labs', location: null, start: 'Jul 2025', end: 'Present', description: [
+    'Led the architecture of a policy-driven governance layer centralizing MCP access control, reducing policy misconfiguration issues by ~50%.',
+    'Directed a system-wide refactor of React state management, eliminating 9+ redundant API calls and reducing initial load time by 11 seconds.',
+  ] }],
+  projects: [], education: [{ degree: 'BE', school: 'XYZ Univ', location: 'Pune', year: '2021' }],
+  skills: [{ category: 'Frontend', items: ['React', 'TypeScript'] }, { category: 'Backend', items: ['Node.js'] }], certificates: [],
+};
+const clone = () => JSON.parse(JSON.stringify(base));
+const config = { allow_metrics: [], allow_facts: [], forbidden_phrases: ['passionate about'], warn_phrases: ['spearheaded'] };
+const O = { config };
+
+describe('checkResume', () => {
+  it('passes the base against itself', () => {
+    expect(checkResume(base, clone(), O)).toEqual({ verdict: 'pass', invented: [], unsupported: [], forbidden: [], warnings: [], configMissing: false });
+  });
+  it('passes the real base resume against itself with the real config', () => {
+    expect(checkResume(getBaseResume(), getBaseResume()).verdict).toBe('pass');
+  });
+  it('blocks a forbidden phrase', () => {
+    const t = clone(); t.summary += ' I am passionate about clean code.';
+    const r = checkResume(base, t, O);
+    expect(r.verdict).toBe('block');
+    expect(r.forbidden).toEqual(['passionate about']);
+  });
+  it('warns on a warn phrase the base does not use', () => {
+    const t = clone(); t.experience[0].description[0] = t.experience[0].description[0].replace('Led', 'Spearheaded');
+    expect(checkResume(base, t, O)).toMatchObject({ verdict: 'warn', warnings: ['phrase:spearheaded'] });
+  });
+  it('blocks a noun-bound count inflation', () => {
+    const t = clone(); t.summary += ' Grew the platform to 50k users.';
+    expect(checkResume(base, t, O).invented).toEqual(['metric:50k', 'count:50k users']);
+  });
+  it('blocks prose escalation with a location and honours allow_facts', () => {
+    const t = clone(); t.summary += ' Comfortable owning features end to end.';
+    expect(checkResume(base, t, O).unsupported).toEqual(['scope:ownership: "owning" @summary[1]', 'scope:end-to-end: "end to end" @summary[1]']);
+    expect(checkResume(base, t, { config: { ...config, allow_facts: ['owning', 'end to end'] } }).verdict).toBe('pass');
+  });
+  it('allow_metrics admits a confirmed number', () => {
+    const t = clone(); t.summary += ' Cut costs by 25%.';
+    expect(checkResume(base, t, O).verdict).toBe('block');
+    expect(checkResume(base, t, { config: { ...config, allow_metrics: ['25%'] } }).verdict).toBe('pass');
+  });
+  it('reports a missing config as a warning, never silently', () => {
+    expect(checkResume(base, clone(), { config, configMissing: true })).toMatchObject({ verdict: 'warn', configMissing: true });
+  });
+});
+
+describe('loadFactGateConfig', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'factgate-'));
+  it('missing file -> missing:true with empty lists', () => {
+    expect(loadFactGateConfig(path.join(dir, 'nope.json'))).toEqual({ config: { allow_metrics: [], allow_facts: [], forbidden_phrases: [], warn_phrases: [] }, missing: true });
+  });
+  it('malformed JSON throws (fail closed)', () => {
+    const f = path.join(dir, 'bad.json'); writeFileSync(f, '{nope');
+    expect(() => loadFactGateConfig(f)).toThrow();
+  });
+  it('a non-string-array key throws', () => {
+    const f = path.join(dir, 'bad2.json'); writeFileSync(f, JSON.stringify({ forbidden_phrases: 'x' }));
+    expect(() => loadFactGateConfig(f)).toThrow(/forbidden_phrases must be an array of strings/);
+  });
+  it('the shipped config parses', () => {
+    expect(loadFactGateConfig().missing).toBe(false);
+  });
+});
+
+describe('checkOutreachText', () => {
+  it('passes a truthful email whose footer URL has digits', () => {
+    expect(checkOutreachText('Hi Priya, I cut initial load time by 11 seconds with a React state refactor. Happy to share more. Portfolio: https://x.dev/p2', base, O).verdict).toBe('pass');
+  });
+  it('blocks invented multipliers, team size, leadership and tools', () => {
+    const r = checkOutreachText('I grew revenue 3x and led a team of 6 engineers on Kubernetes.', base, O);
+    expect(r.verdict).toBe('block');
+    expect(r.invented).toEqual(['metric:3x', 'metric:6 engineers']);
+    expect(r.unsupported).toEqual(expect.arrayContaining(['tool:kubernetes']));
+  });
+  it('does not block an honest gap line (P4)', () => {
+    const a = checkOutreachText("I haven't worked with Kubernetes yet, but my React state refactor cut load time by 11 seconds.", base, O);
+    expect(a.invented).toEqual([]);
+    expect(a.unsupported).toEqual([]);
+    const b = checkOutreachText("I haven't used Redux in production, but my React state refactor cut load time by 11 seconds.", base, O);
+    expect(b.invented).toEqual([]);
+    expect(b.unsupported).toEqual([]);
+    expect(b.verdict).not.toBe('block');
+  });
+  it('does not block a quoted posting title when job_title and company are passed (P4)', () => {
+    const note = 'Hi Priya, I saw the Full Stack Developer - React.js & Redux opening at Jobdost. My React state refactor cut load time by 11 seconds.';
+    expect(checkOutreachText(note, base, O).unsupported).toContain('tool:redux');
+    const r = checkOutreachText(note, base, { ...O, jobTitle: 'Full Stack Developer - React.js & Redux', company: 'Jobdost' });
+    expect(r.unsupported).toEqual([]);
+    expect(r.verdict).not.toBe('block');
+  });
+  it('still blocks an affirmative tool claim made next to a gap line', () => {
+    const r = checkOutreachText("I haven't worked with Kubernetes yet. I deployed the frontend on Terraform.", base, O);
+    expect(r.unsupported).toEqual(expect.arrayContaining(['tool:terraform']));
+  });
+  it('accepts a claim that comes from extraSource (the original sent email)', () => {
+    expect(checkOutreachText('As I mentioned, the 25% faster builds came from layer caching.', base, { ...O, extraSource: 'Docker layer caching gave 25% faster builds.' }).verdict).toBe('pass');
+  });
+});
+
+describe('oversize inputs fail closed (Q2)', () => {
+  const big = 'Built a thing. '.repeat(1400);
+  const msg = (f: string) => `oversize: ${f} exceeds 20000 chars; not fact-checked`;
+  it('blocks an oversize tailored resume', () => {
+    const t = clone(); t.summary += ' ' + big;
+    const r = checkResume(base, t, O);
+    expect(r.verdict).toBe('block');
+    expect(r.unsupported).toContain(msg('tailored resume'));
+  });
+  it('blocks an oversize base resume', () => {
+    const b = clone(); b.summary += ' ' + big;
+    const r = checkResume(b, clone(), O);
+    expect(r.verdict).toBe('block');
+    expect(r.unsupported.some((x) => x.startsWith('oversize: base resume'))).toBe(true);
+  });
+  it('blocks oversize outreach text', () => {
+    const r = checkOutreachText(big, base, O);
+    expect(r.verdict).toBe('block');
+    expect(r.unsupported).toEqual([msg('outreach text')]);
+  });
+  it('blocks outreach when the base or extraSource is oversize', () => {
+    const r = checkOutreachText('Hello there.', base, { ...O, extraSource: big });
+    expect(r.verdict).toBe('block');
+    expect(r.unsupported).toEqual([msg('base resume')]);
+  });
+  it('normal 4-5k char inputs are unaffected', () => {
+    const t = clone(); t.summary += ' ' + 'Built a thing. '.repeat(250);
+    expect(checkResume(base, t, O).unsupported.some((x) => x.startsWith('oversize'))).toBe(false);
+    expect(checkOutreachText('Built a thing. '.repeat(300), base, O).unsupported.some((x) => x.startsWith('oversize'))).toBe(false);
+  });
+});
