@@ -30,8 +30,39 @@ function occurrences(hay: string, needle: string): number {
   for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) n++;
   return n;
 }
-function blockSet(r: FactReport): Set<string> {
-  return new Set([...r.invented, ...r.unsupported.map((u) => u.replace(/ @\S+$/, '')), ...r.forbidden.map((f) => `forbidden:${f}`)]);
+// Full keys (the "@where" location is kept) so an edit that adds a claim already flagged elsewhere is still caught.
+const stripWhere = (x: string) => x.replace(/ @\S+$/, '');
+function blockSet(r: FactReport, strip = false): Set<string> {
+  const un = strip ? r.unsupported.map(stripWhere) : r.unsupported;
+  return new Set([...r.invented, ...un, ...r.forbidden.map((f) => `forbidden:${f}`)]);
+}
+const WATCHED_WARN = /^(headline|posting-echo|lead):/;
+function watchedWarnings(r: FactReport): Set<string> {
+  return new Set(r.warnings.filter((w) => WATCHED_WARN.test(w)));
+}
+const hasOversize = (r: FactReport) => [...r.invented, ...r.unsupported].some((x) => x.startsWith('oversize:'));
+const nonBlank = (x: unknown) => typeof x === 'string' && x.trim() !== '';
+const MIN_BULLETS_NEWEST = 2;
+const MIN_BULLETS_OLDER = 1;
+/** Structural rules every resume edit must keep: nothing blanked, bullet minimums, jobTitle never set from blank. */
+function structuralError(before: any, after: any, edit: ReviewEdit): string | null {
+  const m = RESUME_PATH.exec(edit.path ?? '');
+  if (!m) return null;
+  if (m[1]) {
+    if (m[1] === 'jobTitle' && !nonBlank(before?.jobTitle) && edit.new_string.trim() !== '') return 'jobTitle cannot be set from blank';
+    if (nonBlank(before?.[m[1]]) && !nonBlank(after?.[m[1]])) return `would leave empty ${m[1]}`;
+    return null;
+  }
+  const ei = Number(m[2]);
+  const list: any[] = after?.experience?.[ei]?.description ?? [];
+  const beforeList: any[] = before?.experience?.[ei]?.description ?? [];
+  if (edit.reason !== 'cut' || edit.new_string !== '') {
+    if (nonBlank(beforeList[Number(m[3])]) && !nonBlank(list[Number(m[3])])) return 'would leave empty bullet';
+    return null;
+  }
+  const min = ei === 0 ? MIN_BULLETS_NEWEST : MIN_BULLETS_OLDER;
+  if (list.filter(nonBlank).length < min) return `would leave fewer than ${min} bullet(s) in ${ei === 0 ? 'the newest role' : `experience[${ei}]`}`;
+  return null;
 }
 function replaceOnce(current: string, edit: ReviewEdit): { value: string } | { error: string } {
   if (edit.old_string === '' && current.trim() === '') return { value: edit.new_string };
@@ -82,20 +113,37 @@ export function applyReviewEdits(
   // Order (P3): every non-cut edit first, in the reviewer's order, against the ORIGINAL indices (nothing has shifted yet);
   // then the cuts, highest index first, so one cut never shifts the path of the next. Cutting first would let a non-cut edit
   // written for bullet [1] land on whatever bullet slid into [1].
+  for (const edit of edits.slice(MAX_EDITS)) rejected.push({ edit, why: `over edit limit (${MAX_EDITS})` });
+  const startReport = checkResume(base, cur, opts);
+  const startEmailReport = curEmail ? checkOutreachText(emailText(curEmail), base, opts) : null;
+  const refuseAll = hasOversize(startReport) || (startEmailReport !== null && hasOversize(startEmailReport));
+  let resumeWarn = watchedWarnings(startReport);
   const ordered = [...edits.slice(0, MAX_EDITS)].sort((a, b) => {
     const ka = a.reason === 'cut' ? 1 : 0;
     const kb = b.reason === 'cut' ? 1 : 0;
     return ka - kb || (ka === 1 ? b.path.localeCompare(a.path, undefined, { numeric: true }) : 0);
   });
   for (const edit of ordered) {
+    if (refuseAll) { rejected.push({ edit, why: 'oversize: not fact-checked; edits refused' }); continue; }
     if (edit.target === 'resume') {
       const r = applyResumeEdit(cur, edit);
       if ('error' in r) { rejected.push({ edit, why: r.error }); continue; }
-      const next = blockSet(checkResume(base, r.resume, opts));
-      const added = [...next].filter((b) => !resumeBlocks.has(b));
+      const sErr = structuralError(cur, r.resume, edit);
+      if (sErr) { rejected.push({ edit, why: sErr }); continue; }
+      const rep = checkResume(base, r.resume, opts);
+      // A cut shifts the @where index of later bullets and cannot add text, so cuts compare claim names only.
+      const isCut = edit.reason === 'cut' && edit.new_string === '';
+      const next = blockSet(rep);
+      const cmpPrev = isCut ? new Set([...resumeBlocks].map(stripWhere)) : resumeBlocks;
+      const added = [...(isCut ? blockSet(rep, true) : next)].filter((b) => !cmpPrev.has(b));
       if (added.length) { rejected.push({ edit, why: `would add unsupported claim(s): ${added.join(', ')}` }); continue; }
+      const nextWarn = watchedWarnings(rep);
+      const prevWarn = isCut ? new Set([...resumeWarn].map(stripWhere)) : resumeWarn;
+      const addedWarn = [...nextWarn].map((w) => (isCut ? stripWhere(w) : w)).filter((w) => !prevWarn.has(w));
+      if (addedWarn.length) { rejected.push({ edit, why: `would add warning(s): ${addedWarn.join(', ')}` }); continue; }
       cur = r.resume;
       resumeBlocks = next;
+      resumeWarn = nextWarn;
       applied.push(edit);
     } else if (edit.target === 'email') {
       if (!curEmail) { rejected.push({ edit, why: 'no email draft to edit' }); continue; }

@@ -65,9 +65,58 @@ describe('applyReviewEdits', () => {
     expect(run([{ target: 'email', path: 'body', old_string: '11 seconds', new_string: '11 seconds and grew signups 90%', reason: 'style' }]).rejected[0].why).toBe('would add unsupported claim(s): metric:90%');
     expect(run([{ target: 'resume', path: 'skills[0].items[0]', old_string: 'React', new_string: 'Vue', reason: 'keyword' }]).rejected[0].why).toBe('unsupported path "skills[0].items[0]"');
   });
-  it('applies at most 20 edits', () => {
+  it('applies at most 20 edits and reports the rest as over the limit', () => {
     const many = Array.from({ length: 25 }, () => ({ target: 'resume' as const, path: 'jobTitle', old_string: 'zzz', new_string: 'y', reason: 'style' as const }));
     const r = run(many);
-    expect(r.applied.length + r.rejected.length).toBe(20);
+    // R2: edits beyond the limit are reported in rejected, not silently dropped (was: applied+rejected === 20).
+    expect(r.applied.length + r.rejected.length).toBe(25);
+    expect(r.rejected.filter((x) => x.why === 'over edit limit (20)')).toHaveLength(5);
+  });
+  it('refuses every edit when the starting resume is oversize', () => {
+    const big = clone();
+    big.experience[0].description[3] = 'Developed dashboards. ' + 'x'.repeat(200000);
+    const r = applyReviewEdits(base, big, null, [
+      { target: 'resume', path: 'experience[0].description[1]', old_string: 'TypeScript APIs', new_string: 'TypeScript APIs on Kubernetes', reason: 'keyword' },
+      { target: 'resume', path: 'experience[0].description[2]', old_string: 'Directed', new_string: 'Led', reason: 'style' },
+    ], O);
+    expect(r.applied).toEqual([]);
+    expect(r.rejected.map((x) => x.why)).toEqual(['oversize: not fact-checked; edits refused', 'oversize: not fact-checked; edits refused']);
+  });
+  it('rejects adding an already-flagged tool to another bullet, but allows cutting the flagged bullet', () => {
+    const start = clone();
+    start.experience[0].description[3] = 'Developed D3 dashboards on Kubernetes across 12+ policies.';
+    const bad = applyReviewEdits(base, start, null, [
+      { target: 'resume', path: 'experience[0].description[1]', old_string: 'TypeScript APIs', new_string: 'TypeScript APIs on Kubernetes', reason: 'keyword' },
+    ], O);
+    expect(bad.applied).toEqual([]);
+    expect(bad.rejected[0].why).toMatch(/would add unsupported claim\(s\): tool:kubernetes @/);
+    const cut = applyReviewEdits(base, start, null, [
+      { target: 'resume', path: 'experience[0].description[3]', old_string: start.experience[0].description[3], new_string: '', reason: 'cut' },
+    ], O);
+    expect(cut.rejected).toEqual([]);
+    expect(cut.facts.unsupported).toEqual([]);
+  });
+  it('enforces bullet minimums and never blanks fields', () => {
+    const two = clone();
+    two.experience.push({ title: 'Intern', company: 'Old Co', location: null, start: '2020', end: '2021', description: ['Built internal tools.'] });
+    const bullets = (k: number) => ({ target: 'resume' as const, path: `experience[0].description[${k}]`, old_string: base.experience[0].description[k], new_string: '', reason: 'cut' as const });
+    const r = applyReviewEdits(base, two, null, [bullets(0), bullets(1), bullets(2), bullets(3),
+      { target: 'resume', path: 'experience[1].description[0]', old_string: 'Built internal tools.', new_string: '', reason: 'cut' }], O);
+    expect(r.applied).toHaveLength(2);
+    expect(r.rejected.length).toBe(3);
+    expect(r.resume.experience[0].description).toHaveLength(2);
+    expect(r.resume.experience[1].description).toHaveLength(1);
+    const blank = run([{ target: 'resume', path: 'experience[0].description[1]', old_string: base.experience[0].description[1], new_string: '', reason: 'style' }]);
+    expect(blank.rejected[0].why).toBe('would leave empty bullet');
+    const sum = run([{ target: 'resume', path: 'summary', old_string: base.summary, new_string: '', reason: 'cut' }]);
+    expect(sum.rejected[0].why).toBe('would leave empty summary');
+  });
+  it('rejects new headline / posting-echo warnings and setting jobTitle from blank', () => {
+    const jt = run([{ target: 'resume', path: 'jobTitle', old_string: '', new_string: 'Principal Staff Engineer', reason: 'keyword' }]);
+    expect(jt.rejected[0].why).toBe('jobTitle cannot be set from blank');
+    const jd = 'We want someone deeply passionate about pixel-perfect UI quality and shipping delightful customer experiences every day.';
+    const r = applyReviewEdits(base, clone(), null, [{ target: 'resume', path: 'summary', old_string: 'AI-integrated systems', new_string: 'AI-integrated systems and deeply passionate about pixel-perfect UI quality', reason: 'keyword' }], { ...O, jobDescription: jd });
+    expect(r.applied).toEqual([]);
+    expect(r.rejected[0].why).toMatch(/would add warning\(s\): posting-echo/);
   });
 });
