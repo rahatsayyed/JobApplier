@@ -217,8 +217,11 @@ server.registerTool(
   'save_match_result',
   {
     description:
-      'Persist match-stage results onto the jobs table. Validates each row (sub-scores must be integers 0-25; score is recomputed as their sum), caps strengths/gaps at 3 and the requirement table at 12 rows (critical/high always kept), demotes inferred evidence below critical/high, computes hard stops (never from location/language rows) and confidence. ' +
-      'Invalid rows (bad sub-score, missing score, or a {job_id, error} overflow row) are reported in `errors` and not written; valid rows are still saved, and the call itself does not fail. A null deadline never erases a stored one.',
+      'Persist match-stage results onto the jobs table, one row at a time. Score: when score_dims is given (four integers 0-25: skills, seniority, domain, location) the model score is ignored and the score is their sum, ' +
+      'then capped by an evidence ceiling from the requirement table (59 + round(41 x evidence-weighted share of critical/high/meaningful rows met; stated counts more than structural, structural more than inferred; no weighted rows => 70)); the cap can only lower the score and the cap applied is stored as score_cap_reason (null when the sum stood). Without score_dims the given score (0-100) is used uncapped (expired/legacy rows). ' +
+      'Requirements: a stated row needs a jd_quote of 12-300 chars found in the job description or archived snapshot, else it is downgraded to structural (quotes over 300 chars are truncated); inferred rows are demoted below critical/high; the table is capped at 12 rows (critical/high always kept). ' +
+      'Strengths/gaps are capped at 3. Hard stops = critical + missing + stated/structural rows, never location or language rows; they are returned in `hard_stops` and stored, and apply_vetoes excludes those jobs. Confidence: low for an empty table or a posting under 300 chars of text, medium if any row is inferred, else high. ' +
+      'Per-row errors, reported in `errors` and never written, never failing the call: a row without a string job_id, an error row ({job_id, error}, e.g. a matcher batch overflow: re-dispatch those jobs first), a duplicate job_id (the first occurrence wins), an unknown job_id, and an invalid score or sub-score. Valid rows are still saved in the same transaction. A null deadline never erases a stored one. Returns {saved, errors, hard_stops}.',
     inputSchema: matchResultsInputShape,
   },
   async (args) => handleSaveMatchResults(db, args)
