@@ -3,7 +3,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { enqueueOutreach, openDb } from '../src/db.js';
+import { atsCoverageSchema, enqueueOutreach, openDb } from '../src/db.js';
 
 const item = {
   job_id: 'j1', resume_pdf_path: null, email_subject: null, email_body: null, email_to: null,
@@ -20,6 +20,16 @@ describe('outreach_queue quality columns', () => {
     expect(JSON.parse(row.ats_gaps)).toEqual(['Kubernetes']);
     expect(JSON.parse(row.fact_warnings)).toEqual(['posting-echo:ui judgment @summary[1]']);
     expect([row.review_applied, row.review_rejected]).toEqual([3, 1]);
+  });
+  it('enqueue schema accepts ats_coverage null (tailor contract: number or null) and the helper stores NULL', () => {
+    expect(atsCoverageSchema.safeParse(null).success).toBe(true);
+    expect(atsCoverageSchema.safeParse(undefined).success).toBe(true);
+    expect(atsCoverageSchema.safeParse(62).success).toBe(true);
+    expect(atsCoverageSchema.safeParse(101).success).toBe(false);
+    expect(atsCoverageSchema.safeParse(6.5).success).toBe(false);
+    const db = openDb(':memory:');
+    const row = db.prepare('SELECT ats_coverage FROM outreach_queue WHERE id = ?').get(enqueueOutreach(db, { ...item, ats_coverage: null })) as any;
+    expect(row.ats_coverage).toBeNull();
   });
   it('defaults to NULL when not given', () => {
     const db = openDb(':memory:');

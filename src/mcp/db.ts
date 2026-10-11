@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, saveMatchResults, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, saveMatchResults, updateOutreachStatus } from '../db.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
@@ -181,7 +181,7 @@ server.registerTool(
       apply_platform: z.enum(['linkedin', 'greenhouse', 'lever', 'workday', 'ashby', 'none']).optional(),
       apply_url: z.string().optional(),
       resume_json: z.string().optional(),
-      ats_coverage: z.number().int().min(0).max(100).optional(),
+      ats_coverage: atsCoverageSchema,
       ats_gaps: z.array(z.string()).optional(),
       fact_warnings: z.array(z.string()).optional(),
       review_applied: z.number().int().min(0).optional(),
