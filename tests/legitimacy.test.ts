@@ -55,3 +55,73 @@ describe('assessLegitimacy', () => {
     expect(assessLegitimacy({ ...base, url: null, apply_url: '' }).signals).toEqual(['no posting or apply URL']);
   });
 });
+
+const withText = (s: string, extra: object = {}) => assessLegitimacy({ ...base, description: `${long} ${s}`, ...extra });
+
+describe('assessLegitimacy: rupee abbreviations and clause splitting', () => {
+  it('"Rs." does not end the clause', () => {
+    expect(withText('Registration charges Rs. 1500 payable before the interview.').tier).toBe('suspicious');
+    expect(withText('Candidates must deposit INR. 5000 to confirm.').tier).toBe('suspicious');
+    expect(withText('Earn Rs. 2000 per day from home.').tier).toBe('suspicious');
+  });
+});
+
+describe('assessLegitimacy: India scam pairs (legit stays high, scam flags)', () => {
+  const pairs: Array<[string, string, string, 'suspicious' | 'caution', object?]> = [
+    ['sensitive documents', 'Salary is credited to your bank account monthly.', 'Send your Aadhaar card and PAN card to start the process.', 'suspicious'],
+    ['sensitive documents (post-offer)', 'Background verification requires your Aadhaar after the offer is accepted.', 'Share your bank account details and OTP to activate your profile.', 'suspicious'],
+    ['sensitive negated', 'We never ask for your OTP or bank account details.', 'Please share the OTP you receive to confirm.', 'suspicious'],
+    ['pay by UPI', 'We use UPI for expense reimbursements.', 'Pay Rs 500 via UPI to confirm your slot.', 'suspicious'],
+    ['pay by transfer', 'Salary is paid by bank transfer on the last working day.', 'Candidates must transfer the registration amount to our account.', 'suspicious'],
+    ['deposit', 'Direct deposit of salary is available for all employees.', 'Candidates should deposit 5000 as a security.', 'suspicious'],
+    ['deposit (employer)', 'We will deposit 5000 into your account as a joining bonus.', 'Applicants need to deposit Rs 5000 before joining.', 'suspicious'],
+    ['telegram community', 'Join our Telegram community to meet the team.', 'To apply, message our Telegram group.', 'caution', { apply_url: '' }],
+    ['telegram with company mailbox', 'To apply message our Telegram group or write to careers@acme.com.', 'Contact us on WhatsApp number +91 98765 43210 to apply.', 'caution', { apply_url: '' }],
+    ['guarantee', 'We offer mentorship and a structured onboarding plan.', 'Guaranteed job after our course, 100% placement.', 'caution'],
+    ['no experience with earnings', 'No experience needed for our internship program, stipend 15000 per month.', 'No experience needed, earn Rs 1500 per day.', 'suspicious'],
+    ['data entry pay', 'Data entry operator, Rs 200 per hour.', 'Typing job, earn 800 rupees per hour at home.', 'caution'],
+    ['earn rupees daily', 'You can earn a day off every week.', 'Earn 5000 rupees daily from home.', 'suspicious'],
+  ];
+  for (const [name, legit, scam, tier, extra] of pairs) {
+    it(name, () => {
+      expect(withText(legit, extra).tier).toBe('high');
+      expect(withText(scam, extra).tier).toBe(tier);
+    });
+  }
+  it('company mailbox next to a chat number is not the only channel', () => {
+    expect(withText('Contact us on WhatsApp number +91 98765 43210 to apply, or email careers@acme.com.', { apply_url: '' }).tier).toBe('high');
+  });
+  it('signals name the reason', () => {
+    expect(withText('Send your Aadhaar card to start.').signals).toEqual(['asks the applicant for sensitive documents or credentials']);
+    expect(withText('Pay Rs 500 via UPI to confirm your slot.').signals).toEqual(['asks the applicant to pay by UPI, wire or transfer']);
+  });
+  it('earlier must-not-flag sentences still high', () => {
+    for (const s of ['We never charge a registration fee.', 'We pay the fee for your AWS certification.', 'earn a day off each week', 'no security deposit', 'We reimburse the training fee.']) {
+      expect(withText(s).tier).toBe('high');
+    }
+  });
+});
+
+describe('assessLegitimacy: inputs', () => {
+  it('lower-cases and trims the source', () => {
+    expect(assessLegitimacy({ ...base, source: 'NAUKRI', description: 'Bengaluru' }).tier).toBe('high');
+    expect(assessLegitimacy({ ...base, source: ' Linkedin-Jobs ', description: 'India' }).tier).toBe('high');
+  });
+  it('handles html, null, undefined and empty descriptions', () => {
+    expect(assessLegitimacy({ ...base, description: `<p>${long}</p><p>Send your <b>Aadhaar</b> card to start.</p>` }).tier).toBe('suspicious');
+    expect(assessLegitimacy({ ...base, description: `<div>${long}</div>` })).toEqual({ tier: 'high', signals: [] });
+    for (const d of [null, undefined, '']) {
+      expect(assessLegitimacy({ ...base, description: d as never }).signals).toEqual(['thin description (0 chars)']);
+    }
+  });
+  it('pathological inputs finish fast', () => {
+    for (const d of ['a.'.repeat(50000), 'registration fee '.repeat(100000), 'a'.repeat(1_000_000), '<div>'.repeat(100000), 'Rs. '.repeat(50000)]) {
+      const t = Date.now();
+      assessLegitimacy({ ...base, description: d });
+      expect(Date.now() - t).toBeLessThan(1000);
+    }
+  });
+  it('scans only the first 20000 characters', () => {
+    expect(assessLegitimacy({ ...base, description: `${'x '.repeat(11000)} Pay a registration fee to start.` }).tier).toBe('high');
+  });
+});
