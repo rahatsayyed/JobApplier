@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, saveMatchResults, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, updateOutreachStatus } from '../db.js';
+import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
@@ -215,22 +216,12 @@ server.registerTool(
 server.registerTool(
   'save_match_result',
   {
-    description: 'Persist match-stage results (score, reasons, missing keywords, location/language verdicts) onto the jobs table. Unknown job ids are ignored.',
-    inputSchema: {
-      results: z.array(z.object({
-        job_id: z.string(),
-        score: z.number().min(0).max(100),
-        reasons: z.string(),
-        missing_keywords: z.array(z.string()),
-        location_verdict: z.enum(['PASS', 'FAIL', 'FLAG']).optional(),
-        language_gate: z.enum(['PASS', 'FAIL', 'FLAG']).optional(),
-      })),
-    },
+    description:
+      'Persist match-stage results onto the jobs table. Validates each row (sub-scores must be integers 0-25; score is recomputed as their sum), caps strengths/gaps at 3 and the requirement table at 12 rows (critical/high always kept), demotes inferred evidence below critical/high, computes hard stops (never from location/language rows) and confidence. ' +
+      'Invalid rows (bad sub-score, missing score, or a {job_id, error} overflow row) are reported in `errors` and not written; valid rows are still saved, and the call itself does not fail. A null deadline never erases a stored one.',
+    inputSchema: matchResultsInputShape,
   },
-  async ({ results }) => {
-    const saved = saveMatchResults(db, results);
-    return { content: [{ type: 'text', text: JSON.stringify({ saved }) }] };
-  }
+  async (args) => handleSaveMatchResults(db, args)
 );
 
 server.registerTool(

@@ -1,5 +1,6 @@
 import BetterSqlite3 from 'better-sqlite3';
 import { z } from 'zod';
+import { normalizeMatchRow, type MatchRowInput } from './score.js';
 
 /** enqueue_outreach.ats_coverage: an integer percentage, or null when the final render had no keywords (tailor contract). */
 export const atsCoverageSchema = z.number().int().min(0).max(100).nullable().optional();
@@ -494,6 +495,37 @@ export function saveMatchResults(db: BetterSqlite3.Database, results: MatchResul
     for (const r of rs) saveMatchResult(db, r);
   })(results);
   return results.length;
+}
+
+/** v2 writer: validates every row, writes only valid rows, a null deadline never erases a stored one.
+ *  A row that is only `{job_id, error}` (matcher batch-overflow marker) is reported in `errors`, never fails the call.
+ *  Quotes are checked against the description PLUS the archived snapshot (the model may have quoted either). */
+export function saveMatchResultsChecked(
+  db: BetterSqlite3.Database,
+  rows: MatchRowInput[],
+): { saved: number; errors: Array<{ job_id: string; error: string }>; hard_stops: Array<{ job_id: string; hard_stops: string[] }> } {
+  const errors: Array<{ job_id: string; error: string }> = [];
+  const stops: Array<{ job_id: string; hard_stops: string[] }> = [];
+  let saved = 0;
+  const descOf = db.prepare("SELECT trim(coalesce(description, '') || ' ' || coalesce(jd_snapshot, '')) AS d FROM jobs WHERE id = ?");
+  const upd = db.prepare(`UPDATE jobs SET score = ?, match_reasons = ?, match_missing = ?, location_verdict = ?, language_gate = ?,
+    language_note = ?, score_dims = ?, requirements = ?, strengths = ?, gaps = ?, hard_stops = ?, confidence = ?,
+    deadline = COALESCE(?, deadline) WHERE id = ?`);
+  db.transaction(() => {
+    for (const r of rows) {
+      if (typeof r.error === 'string' && r.score == null && r.score_dims == null) { errors.push({ job_id: r.job_id, error: r.error }); continue; }
+      const desc = (descOf.get(r.job_id) as { d: string | null } | undefined)?.d ?? undefined;
+      const n = normalizeMatchRow(r, desc);
+      if (!n.ok) { errors.push({ job_id: r.job_id, error: n.error }); continue; }
+      const x = n.row;
+      const res = upd.run(x.score, x.reasons, JSON.stringify(x.missing_keywords ?? []), x.location_verdict ?? null, x.language_gate ?? null,
+        x.language_note, x.score_dims ? JSON.stringify(x.score_dims) : null, JSON.stringify(x.requirements), JSON.stringify(x.strengths),
+        JSON.stringify(x.gaps), JSON.stringify(x.hard_stops), x.confidence, x.deadline ?? null, x.job_id);
+      if (res.changes > 0) saved++;
+      if (x.hard_stops.length) stops.push({ job_id: x.job_id, hard_stops: x.hard_stops });
+    }
+  })();
+  return { saved, errors, hard_stops: stops };
 }
 
 export function markExcluded(
