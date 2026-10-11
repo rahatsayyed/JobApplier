@@ -221,7 +221,7 @@ export function checkResume(rawBase: Record<string, any>, rawTailored: Record<st
     if (!sourceContainsFact(sourceNorm, c.value) && !allowFacts.has(c.value)) unsupported.push(`${c.kind}:${c.value}`);
   }
   const warnings: string[] = [];
-  for (const f of proseFindings(base, tailored, { jobDescription: opts.jobDescription, jobTitle: opts.jobTitle })) {
+  for (const f of proseFindings(base, tailored, { jobDescription: opts.jobDescription, jobTitle: typeof opts.jobTitle === 'string' ? normalizeText(opts.jobTitle) : undefined })) {
     if (allowFacts.has(normalizeFact(f.match))) continue;
     (f.severity === 'block' ? unsupported : warnings).push(`${f.kind}:${f.value} @${f.where}`);
   }
@@ -239,7 +239,7 @@ export function checkOutreachText(text: string, base: Record<string, any>, opts:
   const { config, missing } = resolveConfig(opts);
   // Gate the normalized text (invisible format characters stripped); callers must send this same text (see checkTextWithNormalized).
   base = normalizeForAts(base);
-  const clean = blankOut(normalizeText(String(text ?? '')).replace(/https?:\/\/\S+/g, ' '), [opts.jobTitle, opts.company]);
+  const clean = blankOut(normalizeText(String(text ?? '')).replace(/https?:\/\/\S+/g, ' '), [opts.jobTitle, opts.company].map((p) => (typeof p === 'string' ? normalizeText(p) : undefined)));
   const extra = normalizeText(opts.extraSource ?? '');
   const baseOnly = joinStatements(strings(base));
   const baseText = joinStatements([...strings(base), extra]);

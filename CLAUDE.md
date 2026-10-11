@@ -477,6 +477,7 @@ What the code enforces around that skill (resume MCP: `get_base_resume`, `render
   hyphens stripped), then gates and renders that same copy, auto-trims the lowest-relevance
   bullets on page overflow (`trimResume`), and classifies the passed `keywords` as covered /
   synonym_only / missing_have_it / skills_only / gap (`src/atsKeywords.ts`).
+- The normalizer also strips non-Cf invisibles (U+034F, Hangul fillers, U+2800, U+180E, U+17B4/5, variation selectors), and the gate blocks `mixed-script:<word>` (a word mixing Latin with Cyrillic, Greek, Han, Arabic, etc.; the homoglyph bypass) in resume text and outreach; `job_title`/`company` are normalized before posting-context blanking.
 - `resume.check_text` normalizes the text the same way, runs the same gate on that normalized
   text (`checkOutreachText`) and returns it as `normalized_text`; the preparer enqueues exactly
   that text (email subject/body, connect notes), never the pre-gate draft.
