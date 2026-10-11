@@ -9,6 +9,16 @@ export function jobFactsFromDb(db: BetterSqlite3.Database, jobId: string): JobFa
     | undefined;
   if (!r) return {};
   let hard: string[] = [];
-  try { const v = JSON.parse(r.hard_stops ?? '[]'); if (Array.isArray(v)) hard = v.filter((x) => typeof x === 'string'); } catch { hard = []; }
-  return { source: r.source, url: r.url, apply_url: r.apply_url, posted_at: r.posted_at, hard_stops: hard, repost_count: repostCountForJob(db, jobId), snapshot_chars: r.snapshot_chars };
+  let unreadable = false;
+  // null / empty string / '[]' = no hard stops; anything else that is not a JSON array is corrupt (fail closed).
+  if (r.hard_stops != null && r.hard_stops.trim() !== '') {
+    try {
+      const v = JSON.parse(r.hard_stops);
+      if (Array.isArray(v)) hard = v.filter((x) => typeof x === 'string');
+      else unreadable = true;
+    } catch { unreadable = true; }
+  }
+  const f: JobFacts = { source: r.source, url: r.url, apply_url: r.apply_url, posted_at: r.posted_at, hard_stops: hard, repost_count: repostCountForJob(db, jobId), snapshot_chars: r.snapshot_chars };
+  if (unreadable) f.hard_stops_unreadable = true;
+  return f;
 }

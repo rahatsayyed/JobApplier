@@ -176,21 +176,29 @@ const defaultPath = path.join(path.resolve(path.dirname(fileURLToPath(import.met
 
 /** null = missing, unreadable, empty or containing ANY invalid entry: callers must surface a "language gate config missing" flag rather than skip silently. */
 export function loadLanguageConfig(file: string = defaultPath): LanguageConfig | null {
+  return loadLanguageConfigStatus(file).config;
+}
+
+/** Like loadLanguageConfig but says why it failed: `missing` (no file / unreadable / empty) vs `invalid` (file present, an entry is bad; `invalid` holds the entry). */
+export function loadLanguageConfigStatus(file: string = defaultPath): { config: LanguageConfig | null; problem?: 'missing' | 'invalid'; invalid?: string } {
+  let raw: string;
+  try { raw = readFileSync(file, 'utf8'); } catch { return { config: null, problem: 'missing' }; }
   try {
-    const j = JSON.parse(readFileSync(file, 'utf8'));
-    if (!Array.isArray(j?.declared) || !j.declared.length) return null;
+    const j = JSON.parse(raw);
+    if (!Array.isArray(j?.declared) || !j.declared.length) return { config: null, problem: 'missing' };
     const declared: DeclaredLanguage[] = [];
     for (const d of j.declared) {
       const language = typeof d?.language === 'string' ? d.language.trim() : '';
       const level = typeof d?.level === 'string' ? d.level.trim().toLowerCase() : '';
       if (!language || language in Object.prototype || !Object.hasOwn(RANK, level)) {
-        console.error(`[languageGate] invalid entry in ${path.basename(file)}: ${JSON.stringify(d).slice(0, 120)}`);
-        return null;
+        const entry = JSON.stringify(d).slice(0, 120);
+        console.error(`[languageGate] invalid entry in ${path.basename(file)}: ${entry}`);
+        return { config: null, problem: 'invalid', invalid: entry };
       }
       declared.push({ language, level: level as LangLevel });
     }
-    return { declared, confirmed: j.confirmed === true };
+    return { config: { declared, confirmed: j.confirmed === true } };
   } catch {
-    return null;
+    return { config: null, problem: 'missing' };
   }
 }

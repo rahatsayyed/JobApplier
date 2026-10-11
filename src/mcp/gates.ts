@@ -6,7 +6,7 @@ import { vetoResults } from '../vetoes.js';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, saveGateResults } from '../db.js';
 import { jobFactsFromDb } from '../gateFacts.js';
-import { loadLanguageConfig } from '../languageGate.js';
+import { loadLanguageConfigStatus } from '../languageGate.js';
 
 let db: BetterSqlite3.Database | null = null;
 const getDb = () => (db ??= openDb('data.sqlite'));
@@ -47,7 +47,8 @@ server.registerTool(
   async ({ results, jobs }) => {
     const d = getDb();
     const facts = new Map(results.map((r) => [r.job_id, jobFactsFromDb(d, r.job_id)]));
-    const out = vetoResults(results, jobs, undefined, { facts, now: new Date(), languages: loadLanguageConfig() });
+    const lc = loadLanguageConfigStatus();
+    const out = vetoResults(results, jobs, undefined, { facts, now: new Date(), languages: lc.config, languagesInvalid: lc.invalid });
     saveGateResults(d, out);
     return { content: [{ type: 'text', text: JSON.stringify(out) }] };
   }

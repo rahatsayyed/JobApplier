@@ -62,3 +62,62 @@ describe('vetoResults ctx + db facts', () => {
     expect((db.prepare("SELECT legitimacy, gate_flags FROM jobs WHERE id = 'j1'").get() as any)).toEqual({ legitimacy: 'high', gate_flags: '[]' });
   });
 });
+
+describe('fix round 1 (AD1)', () => {
+  const mk = () => {
+    const db = openDb(':memory:');
+    saveJob(db, { id: 'j1', source: 'remotive', title: 'React Developer', company: 'Acme', url: 'https://remotive.com/1', apply_url: 'https://boards.greenhouse.io/a/jobs/1', description: long, posted_at: '2026-10-01' });
+    return db;
+  };
+  const run = (db: any, languages: any = langs, extra: any = {}) =>
+    vetoResults([{ job_id: 'j1', score: 75 }], [{ id: 'j1', title: 'React Developer', description: long }], [], { facts: new Map([['j1', jobFactsFromDb(db, 'j1')]]), now, languages, ...extra });
+
+  it.each(['{bad json', '"Go"', '5', '{"a":1}'])('corrupt or non-array hard_stops %s excludes (fail closed)', (bad) => {
+    const db = mk();
+    db.prepare("UPDATE jobs SET hard_stops = ? WHERE id = 'j1'").run(bad);
+    expect(run(db)[0]).toMatchObject({ excluded: true, reason: 'gate data unreadable: hard_stops' });
+  });
+  it.each([null, '', '[]'])('hard_stops %j means no hard stops', (ok) => {
+    const db = mk();
+    db.prepare("UPDATE jobs SET hard_stops = ? WHERE id = 'j1'").run(ok);
+    expect(run(db)[0]).toMatchObject({ excluded: false, flags: [] });
+  });
+  it('null config combined with an exclusion still excludes and keeps the flag in gate_flags', () => {
+    const db = mk();
+    db.prepare("UPDATE jobs SET hard_stops = '[\"Go\"]' WHERE id = 'j1'").run();
+    const out = run(db, null);
+    expect(out[0]).toMatchObject({ excluded: true, reason: 'hard stop: Go', flags: [], gate_flags: ['language gate config missing'] });
+    saveGateResults(db, out);
+    expect((db.prepare("SELECT gate_flags FROM jobs WHERE id = 'j1'").get() as any).gate_flags).toBe('["language gate config missing"]');
+  });
+  it('invalid config entry is distinguished from a missing file', () => {
+    const db = mk();
+    expect(run(db, null, { languagesInvalid: '{"language":"","level":"x"}' })[0].flags).toEqual(['language gate config invalid: {"language":"","level":"x"}']);
+  });
+  it('stale flag survives an exclusion in gate_flags', () => {
+    const db = mk();
+    db.prepare("UPDATE jobs SET hard_stops = '[\"Go\"]', posted_at = '2026-08-01' WHERE id = 'j1'").run();
+    expect(run(db)[0].gate_flags).toEqual(['stale: posted 68 days ago', 'legitimacy caution: posted 68 days ago']);
+  });
+  it('second saveGateResults is idempotent and never touches excluded_reason', () => {
+    const db = mk();
+    db.prepare("UPDATE jobs SET excluded_reason = 'manual' WHERE id = 'j1'").run();
+    const out = run(db);
+    saveGateResults(db, out);
+    const a = db.prepare("SELECT legitimacy, legitimacy_signals, gate_flags, excluded_reason FROM jobs WHERE id = 'j1'").get();
+    expect(saveGateResults(db, out)).toBe(1);
+    expect(db.prepare("SELECT legitimacy, legitimacy_signals, gate_flags, excluded_reason FROM jobs WHERE id = 'j1'").get()).toEqual(a);
+    expect((a as any).excluded_reason).toBe('manual');
+  });
+  it('an unknown job id gets no fact-based flags and no legitimacy', () => {
+    const db = openDb(':memory:');
+    expect(jobFactsFromDb(db, 'nope')).toEqual({});
+    const out = vetoResults([{ job_id: 'nope', score: 70 }], [{ id: 'nope', title: 'X', description: null }], [], { facts: new Map([['nope', jobFactsFromDb(db, 'nope')]]), now, languages: langs });
+    expect(out[0]).toEqual({ job_id: 'nope', excluded: false, flags: [], legitimacy: undefined, language_note: null });
+    expect(saveGateResults(db, out)).toBe(0);
+  });
+  it('a real row with a null description still gets the thin-description caution', () => {
+    const r = applyVetoes({ job_id: 'a', score: 70 }, { title: 'React Developer', description: '' }, [], { facts, now, languages: langs });
+    expect(r.legitimacy?.tier).toBe('caution');
+  });
+});

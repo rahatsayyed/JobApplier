@@ -610,11 +610,11 @@ export function sweepDeadlines(db: BetterSqlite3.Database, now: Date = new Date(
   return out;
 }
 
-export function saveGateResults(db: BetterSqlite3.Database, rows: Array<{ job_id: string; flags: string[]; legitimacy?: Legitimacy }>): number {
+export function saveGateResults(db: BetterSqlite3.Database, rows: Array<{ job_id: string; flags: string[]; gate_flags?: string[]; legitimacy?: Legitimacy }>): number {
   const upd = db.prepare('UPDATE jobs SET legitimacy = ?, legitimacy_signals = ?, gate_flags = ? WHERE id = ?');
   let n = 0;
   db.transaction(() => {
-    for (const r of rows) n += upd.run(r.legitimacy?.tier ?? null, JSON.stringify(r.legitimacy?.signals ?? []), JSON.stringify(r.flags ?? []), r.job_id).changes;
+    for (const r of rows) n += upd.run(r.legitimacy?.tier ?? null, JSON.stringify(r.legitimacy?.signals ?? []), JSON.stringify(r.gate_flags ?? r.flags ?? []), r.job_id).changes;
   })();
   return n;
 }
