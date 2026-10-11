@@ -2,6 +2,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { z } from 'zod';
 import { normalizeMatchRow, type MatchRowInput } from './score.js';
 import { classifyDeadlines, type DeadlineSweep } from './freshness.js';
+import { companyKey, repostCount, titleIdentityKey } from './reposts.js';
 
 /** enqueue_outreach.ats_coverage: an integer percentage, or null when the final render had no keywords (tailor contract). */
 export const atsCoverageSchema = z.number().int().min(0).max(100).nullable().optional();
@@ -165,6 +166,7 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
     if (!outreachQueueColumnNames.has(col)) db.exec(`ALTER TABLE outreach_queue ADD COLUMN ${col} ${type}`);
   }
 
+  backfillJobKeys(db);
   return db;
 }
 
@@ -205,8 +207,8 @@ export function toIsoDay(v: unknown): string | undefined {
 
 export function saveJob(db: BetterSqlite3.Database, job: Job): void {
   db.prepare(`
-    INSERT OR IGNORE INTO jobs (id, source, title, company, url, apply_url, description, score, status, posted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO jobs (id, source, title, company, url, apply_url, description, score, status, posted_at, title_key, company_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     job.id,
     job.source,
@@ -217,8 +219,26 @@ export function saveJob(db: BetterSqlite3.Database, job: Job): void {
     job.description,
     job.score ?? null,
     job.status ?? null,
-    job.posted_at ?? null
+    job.posted_at ?? null,
+    titleIdentityKey(job.title),
+    companyKey(job.company)
   );
+}
+
+/** Fill title_key/company_key for rows saved before those columns existed. Returns rows updated. */
+export function backfillJobKeys(db: BetterSqlite3.Database): number {
+  const rows = db.prepare('SELECT id, title, company FROM jobs WHERE title_key IS NULL OR company_key IS NULL').all() as Array<{ id: string; title: string | null; company: string | null }>;
+  const upd = db.prepare('UPDATE jobs SET title_key = ?, company_key = ? WHERE id = ?');
+  db.transaction(() => { for (const r of rows) upd.run(titleIdentityKey(r.title), companyKey(r.company), r.id); })();
+  return rows.length;
+}
+
+export function repostCountForJob(db: BetterSqlite3.Database, jobId: string, windowDays = 90): number {
+  const t = db.prepare('SELECT id, source, company, title, url, created_at AS first_seen, title_key, company_key FROM jobs WHERE id = ?').get(jobId) as any;
+  if (!t) return 0;
+  const others = db.prepare(`SELECT id, source, company, title, url, created_at AS first_seen FROM jobs
+    WHERE source IS ? AND company_key = ? AND title_key = ? AND id != ?`).all(t.source, t.company_key, t.title_key, jobId) as any[];
+  return repostCount(t, others, windowDays);
 }
 
 export function getJob(db: BetterSqlite3.Database, id: string): Job | undefined {
