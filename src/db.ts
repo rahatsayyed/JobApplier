@@ -618,3 +618,9 @@ export function saveGateResults(db: BetterSqlite3.Database, rows: Array<{ job_id
   })();
   return n;
 }
+
+export function saveJdSnapshot(db: BetterSqlite3.Database, jobId: string, text: string): boolean {
+  if (typeof text !== 'string' || text.length < 200) return false;
+  return db.prepare(`UPDATE jobs SET jd_snapshot = ?, jd_snapshot_at = datetime('now')
+    WHERE id = ? AND (jd_snapshot IS NULL OR length(jd_snapshot) < ?)`).run(text, jobId, text.length).changes > 0;
+}

@@ -1,10 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { checkLiveness } from '../liveness.js';
+import { checkLivenessDetailed } from '../liveness.js';
 import { vetoResults } from '../vetoes.js';
 import BetterSqlite3 from 'better-sqlite3';
-import { openDb, saveGateResults } from '../db.js';
+import { openDb, saveGateResults, saveJdSnapshot } from '../db.js';
 import { jobFactsFromDb } from '../gateFacts.js';
 import { loadLanguageConfigStatus } from '../languageGate.js';
 
@@ -16,12 +16,13 @@ const server = new McpServer({ name: 'gates', version: '0.1.0' });
 server.registerTool(
   'check_liveness',
   {
-    description: 'Check whether a job posting URL is still live: returns active, expired, or uncertain',
-    inputSchema: { url: z.string().url() },
+    description: 'Check whether a job posting URL is still live: returns {liveness: active|expired|uncertain, snapshot_saved}. With job_id, an active page\'s full text is archived to jobs.jd_snapshot (URLs rot; some boards only give snippets).',
+    inputSchema: { url: z.string().url(), job_id: z.string().optional() },
   },
-  async ({ url }) => {
-    const liveness = await checkLiveness(url);
-    return { content: [{ type: 'text', text: JSON.stringify({ liveness }) }] };
+  async ({ url, job_id }) => {
+    const { liveness, text } = await checkLivenessDetailed(url);
+    const snapshot_saved = !!(job_id && liveness === 'active' && text && saveJdSnapshot(getDb(), job_id, text));
+    return { content: [{ type: 'text', text: JSON.stringify({ liveness, snapshot_saved }) }] };
   }
 );
 

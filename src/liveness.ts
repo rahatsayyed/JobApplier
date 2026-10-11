@@ -1,3 +1,8 @@
+import { htmlToText } from './htmlText.js';
+export { htmlToText };
+
+const MAX_SNAPSHOT = 50_000;
+
 export type Liveness = 'active' | 'expired' | 'uncertain';
 
 const ANTI_BOT = /just a moment|cloudflare|verify you are human|captcha/;
@@ -71,8 +76,8 @@ async function readBodyCapped(res: Response): Promise<string> {
   return text + decoder.decode();
 }
 
-export async function checkLiveness(url: string): Promise<Liveness> {
-  if (!isSafeFetchUrl(url)) return 'uncertain';
+export async function checkLivenessDetailed(url: string): Promise<{ liveness: Liveness; text: string | null }> {
+  if (!isSafeFetchUrl(url)) return { liveness: 'uncertain', text: null };
   try {
     const signal = AbortSignal.timeout(10_000);
     let current = url;
@@ -81,21 +86,27 @@ export async function checkLiveness(url: string): Promise<Liveness> {
       if (res.status >= 300 && res.status < 400) {
         try { await res.body?.cancel(); } catch { /* best effort: release the unread redirect body */ }
         const location = res.headers?.get?.('location');
-        if (!location) return 'uncertain';
+        if (!location) return { liveness: 'uncertain', text: null };
         let next: string;
         try {
           next = new URL(location, current).toString();
         } catch {
-          return 'uncertain';
+          return { liveness: 'uncertain', text: null };
         }
-        if (!isSafeFetchUrl(next)) return 'uncertain';
+        if (!isSafeFetchUrl(next)) return { liveness: 'uncertain', text: null };
         current = next;
         continue;
       }
-      return classifyLiveness({ status: res.status, requestedUrl: url, finalUrl: current, bodyText: await readBodyCapped(res) });
+      const bodyText = await readBodyCapped(res);
+      const liveness = classifyLiveness({ status: res.status, requestedUrl: url, finalUrl: current, bodyText });
+      return { liveness, text: res.status >= 200 && res.status < 300 ? htmlToText(bodyText).slice(0, MAX_SNAPSHOT) : null };
     }
-    return 'uncertain';
+    return { liveness: 'uncertain', text: null };
   } catch {
-    return 'uncertain';
+    return { liveness: 'uncertain', text: null };
   }
+}
+
+export async function checkLiveness(url: string): Promise<Liveness> {
+  return (await checkLivenessDetailed(url)).liveness;
 }
