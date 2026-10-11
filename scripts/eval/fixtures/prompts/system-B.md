@@ -1,5 +1,6 @@
 <!--
 EVAL GENERATOR PROMPT: SYSTEM B = career-ops writing/tailoring rules
+Adapted from career-ops-hq/career-ops (MIT, (c) 2026 Santiago Fernandez de Valderrama). See that repo's LICENSE.
 Built by .superpowers/eval/build-prompts.ts on 2026-10-07. Rules below are copied VERBATIM (whole lines, in this order, separated by one blank line).
 Sources and line ranges copied:
   .superpowers/research/career-ops/modes/_shared.md:28-33  (6 lines, starts: "**RULE: NEVER hardcode metrics from proof points.*")

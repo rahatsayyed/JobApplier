@@ -1,5 +1,6 @@
 <!--
 EVAL GENERATOR PROMPT: SYSTEM C = ai-job-search CV drafting / writing rules
+Adapted from MadsLorentzen/ai-job-search (MIT, (c) 2026 Mads Lorentzen). See that repo's LICENSE.
 Built by .superpowers/eval/build-prompts.ts on 2026-10-07. Rules below are copied VERBATIM (whole lines, in this order, separated by one blank line).
 Sources and line ranges copied:
   .superpowers/research/ai-job-search/.claude/skills/job-application-assistant/03-writing-style.md:7-24  (18 lines, starts: "## Critical Rules")
