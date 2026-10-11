@@ -20,6 +20,23 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       score INTEGER,
       status TEXT,
       excluded_reason TEXT,
+      posted_at TEXT,
+      deadline TEXT,
+      deadline_reported TEXT,
+      language_note TEXT,
+      score_dims TEXT,
+      requirements TEXT,
+      strengths TEXT,
+      gaps TEXT,
+      hard_stops TEXT,
+      confidence TEXT,
+      title_key TEXT,
+      company_key TEXT,
+      legitimacy TEXT,
+      legitimacy_signals TEXT,
+      gate_flags TEXT,
+      jd_snapshot TEXT,
+      jd_snapshot_at TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -135,8 +152,10 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
   }
 
   const jobCols = new Set((db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map(c => c.name));
-  for (const [col, type] of [['match_reasons','TEXT'],['match_missing','TEXT'],['location_verdict','TEXT'],['language_gate','TEXT'],['excluded_reason','TEXT']] as const) {
-    if (!jobCols.has(col)) db.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${type}`);
+  for (const col of ['match_reasons', 'match_missing', 'location_verdict', 'language_gate', 'excluded_reason',
+    'posted_at', 'deadline', 'deadline_reported', 'language_note', 'score_dims', 'requirements', 'strengths', 'gaps', 'hard_stops', 'confidence',
+    'title_key', 'company_key', 'legitimacy', 'legitimacy_signals', 'gate_flags', 'jd_snapshot', 'jd_snapshot_at']) {
+    if (!jobCols.has(col)) db.exec(`ALTER TABLE jobs ADD COLUMN ${col} TEXT`);
   }
   if (!outreachQueueColumnNames.has('resume_json')) db.exec('ALTER TABLE outreach_queue ADD COLUMN resume_json TEXT');
   for (const [col, type] of [['ats_coverage', 'INTEGER'], ['ats_gaps', 'TEXT'], ['fact_warnings', 'TEXT'], ['review_applied', 'INTEGER'], ['review_rejected', 'INTEGER']] as const) {
@@ -161,12 +180,30 @@ export interface Job {
   description: string;
   score?: number;
   status?: string;
+  posted_at?: string;
+}
+
+/** Normalize a source's posting date to UTC 'YYYY-MM-DD'; undefined when absent or invalid. */
+export function toIsoDay(v: unknown): string | undefined {
+  if (v == null || v === '') return undefined;
+  let d: Date;
+  if (typeof v === 'number' && Number.isFinite(v)) d = new Date(v < 1e12 ? v * 1000 : v);
+  else if (typeof v === 'string') {
+    const s = v.trim();
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/.exec(s);
+    if (!m) return undefined;
+    // Validate the calendar date in BOTH branches (no rollover such as 02-30 -> 03-02).
+    const day = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    if (day.getUTCFullYear() !== +m[1] || day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3]) return undefined;
+    d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? day : new Date(s);
+  } else return undefined;
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
 }
 
 export function saveJob(db: BetterSqlite3.Database, job: Job): void {
   db.prepare(`
-    INSERT OR IGNORE INTO jobs (id, source, title, company, url, apply_url, description, score, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO jobs (id, source, title, company, url, apply_url, description, score, status, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     job.id,
     job.source,
@@ -176,7 +213,8 @@ export function saveJob(db: BetterSqlite3.Database, job: Job): void {
     job.apply_url,
     job.description,
     job.score ?? null,
-    job.status ?? null
+    job.status ?? null,
+    job.posted_at ?? null
   );
 }
 
@@ -192,6 +230,7 @@ export function getJob(db: BetterSqlite3.Database, id: string): Job | undefined 
     description: result.description,
     score: result.score,
     status: result.status,
+    posted_at: result.posted_at ?? undefined,
   } : undefined;
 }
 

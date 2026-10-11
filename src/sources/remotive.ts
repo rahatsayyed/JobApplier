@@ -1,4 +1,4 @@
-import type { Job } from '../db.js';
+import { toIsoDay, type Job } from '../db.js';
 
 export function normalizeRemotive(raw: any): Job[] {
   const jobs = raw?.jobs ?? [];
@@ -10,6 +10,7 @@ export function normalizeRemotive(raw: any): Job[] {
     url: j.url,
     apply_url: j.url,
     description: j.description,
+    ...(toIsoDay(j.publication_date) ? { posted_at: toIsoDay(j.publication_date) } : {}),
   }));
 }
 

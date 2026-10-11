@@ -1,4 +1,4 @@
-import type { Job } from '../db.js';
+import { toIsoDay, type Job } from '../db.js';
 
 const DEV_KEYWORDS = [
   'react',
@@ -31,6 +31,7 @@ export function normalizeRemoteok(raw: any): Job[] {
       url: j.url,
       apply_url: j.apply_url ?? j.url,
       description: j.description,
+      ...(toIsoDay(j.date ?? j.epoch) ? { posted_at: toIsoDay(j.date ?? j.epoch) } : {}),
     }));
 }
 

@@ -1,4 +1,4 @@
-import type { Job } from '../db.js';
+import { toIsoDay, type Job } from '../db.js';
 
 export function normalizeAdzuna(raw: any): Job[] {
   const results = raw?.results ?? [];
@@ -10,6 +10,7 @@ export function normalizeAdzuna(raw: any): Job[] {
     url: r.redirect_url,
     apply_url: r.redirect_url,
     description: r.description,
+    ...(toIsoDay(r.created) ? { posted_at: toIsoDay(r.created) } : {}),
   }));
 }
 
