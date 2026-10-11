@@ -1,6 +1,7 @@
 import BetterSqlite3 from 'better-sqlite3';
 import { z } from 'zod';
 import { normalizeMatchRow, type MatchRowInput } from './score.js';
+import { classifyDeadlines, type DeadlineSweep } from './freshness.js';
 
 /** enqueue_outreach.ats_coverage: an integer percentage, or null when the final render had no keywords (tailor contract). */
 export const atsCoverageSchema = z.number().int().min(0).max(100).nullable().optional();
@@ -563,4 +564,27 @@ export function getCalibrationRows(db: BetterSqlite3.Database): { score: number;
     FROM jobs j JOIN job_outcomes o ON o.job_id = j.id
     WHERE j.score IS NOT NULL AND o.id = (SELECT MAX(id) FROM job_outcomes WHERE job_id = j.id)
   `).all() as { score: number; outcome: Outcome }[];
+}
+
+/** Run at hunt start: expire scored, not-yet-excluded jobs whose ISO deadline has passed; report closing-soon and unparseable ones.
+ *  Jobs we already acted on (sent email/connect, submitted application) are left alone: excluding them would stop their follow-ups.
+ *  An unparseable deadline is reported once (remembered in deadline_reported); changing the text reports it again. */
+export function sweepDeadlines(db: BetterSqlite3.Database, now: Date = new Date()): DeadlineSweep {
+  const rows = db.prepare(`SELECT id, deadline, source, deadline_reported FROM jobs
+    WHERE deadline IS NOT NULL AND excluded_reason IS NULL AND score IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM outreach_queue q WHERE q.job_id = jobs.id
+        AND (q.email_status = 'sent' OR q.connect_status = 'sent' OR q.apply_status = 'submitted'))
+      AND NOT EXISTS (SELECT 1 FROM outreach o WHERE o.job_id = jobs.id AND o.status = 'sent')
+      AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.job_id = jobs.id AND a.status = 'submitted')`)
+    .all() as Array<{ id: string; deadline: string; source: string | null; deadline_reported: string | null }>;
+  const seen = new Set(rows.filter((r) => r.deadline_reported === r.deadline).map((r) => r.id));
+  const out = classifyDeadlines(rows, now);
+  out.unparseable = out.unparseable.filter((u) => !seen.has(u.job_id));
+  const mark = db.prepare('UPDATE jobs SET excluded_reason = ? WHERE id = ? AND excluded_reason IS NULL');
+  const reported = db.prepare('UPDATE jobs SET deadline_reported = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const e of out.expired) mark.run(`deadline passed: ${e.deadline}`, e.job_id);
+    for (const u of out.unparseable) reported.run(u.deadline, u.job_id);
+  })();
+  return out;
 }

@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, updateOutreachStatus } from '../db.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
@@ -305,6 +305,15 @@ server.registerTool(
     const allowed = checkAndIncrement(db, key, limit);
     return { content: [{ type: 'text', text: JSON.stringify({ allowed }) }] };
   }
+);
+
+server.registerTool(
+  'sweep_deadlines',
+  {
+    description: 'Run at the start of every hunt: marks scored jobs whose ISO deadline has passed as excluded ("deadline passed: <date>", never for a job already emailed/connected/applied to) and returns {expired, closingSoon (0-7 days left), unparseable (non-ISO deadlines, never compared, each reported once)}.',
+    inputSchema: {},
+  },
+  async () => ({ content: [{ type: 'text', text: JSON.stringify(sweepDeadlines(db)) }] })
 );
 
 async function main() {
