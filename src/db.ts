@@ -38,6 +38,7 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
       gate_flags TEXT,
       jd_snapshot TEXT,
       jd_snapshot_at TEXT,
+      score_cap_reason TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -155,7 +156,7 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
   const jobCols = new Set((db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map(c => c.name));
   for (const col of ['match_reasons', 'match_missing', 'location_verdict', 'language_gate', 'excluded_reason',
     'posted_at', 'deadline', 'deadline_reported', 'language_note', 'score_dims', 'requirements', 'strengths', 'gaps', 'hard_stops', 'confidence',
-    'title_key', 'company_key', 'legitimacy', 'legitimacy_signals', 'gate_flags', 'jd_snapshot', 'jd_snapshot_at']) {
+    'title_key', 'company_key', 'legitimacy', 'legitimacy_signals', 'gate_flags', 'jd_snapshot', 'jd_snapshot_at', 'score_cap_reason']) {
     if (!jobCols.has(col)) db.exec(`ALTER TABLE jobs ADD COLUMN ${col} TEXT`);
   }
   if (!outreachQueueColumnNames.has('resume_json')) db.exec('ALTER TABLE outreach_queue ADD COLUMN resume_json TEXT');
@@ -510,18 +511,31 @@ export function saveMatchResultsChecked(
   const descOf = db.prepare("SELECT trim(coalesce(description, '') || ' ' || coalesce(jd_snapshot, '')) AS d FROM jobs WHERE id = ?");
   const upd = db.prepare(`UPDATE jobs SET score = ?, match_reasons = ?, match_missing = ?, location_verdict = ?, language_gate = ?,
     language_note = ?, score_dims = ?, requirements = ?, strengths = ?, gaps = ?, hard_stops = ?, confidence = ?,
-    deadline = COALESCE(?, deadline) WHERE id = ?`);
+    deadline = COALESCE(?, deadline), score_cap_reason = ? WHERE id = ?`);
+  const seen = new Set<string>();
   db.transaction(() => {
-    for (const r of rows) {
-      if (typeof r.error === 'string' && r.score == null && r.score_dims == null) { errors.push({ job_id: r.job_id, error: r.error }); continue; }
-      const desc = (descOf.get(r.job_id) as { d: string | null } | undefined)?.d ?? undefined;
-      const n = normalizeMatchRow(r, desc);
-      if (!n.ok) { errors.push({ job_id: r.job_id, error: n.error }); continue; }
+    for (const r of rows as unknown[]) {
+      // Per-row rejection: a null/non-object row or one without a string job_id never fails the call.
+      if (!r || typeof r !== 'object' || typeof (r as any).job_id !== 'string') {
+        errors.push({ job_id: r && typeof r === 'object' && (r as any).job_id != null ? String((r as any).job_id) : '', error: 'invalid row: missing string job_id' });
+        continue;
+      }
+      const row = r as MatchRowInput;
+      // First occurrence of a job_id wins (an error row counts as an occurrence); later ones are duplicates.
+      if (seen.has(row.job_id)) { errors.push({ job_id: row.job_id, error: 'duplicate job_id' }); continue; }
+      seen.add(row.job_id);
+      if (typeof row.error === 'string') { errors.push({ job_id: row.job_id, error: row.error }); continue; }
+      const found = descOf.get(row.job_id) as { d: string | null } | undefined;
+      if (!found) { errors.push({ job_id: row.job_id, error: 'unknown job_id' }); continue; }
+      const desc = found.d ?? undefined;
+      const n = normalizeMatchRow(row, desc);
+      if (!n.ok) { errors.push({ job_id: row.job_id, error: n.error }); continue; }
       const x = n.row;
       const res = upd.run(x.score, x.reasons, JSON.stringify(x.missing_keywords ?? []), x.location_verdict ?? null, x.language_gate ?? null,
         x.language_note, x.score_dims ? JSON.stringify(x.score_dims) : null, JSON.stringify(x.requirements), JSON.stringify(x.strengths),
-        JSON.stringify(x.gaps), JSON.stringify(x.hard_stops), x.confidence, x.deadline ?? null, x.job_id);
-      if (res.changes > 0) saved++;
+        JSON.stringify(x.gaps), JSON.stringify(x.hard_stops), x.confidence, x.deadline ?? null, x.score_cap_reason, x.job_id);
+      if (res.changes === 0) { errors.push({ job_id: x.job_id, error: 'unknown job_id' }); continue; }
+      saved++;
       if (x.hard_stops.length) stops.push({ job_id: x.job_id, hard_stops: x.hard_stops });
     }
   })();

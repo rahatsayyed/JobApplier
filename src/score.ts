@@ -30,6 +30,8 @@ export interface NormalizedMatch extends MatchResultInput {
   confidence: 'high' | 'medium' | 'low';
   deadline: string | null | undefined;
   language_note: string | null;
+  // Which cap lowered the score (e.g. "evidence-ceiling:72", "empty-table:70"), or null when the dims sum stood.
+  score_cap_reason: string | null;
 }
 
 const IMPORTANCE: Importance[] = ['critical', 'high', 'meaningful', 'preferred', 'low_signal'];
@@ -39,21 +41,36 @@ const CATEGORIES: ReqCategory[] = ['skill', 'experience', 'education', 'location
 const VERDICTS = ['PASS', 'FAIL', 'FLAG'] as const;
 const DIMS: Array<keyof ScoreDims> = ['skills', 'seniority', 'domain', 'location'];
 const MAX_ROWS = 12;
+const QUOTE_MIN = 12;
+const QUOTE_MAX = 300;
+const WEIGHT: Partial<Record<Importance, number>> = { critical: 3, high: 2, meaningful: 1 };
+const TIER_FACTOR: Record<Evidence, number> = { stated: 1, structural: 0.75, inferred: 0.4 };
+const MET: Record<ReqMatch, number> = { strong: 1, partial: 0.5, missing: 0 };
+const EMPTY_TABLE_CEILING = 70;
 
 const fold = (s: string) => s.normalize('NFKC').toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
 
 export function normalizeRequirements(reqs: unknown, description?: string): Requirement[] {
+  return normalizeRequirementsWith(reqs, description ? foldedPosting(description, htmlToText(description)) : null);
+}
+
+// The model quotes what it read, which may be raw HTML (remotive/remoteok) or page text: accept a quote found in either form.
+const foldedPosting = (description: string, plain: string) => `${fold(description)} ${fold(plain)}`;
+
+function normalizeRequirementsWith(reqs: unknown, jd: string | null): Requirement[] {
   if (!Array.isArray(reqs)) return [];
-  // The model quotes what it read, which may be raw HTML (remotive/remoteok) or page text: accept a quote found in either form.
-  const jd = description ? `${fold(description)} ${fold(htmlToText(description))}` : null;
   const out: Requirement[] = [];
   for (const r of reqs as any[]) {
     if (!r || typeof r.req !== 'string' || !r.req.trim()) continue;
     let evidence: Evidence = EVIDENCE.includes(r.evidence) ? r.evidence : 'inferred';
     let importance: Importance = IMPORTANCE.includes(r.importance) ? r.importance : 'meaningful';
-    const jd_quote = typeof r.jd_quote === 'string' && r.jd_quote.trim() ? r.jd_quote.trim() : null;
-    // "stated" means quoted from the posting: no quote, or a quote not in the posting, is at best structural.
-    if (evidence === 'stated' && (!jd_quote || (jd != null && !jd.includes(fold(jd_quote))))) evidence = 'structural';
+    let jd_quote = typeof r.jd_quote === 'string' && r.jd_quote.trim() ? r.jd_quote.trim() : null;
+    if (jd_quote && jd_quote.length > QUOTE_MAX) jd_quote = jd_quote.slice(0, QUOTE_MAX); // stored truncated, checked on its first 300 chars
+    // "stated" means quoted from the posting: no quote, a too-short quote (a stray word proves nothing), or a quote not in the posting is at best structural.
+    if (evidence === 'stated') {
+      const q = jd_quote ? fold(jd_quote) : '';
+      if (q.length < QUOTE_MIN || (jd != null && !jd.includes(q))) evidence = 'structural';
+    }
     // Gate: inferred evidence can never be critical or high.
     if (evidence === 'inferred' && (importance === 'critical' || importance === 'high')) importance = 'meaningful';
     out.push({
@@ -73,11 +90,28 @@ const isLocationOrLanguage = (r: Requirement) => r.category === 'location' || r.
 
 /** Hard stop = an explicit non-negotiable the candidate does not meet: critical + missing, stated or structural evidence, and not a location/language row. */
 export function hardStops(reqs: Requirement[]): string[] {
-  return reqs.filter((r) => r.importance === 'critical' && r.match === 'missing' && r.evidence !== 'inferred' && !isLocationOrLanguage(r)).map((r) => r.req);
+  const names = reqs.filter((r) => r.importance === 'critical' && r.match === 'missing' && r.evidence !== 'inferred' && !isLocationOrLanguage(r)).map((r) => r.req);
+  return [...new Set(names)];
 }
 
-function confidenceOf(reqs: Requirement[], description?: string): 'high' | 'medium' | 'low' {
-  if (!reqs.length || (description != null && htmlToText(description).length < 300)) return 'low';
+// The requirement table can only LOWER the score: ceiling = 59 + round(41 * F), F = evidence-weighted share of the
+// critical/high/meaningful rows that are met. No weighted rows (empty table) => 70. All-stated-and-met => 100; all-inferred-and-met => 75.
+export function evidenceCeiling(reqs: Requirement[]): { ceiling: number; reason: string } {
+  let num = 0;
+  let den = 0;
+  for (const r of reqs) {
+    const w = WEIGHT[r.importance];
+    if (!w) continue;
+    num += w * TIER_FACTOR[r.evidence] * MET[r.match];
+    den += w;
+  }
+  if (den === 0) return { ceiling: EMPTY_TABLE_CEILING, reason: `${reqs.length ? 'no-weighted-rows' : 'empty-table'}:${EMPTY_TABLE_CEILING}` };
+  const ceiling = 59 + Math.round(41 * (num / den));
+  return { ceiling, reason: `evidence-ceiling:${ceiling}` };
+}
+
+function confidenceOf(reqs: Requirement[], plainLength?: number): 'high' | 'medium' | 'low' {
+  if (!reqs.length || (plainLength != null && plainLength < 300)) return 'low';
   return reqs.some((r) => r.evidence === 'inferred') ? 'medium' : 'high';
 }
 
@@ -86,6 +120,7 @@ const cap3 = (xs: unknown): string[] =>
 
 export function normalizeMatchRow(r: MatchRowInput, description?: string): { ok: true; row: NormalizedMatch } | { ok: false; error: string } {
   let score: number;
+  let capReason: string | null = null;
   let dims: ScoreDims | null = null;
   if (r.score_dims != null) {
     for (const k of DIMS) {
@@ -98,7 +133,12 @@ export function normalizeMatchRow(r: MatchRowInput, description?: string): { ok:
     if (typeof r.score !== 'number' || !Number.isFinite(r.score) || r.score < 0 || r.score > 100) return { ok: false, error: `invalid score: ${String(r.score)}` };
     score = Math.round(r.score);
   }
-  const requirements = normalizeRequirements(r.requirements, description);
+  const plain = description != null ? htmlToText(description) : undefined;
+  const requirements = normalizeRequirementsWith(r.requirements, description ? foldedPosting(description, plain ?? '') : null);
+  if (dims) {
+    const cap = evidenceCeiling(requirements);
+    if (score > cap.ceiling) { score = cap.ceiling; capReason = cap.reason; }
+  }
   // Loosely typed fields are sanitized here, never allowed to fail the call: only the score/dims decide rejection.
   const verdict = (v: unknown) => ((VERDICTS as readonly unknown[]).includes(v) ? (v as 'PASS' | 'FAIL' | 'FLAG') : undefined);
   return {
@@ -115,9 +155,10 @@ export function normalizeMatchRow(r: MatchRowInput, description?: string): { ok:
       strengths: cap3(r.strengths),
       gaps: cap3(r.gaps),
       hard_stops: hardStops(requirements),
-      confidence: confidenceOf(requirements, description),
+      confidence: confidenceOf(requirements, plain?.length),
       deadline: r.deadline === undefined ? undefined : typeof r.deadline === 'string' && r.deadline.trim() ? r.deadline.trim() : null,
       language_note: typeof r.language_note === 'string' && r.language_note.trim() ? r.language_note.trim() : null,
+      score_cap_reason: capReason,
     },
   };
 }

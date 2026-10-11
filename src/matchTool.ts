@@ -3,24 +3,9 @@ import { z } from 'zod';
 import type BetterSqlite3 from 'better-sqlite3';
 import { saveMatchResultsChecked } from './db.js';
 
-/** Per-row shape is validated in normalizeMatchRow (score.ts), one row at a time, never here. */
-export const matchRowSchema = z.object({
-  job_id: z.string(),
-  score: z.unknown().optional(),
-  reasons: z.unknown().optional(),
-  missing_keywords: z.unknown().optional(),
-  location_verdict: z.unknown().optional(),
-  language_gate: z.unknown().optional(),
-  language_note: z.unknown().optional(),
-  score_dims: z.unknown().optional(),
-  requirements: z.unknown().optional(),
-  strengths: z.unknown().optional(),
-  gaps: z.unknown().optional(),
-  deadline: z.unknown().optional(),
-  error: z.unknown().optional(),
-}).passthrough();
-
-export const matchResultsInputShape = { results: z.array(matchRowSchema) };
+/** Rows are validated one at a time in saveMatchResultsChecked / normalizeMatchRow, never here:
+ *  a strict schema (or a missing job_id, or a null row) would reject the WHOLE call and stop the hunt. */
+export const matchResultsInputShape = { results: z.array(z.unknown()) };
 
 export function handleSaveMatchResults(db: BetterSqlite3.Database, args: { results: unknown[] }) {
   const out = saveMatchResultsChecked(db, args.results as any);

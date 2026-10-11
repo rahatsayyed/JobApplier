@@ -4,7 +4,9 @@ import { hardStops, normalizeMatchRow, normalizeRequirements, type Requirement }
 
 const desc = 'We need 3+ years of React. Strong TypeScript required. Kubernetes is a plus. Must be based in India.';
 const dims = { skills: 20, seniority: 18, domain: 12, location: 25 };
-const row = (over: any = {}) => ({ job_id: 'j1', score: 1, reasons: 'r', missing_keywords: [], score_dims: dims, ...over });
+// default table: one stated-and-met critical row, so the evidence ceiling does not bite (empty-table ceiling is covered in scoreCeiling.test.ts)
+const okReqs = [{ req: 'React', importance: 'critical', evidence: 'stated', jd_quote: '3+ years of React', match: 'strong' }];
+const row = (over: any = {}) => ({ job_id: 'j1', score: 1, reasons: 'r', missing_keywords: [], score_dims: dims, requirements: okReqs, ...over });
 
 describe('normalizeRequirements', () => {
   it('caps inferred evidence below critical/high and demotes an unverifiable quote', () => {
