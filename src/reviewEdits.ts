@@ -2,7 +2,13 @@
 // Applies a reviewer's structured edits (adapted from MadsLorentzen/ai-job-search /apply steps 3-4, MIT, (c) 2026
 // Mads Lorentzen) one at a time and re-runs the fact gate after each, so a reviewer can reword, re-aim or cut, but can
 // never add an unsupported claim.
+import { z } from 'zod';
+import { MAX_SCAN_CHARS } from './factClaims.js';
 import { checkOutreachText, checkResume, type CheckOptions, type FactReport } from './resumeFacts.js';
+
+// MCP input schema for apply_review_edits.job_description: a full posting, capped at the fact-scan cap
+// (not the 2000 cap used for edit strings).
+export const jobDescriptionSchema = z.string().max(MAX_SCAN_CHARS).optional();
 
 export interface ReviewEdit {
   target: 'resume' | 'email';

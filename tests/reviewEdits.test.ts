@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyReviewEdits, type ReviewEdit } from '../src/reviewEdits.js';
+import { applyReviewEdits, jobDescriptionSchema, type ReviewEdit } from '../src/reviewEdits.js';
 
 const base: any = {
   name: 'Test User', jobTitle: null, email: 't@example.com', phone: '+91 90000 00000',
@@ -118,5 +118,14 @@ describe('applyReviewEdits', () => {
     const r = applyReviewEdits(base, clone(), null, [{ target: 'resume', path: 'summary', old_string: 'AI-integrated systems', new_string: 'AI-integrated systems and deeply passionate about pixel-perfect UI quality', reason: 'keyword' }], { ...O, jobDescription: jd });
     expect(r.applied).toEqual([]);
     expect(r.rejected[0].why).toMatch(/would add warning\(s\): posting-echo/);
+  });
+});
+
+describe('apply_review_edits job_description schema', () => {
+  it('accepts a full 6000-char posting and the 20000 cap, rejects 20001', () => {
+    expect(jobDescriptionSchema.safeParse('x'.repeat(6000)).success).toBe(true);
+    expect(jobDescriptionSchema.safeParse('x'.repeat(20000)).success).toBe(true);
+    expect(jobDescriptionSchema.safeParse('x'.repeat(20001)).success).toBe(false);
+    expect(jobDescriptionSchema.safeParse(undefined).success).toBe(true);
   });
 });

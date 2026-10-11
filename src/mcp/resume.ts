@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { getBaseResume, renderResumeChecked } from '../resume.js';
 import { checkOutreachText } from '../resumeFacts.js';
-import { applyReviewEdits } from '../reviewEdits.js';
+import { applyReviewEdits, jobDescriptionSchema } from '../reviewEdits.js';
 
 const server = new McpServer({ name: 'resume', version: '0.1.0' });
 
@@ -89,7 +89,7 @@ server.registerTool(
         new_string: z.string().max(2000),
         reason: z.enum(['keyword', 'reframing', 'style', 'grounding', 'cut', 'fact-gate']),
       }).strict()).max(20),
-      job_description: z.string().max(2000).optional(),
+      job_description: jobDescriptionSchema,
       job_title: z.string().max(2000).optional(),
       company: z.string().max(2000).optional(),
     },
