@@ -65,6 +65,14 @@ export function checkFacts(base: Record<string, any>, tailored: Record<string, a
     const t = tokens(s);
     if (!t.length || !t.every(w => pool.has(w))) invented.push(`skill:${s}`);
   }
+  // Rendered headings/titles: projects and certificates must exist in the base (normalized equality); a skill
+  // category may only use words from the base's category names and skill items ("Kubernetes & Go" blocks).
+  const baseProjects = field(base.projects, 'title');
+  for (const v of field(tailored.projects, 'title')) if (!baseProjects.has(v)) invented.push(`project:${v}`);
+  const baseCerts = field(base.certificates, 'name');
+  for (const v of field(tailored.certificates, 'name')) if (!baseCerts.has(v)) invented.push(`certificate:${v}`);
+  const catPool = new Set([...pool, ...[...field(base.skills, 'category')].flatMap(tokens), 'and']);
+  for (const c of field(tailored.skills, 'category')) if (!tokens(c).every(w => catPool.has(w))) invented.push(`skill-category:${c}`);
 
   const contacts: Array<[string, unknown, unknown]> = [
     ['name', base.name, tailored.name], ['email', base.email, tailored.email],

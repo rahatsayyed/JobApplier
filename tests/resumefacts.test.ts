@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkFacts } from '../src/resumeFacts.js';
+import { checkFacts, checkResume } from '../src/resumeFacts.js';
 import { getBaseResume, renderResume } from '../src/resume.js';
 
 const base = {
@@ -79,5 +79,33 @@ describe('renderResume fact gate', () => {
     const t = JSON.parse(JSON.stringify(getBaseResume()));
     t.experience[0].company = 'Invented Corp Ltd';
     await expect(renderResume(t)).rejects.toThrow(/fact check failed/);
+  });
+});
+
+describe('rendered-but-unchecked fields (projects, certificates, skill categories)', () => {
+  const real = () => JSON.parse(JSON.stringify(getBaseResume()));
+  it('blocks a project not in the base', () => {
+    const t = real(); t.projects = [{ title: 'Kubernetes Operator at Google', description: [] }];
+    expect(checkFacts(getBaseResume(), t).invented).toContain('project:kubernetes operator at google');
+    expect(checkResume(getBaseResume(), t).verdict).toBe('block');
+  });
+  it('blocks a certificate not in the base', () => {
+    const t = real(); t.certificates = [{ name: 'AWS Certified Solutions Architect Professional' }];
+    expect(checkFacts(getBaseResume(), t).invented).toContain('certificate:aws certified solutions architect professional');
+    expect(checkResume(getBaseResume(), t).verdict).toBe('block');
+  });
+  it('blocks a skill category with tokens outside the base categories and skill items', () => {
+    const t = real(); t.skills[0].category = 'Kubernetes & Go';
+    expect(checkFacts(getBaseResume(), t).invented).toContain('skill-category:kubernetes & go');
+    expect(checkResume(getBaseResume(), t).verdict).toBe('block');
+  });
+  it('passes projects, certificates and categories that are in the base (verbatim, or category tokens from the pool)', () => {
+    const b = { ...clone(), projects: [{ title: 'Ledger App' }], certificates: [{ name: 'CKA' }], skills: [{ category: 'Frontend', items: ['React', 'TypeScript'] }, { category: 'Backend', items: ['Node.js'] }] };
+    const t = JSON.parse(JSON.stringify(b));
+    t.projects = [{ title: 'ledger  app' }]; t.certificates = []; t.skills[0].category = 'Frontend & Backend'; t.skills[1].category = 'React';
+    expect(checkFacts(b, t)).toEqual({ verdict: 'pass', invented: [] });
+  });
+  it('the real base resume still passes against itself', () => {
+    expect(checkResume(getBaseResume(), getBaseResume()).verdict).toBe('pass');
   });
 });
