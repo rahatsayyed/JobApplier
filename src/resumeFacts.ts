@@ -3,7 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { delegatedAuthorshipClaims, diagnoseCoverage, exceedsScanCap, factClaims, joinStatements, MAX_SCAN_CHARS, metricClaims, normalizeClaim, normalizeFact, sourceContainsFact } from './factClaims.js';
 import { proseFindings, resumeStatements } from './proseClaims.js';
-import { normalizeForAts, normalizeText } from './atsText.js';
+import { mixedScriptWords, normalizeForAts, normalizeText } from './atsText.js';
+
+/** `mixed-script:<word>: reason` findings for words that mix Latin with another script (homoglyph bypass). */
+const mixedScriptFindings = (text: string): string[] =>
+  uniqStrings(mixedScriptWords(text).map((m) => `mixed-script:${m.word}: mixes Latin with ${m.scripts.join('/')} letters`));
+const uniqStrings = (xs: string[]) => [...new Set(xs)];
 
 export interface FactCheckResult { verdict: 'pass' | 'block'; invented: string[] }
 
@@ -211,7 +216,7 @@ export function checkResume(rawBase: Record<string, any>, rawTailored: Record<st
   for (const c of metricClaims(tailoredText)) if (c.includes(' ') && !allowedMetrics.has(c)) invented.push(`count:${c}`);
 
   const sourceNorm = normalizeFact(baseText);
-  const unsupported: string[] = [];
+  const unsupported: string[] = mixedScriptFindings(tailoredText); // every rendered text field, not just prose
   for (const c of [...factClaims(prose, sourceNorm), ...delegatedAuthorshipClaims(prose, baseProse)]) {
     if (!sourceContainsFact(sourceNorm, c.value) && !allowFacts.has(c.value)) unsupported.push(`${c.kind}:${c.value}`);
   }
@@ -246,7 +251,7 @@ export function checkOutreachText(text: string, base: Record<string, any>, opts:
   const allowFacts = new Set(config.allow_facts.map(normalizeFact));
   const invented = [...metricClaims(clean)].filter((c) => !allowedMetrics.has(c)).map((c) => `metric:${c}`);
   const sourceNorm = normalizeFact(baseText);
-  const unsupported: string[] = [];
+  const unsupported: string[] = mixedScriptFindings(normalizeText(String(text ?? '')));
   for (const c of [...factClaims(clean, sourceNorm), ...delegatedAuthorshipClaims(clean, baseText)]) {
     if (!sourceContainsFact(sourceNorm, c.value) && !allowFacts.has(c.value)) unsupported.push(`${c.kind}:${c.value}`);
   }
