@@ -455,8 +455,9 @@ below). Three real bugs were found and fixed during this run:
 
 ## Resume tailoring rules
 
-Resume tailoring (schema preservation, no fabrication, keyword mirroring, one-page trim with an
-~85%-full target, and a mandatory humanizer pass with no em dashes) is fully specified in the
+Resume tailoring (schema preservation, no fabrication, keyword mirroring, a hard one-page limit
+with the fill ratio reported as advisory only (about 0.70-0.85 is fine; there is no fill target
+and no restore pass), and a mandatory humanizer pass with no em dashes) is fully specified in the
 `tailor-resume` skill (`.claude/skills/tailor-resume/SKILL.md`) — that skill is the single
 source of truth. Any flow that needs a tailored resume (the hunt pipeline's `outreach-preparer`
 stage, or an ad hoc single-job request) should invoke that skill rather than re-deriving these
@@ -468,13 +469,21 @@ What the code enforces around that skill (resume MCP: `get_base_resume`, `render
 - `resume.render_resume` runs fact gate v2 (`checkResume`, `src/resumeFacts.ts`,
   `src/factClaims.ts`, `src/proseClaims.ts`): the v1 checks plus noun-bound counts, prose
   tools/employers/titles, delegated authorship, scope/lead/years/tool-context checks, and the
-  `config/fact-gate.json` allow-lists and phrases. It makes text ATS-safe (ASCII dashes and
-  quotes), auto-trims the lowest-relevance bullets on page overflow (`trimResume`), and
-  classifies the passed `keywords` as covered / synonym_only / missing_have_it / gap
-  (`src/atsKeywords.ts`).
-- `resume.check_text` runs the same gate on emails and connect notes (`checkOutreachText`).
-- `resume.apply_review_edits` applies the reviewer's exact-quote edits (`src/reviewEdits.ts`) and
-  rejects any edit that adds a claim.
+  `config/fact-gate.json` allow-lists and phrases. It also blocks any `projects[]` title or
+  `certificates[]` name not in the base (`project:<title>`, `certificate:<name>`) and any
+  `skills[].category` using words outside the base's category names and skill items
+  (`skill-category:<name>`). It makes text ATS-safe FIRST (`src/atsText.ts`: ASCII dashes and
+  quotes, and every invisible Unicode format character such as zero-width spaces and soft
+  hyphens stripped), then gates and renders that same copy, auto-trims the lowest-relevance
+  bullets on page overflow (`trimResume`), and classifies the passed `keywords` as covered /
+  synonym_only / missing_have_it / skills_only / gap (`src/atsKeywords.ts`).
+- `resume.check_text` normalizes the text the same way, runs the same gate on that normalized
+  text (`checkOutreachText`) and returns it as `normalized_text`; the preparer enqueues exactly
+  that text (email subject/body, connect notes), never the pre-gate draft.
+- `resume.apply_review_edits` normalizes the resume, email and edits first, applies the
+  reviewer's exact-quote edits (`src/reviewEdits.ts`) and rejects any edit that adds a claim.
+- `job_description` on all three tools is clamped to 20000 characters in code (a longer posting
+  is truncated, not rejected).
 - Every rendered PDF now has ASCII dashes and quotes, ` - ` between dates and `: ` after the
   skills label (typography normalization plus a template edit; reversible with `git revert`).
 - Node.js, and any other item that is only in the Skills list, is `skills_only`: it never counts
@@ -506,8 +515,12 @@ A,C --model sonnet` (blind LLM judge, NEW vs the 2026-10-07 baselines). Gen and 
 run, never against the old baseline averages (truthfulness A 4.25 / B 4.00 / C 3.25, jobFit 3.38 /
 3.00 / 4.00); single samples differ by ~0.3 as noise. Acceptance thresholds used: jobFit >= 3.75
 and >= baseline A + 0.25, truthfulness >= 4.0 and no regression, 100% not blocked by the gate,
->= 88% exactly one page, >= 1.5 base bullets dropped, keyword coverage >= 34%. Rerun after any
-change to `tailor-resume`, `review-application` or the fact gate.
+>= 88% exactly one page, >= 1.5 base bullets dropped, keyword coverage >= 34%. What it measures:
+`eval:gen` (`scripts/eval/generate.ts`) runs `tailor-resume` single-shot only. Nothing in the eval
+exercises `review-application`, `apply_review_edits`, `draft-outreach` or `check_text` through an
+LLM (the gate is applied to the generated resumes by `eval:metrics`, in code). Rerun after any
+change to `tailor-resume` or the fact gate; a change to the review step or the outreach drafting
+is not measured by it.
 
 ### After merge: user checklist
 
@@ -515,9 +528,14 @@ change to `tailor-resume`, `review-application` or the fact gate.
    `render_resume` options, `check_text`, `apply_review_edits` and the new `enqueue_outreach`
    fields are live.
 2. Restart Claude Code so the new `review-application` skill is picked up.
-3. Run one supervised `/runhunt` and read the first outputs yourself (resumes, emails, the
-   per-job ATS coverage and gap lines), since the gate cannot catch paraphrased inflation.
-4. Decide whether to add a real Node.js work fact to `input/resume.json`.
+3. Rerun the eval to measure the rewritten DO examples: `npm run eval:gen`, then
+   `npm run eval:metrics`, then `npm run eval:judge -- scripts/eval/runs/<date> --compare A,C
+   --model sonnet` (always pass `--model` explicitly). Start gen and judge in the background.
+4. Run one supervised `/runhunt` and read the first outputs yourself (resumes, emails, the
+   per-job ATS coverage and gap lines), since the gate cannot catch paraphrased inflation. That
+   run is the first-ever LLM execution of review-application -> apply_review_edits -> re-render
+   -> check_text: none of it has run end to end with a real model before, so watch it closely.
+5. Decide whether to add a real Node.js work fact to `input/resume.json`.
 
 ## Safety
 
