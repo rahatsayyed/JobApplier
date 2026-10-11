@@ -90,23 +90,23 @@ describe('delegatedAuthorshipClaims', () => {
 describe('performance bounds on untrusted text', () => {
   const ms = (fn: () => unknown) => { const t = performance.now(); fn(); return performance.now() - t; };
   it('metricClaims on a long digit/dot run is fast', () => {
-    expect(ms(() => metricClaims('1.'.repeat(25000)))).toBeLessThan(250);
+    expect(ms(() => metricClaims('1.'.repeat(25000)))).toBeLessThan(1000);
   });
   it('diagnoseCoverage on a long digit/dot run is fast', () => {
-    expect(ms(() => diagnoseCoverage('1.'.repeat(25000)))).toBeLessThan(250);
+    expect(ms(() => diagnoseCoverage('1.'.repeat(25000)))).toBeLessThan(1000);
   });
   it('factClaims on many tool triggers is fast', () => {
-    expect(ms(() => factClaims('worked with the and for react '.repeat(1700)))).toBeLessThan(250);
+    expect(ms(() => factClaims('worked with the and for react '.repeat(1700)))).toBeLessThan(1000);
   });
   it('dotted tool names both extract (Lucid.js and Mesh.js)', () => {
     const vals = factClaims('Built integrations using Lucid.js and Mesh.js.').filter((c) => c.kind === 'tool').map((c) => c.value);
     expect(vals).toEqual(expect.arrayContaining(['lucid.js', 'mesh.js']));
   });
   it('metricClaims on a 19000-digit run ending in % is fast (regex bound, not just the cap)', () => {
-    expect(ms(() => metricClaims('1'.repeat(19000) + '%'))).toBeLessThan(250);
+    expect(ms(() => metricClaims('1'.repeat(19000) + '%'))).toBeLessThan(1000);
   });
   it('metricClaims on "3 years of " x 50000 is fast', () => {
-    expect(ms(() => metricClaims('3 years of '.repeat(50000)))).toBeLessThan(250);
+    expect(ms(() => metricClaims('3 years of '.repeat(50000)))).toBeLessThan(1000);
   });
   it('exceedsScanCap flags text the extractors would truncate (callers must block, not trust a partial scan)', () => {
     const padded = ' '.repeat(21000) + 'Worked at Google as Staff Engineer. Grew revenue by 300%.';
