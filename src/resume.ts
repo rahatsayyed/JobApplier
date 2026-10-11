@@ -10,6 +10,7 @@ import { joinStatements } from './factClaims.js';
 import { resumeStatements } from './proseClaims.js';
 import { classifyKeywords, coveragePct, type KeywordResult, type KeywordSpec } from './atsKeywords.js';
 import { pickBulletToCut, removeBullet } from './trimResume.js';
+import { normalizeForAts } from './atsText.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,19 +23,7 @@ export function getBaseResume(): any {
   return JSON.parse(readFileSync(resumePath, 'utf8'));
 }
 
-/** ATS-safe text: some importers drop non-ASCII dashes in date ranges (ai-job-search verify_pdf origin story). */
-export function normalizeForAts<T>(v: T): T {
-  const fix = (s: string) => s
-    .replace(/[‐-―−]/g, '-')
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/…/g, '...')
-    .replace(/[  ]/g, ' ')
-    .replace(/[​-‍﻿]/g, '')
-    .replace(/\s*→\s*/g, ' to ');
-  const walk = (x: any): any => (typeof x === 'string' ? fix(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, val]) => [k, walk(val)])) : x);
-  return walk(v);
-}
+export { normalizeForAts, normalizeText } from './atsText.js';
 
 export interface RenderOptions { jobDescription?: string; jobTitle?: string; keywords?: KeywordSpec[]; maxTrims?: number }
 export interface RenderResult {
@@ -63,19 +52,20 @@ const proseText = (r: any) => joinStatements(resumeStatements(r).map((s) => s.te
 const skillsList = (r: any) => (Array.isArray(r?.skills) ? r.skills : []).flatMap((x: any) => (Array.isArray(x?.items) ? x.items : [])).join(', ');
 
 /**
- * Fact gate v2 -> ATS-safe text -> render -> while >1 page: cut the lowest-relevance bullet (max `maxTrims`, default 6)
+ * ATS-safe text (normalized FIRST) -> fact gate v2 on that same copy -> render -> while >1 page: cut the lowest-relevance bullet (max `maxTrims`, default 6)
  * -> verifyPdf (exactly 1 page, name/email/phone as text; throws otherwise) -> keyword classification over prose + skills list.
  * The last cut is the one that made the page fit, so there is no "restore" pass (P13): `fillRatio` is reported for the caller only.
  */
 export async function renderResumeChecked(resumeJson: any, opts: RenderOptions = {}): Promise<RenderResult> {
   const base = getBaseResume();
-  const facts = checkResume(base, resumeJson, { jobDescription: opts.jobDescription, jobTitle: opts.jobTitle });
+  // Normalize FIRST, then gate and render the same copy: invisible characters must not split a claim past the gate.
+  let current = normalizeForAts(resumeJson);
+  const facts = checkResume(base, current, { jobDescription: opts.jobDescription, jobTitle: opts.jobTitle });
   if (facts.verdict === 'block') {
     const claims = [...facts.invented, ...facts.unsupported, ...facts.forbidden.map((p) => `forbidden:${p}`)];
     throw new Error(`Resume fact check failed, refusing to render. Unsupported claims: ${claims.join(', ')}`);
   }
   const keywords = opts.keywords ?? [];
-  let current = normalizeForAts(resumeJson);
   const cuts: Array<{ exp: number; idx: number; text: string }> = [];
   let pdf = await renderOnce(current);
   let layout = await pdfLayout(pdf);

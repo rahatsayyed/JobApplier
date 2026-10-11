@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { delegatedAuthorshipClaims, diagnoseCoverage, exceedsScanCap, factClaims, joinStatements, MAX_SCAN_CHARS, metricClaims, normalizeClaim, normalizeFact, sourceContainsFact } from './factClaims.js';
 import { proseFindings, resumeStatements } from './proseClaims.js';
+import { normalizeForAts, normalizeText } from './atsText.js';
 
 export interface FactCheckResult { verdict: 'pass' | 'block'; invented: string[] }
 
@@ -184,8 +185,11 @@ function oversizeBlock(fields: Record<string, string>, missing: boolean): FactRe
 }
 
 /** The resume gate used by render_resume. v1 checkFacts stays as-is; this adds everything v2 checks. */
-export function checkResume(base: Record<string, any>, tailored: Record<string, any>, opts: CheckOptions = {}): FactReport {
+export function checkResume(rawBase: Record<string, any>, rawTailored: Record<string, any>, opts: CheckOptions = {}): FactReport {
   const { config, missing } = resolveConfig(opts);
+  // Gate the ATS-normalized text (invisible format characters stripped), the same text the renderer prints.
+  const base = normalizeForAts(rawBase);
+  const tailored = normalizeForAts(rawTailored);
   const baseText = joinStatements(strings(base));
   const baseProse = joinStatements(resumeStatements(base).map((s) => s.text));
   const prose = joinStatements(resumeStatements(tailored).map((s) => s.text));
@@ -220,8 +224,10 @@ export function checkResume(base: Record<string, any>, tailored: Record<string, 
  *  `jobTitle` and `company` are blanked out of the text first: naming the posting or the employer is not a claim. */
 export function checkOutreachText(text: string, base: Record<string, any>, opts: CheckOptions & { extraSource?: string } = {}): FactReport {
   const { config, missing } = resolveConfig(opts);
-  const clean = blankOut(String(text ?? '').replace(/https?:\/\/\S+/g, ' '), [opts.jobTitle, opts.company]);
-  const extra = opts.extraSource ?? '';
+  // Gate the normalized text (invisible format characters stripped); callers must send this same text (see checkTextWithNormalized).
+  base = normalizeForAts(base);
+  const clean = blankOut(normalizeText(String(text ?? '')).replace(/https?:\/\/\S+/g, ' '), [opts.jobTitle, opts.company]);
+  const extra = normalizeText(opts.extraSource ?? '');
   const baseOnly = joinStatements(strings(base));
   const baseText = joinStatements([...strings(base), extra]);
   const fields: Record<string, string> = { 'outreach text': clean, 'extra source': extra, 'base resume': baseOnly };
@@ -247,4 +253,10 @@ export function checkOutreachText(text: string, base: Record<string, any>, opts:
   const forbidden = phraseHits(clean, config.forbidden_phrases);
   for (const p of phraseHits(clean, config.warn_phrases)) warnings.push(`phrase:${p}`);
   return finish(invented, unsupported, forbidden, warnings, missing);
+}
+
+/** The check_text MCP result: the gate report plus `normalized_text`, the exact text that was gated (enqueue/send THIS, never the pre-gate text). */
+export function checkTextWithNormalized(text: string, base: Record<string, any>, opts: CheckOptions & { extraSource?: string } = {}): FactReport & { normalized_text: string } {
+  const normalized_text = normalizeText(String(text ?? ''));
+  return { ...checkOutreachText(normalized_text, base, opts), normalized_text };
 }

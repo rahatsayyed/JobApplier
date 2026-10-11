@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { getBaseResume, renderResumeChecked } from '../resume.js';
-import { checkOutreachText } from '../resumeFacts.js';
+import { checkTextWithNormalized } from '../resumeFacts.js';
 import { applyReviewEdits, jobDescriptionSchema } from '../reviewEdits.js';
 
 const server = new McpServer({ name: 'resume', version: '0.1.0' });
@@ -58,7 +58,9 @@ server.registerTool(
     description:
       'Fact-check a drafted email, connect note or follow-up against the base resume (metrics, tools, titles, scope escalations, forbidden phrases). ' +
       'extra_source = text the claims may also come from (e.g. the original sent email). job_title and company are blanked out of the text first, so quoting the posting title or the employer is not a claim; ' +
-      'honest gap lines ("I haven\'t worked with X yet") are not claims. Returns {verdict: pass|warn|block, invented, unsupported, forbidden, warnings}.',
+      'honest gap lines ("I haven\'t worked with X yet") are not claims. The text is normalized first (invisible format characters stripped, ' +
+      'smart quotes/dashes to ASCII) and THAT text is gated. Returns {verdict: pass|warn|block, invented, unsupported, forbidden, warnings, normalized_text}; ' +
+      'enqueue/send normalized_text, never the text you passed in.',
     inputSchema: {
       text: z.string(),
       job_description: z.string().optional(),
@@ -68,7 +70,7 @@ server.registerTool(
     },
   },
   async ({ text, job_description, extra_source, job_title, company }) => {
-    const r = checkOutreachText(text, getBaseResume(), { jobDescription: job_description, extraSource: extra_source, jobTitle: job_title, company });
+    const r = checkTextWithNormalized(text, getBaseResume(), { jobDescription: job_description, extraSource: extra_source, jobTitle: job_title, company });
     return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
 );
@@ -78,7 +80,8 @@ server.registerTool(
   {
     description:
       'Apply a reviewer\'s structured edits to a tailored resume (and optionally an email draft) one at a time. Each edit must quote a unique ' +
-      'old_string at its path; any edit that would add an unsupported claim (fact gate v2) is rejected, never applied. Returns {resume, email, applied, rejected, facts, emailFacts}.',
+      'old_string at its path; any edit that would add an unsupported claim (fact gate v2) is rejected, never applied. Resume, email and edits are ' +
+      'normalized first (invisible format characters stripped, smart quotes/dashes to ASCII); the returned resume/email are that normalized text. Returns {resume, email, applied, rejected, facts, emailFacts}.',
     inputSchema: {
       resume_json: z.record(z.string(), z.any()),
       email: z.object({ subject: z.string().max(2000), body: z.string().max(2000) }).strict().optional(),

@@ -4,6 +4,7 @@
 // never add an unsupported claim.
 import { z } from 'zod';
 import { MAX_SCAN_CHARS } from './factClaims.js';
+import { normalizeForAts } from './atsText.js';
 import { checkOutreachText, checkResume, type CheckOptions, type FactReport } from './resumeFacts.js';
 
 // MCP input schema for apply_review_edits.job_description: a full posting, capped at the fact-scan cap
@@ -109,8 +110,11 @@ export function applyReviewEdits(
   edits: ReviewEdit[],
   opts: CheckOptions = {},
 ): ReviewApplyResult {
-  let cur = JSON.parse(JSON.stringify(resume));
-  let curEmail = email ? { ...email } : null;
+  // Normalize first (invisible format characters stripped, ATS-safe punctuation) so every edit is gated on, and returns,
+  // the exact text that will be rendered or sent. Edits are normalized too so their old_string still matches.
+  let cur = normalizeForAts(resume);
+  let curEmail = email ? normalizeForAts({ ...email }) : null;
+  edits = normalizeForAts(edits);
   const emailText = (e: EmailDraft) => `${e.subject}\n\n${e.body}`;
   let resumeBlocks = blockSet(checkResume(base, cur, opts));
   let emailBlocks = curEmail ? blockSet(checkOutreachText(emailText(curEmail), base, opts)) : new Set<string>();
