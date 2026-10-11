@@ -7,9 +7,9 @@ import { MAX_SCAN_CHARS } from './factClaims.js';
 import { normalizeForAts } from './atsText.js';
 import { checkOutreachText, checkResume, type CheckOptions, type FactReport } from './resumeFacts.js';
 
-// MCP input schema for apply_review_edits.job_description: a full posting, capped at the fact-scan cap
-// (not the 2000 cap used for edit strings).
-export const jobDescriptionSchema = z.string().max(MAX_SCAN_CHARS).optional();
+// MCP input schema for job_description (apply_review_edits, render_resume, check_text): a full posting, clamped IN CODE to
+// the fact-scan cap (a longer posting is accepted and truncated, never rejected: an LLM caller cannot count characters).
+export const jobDescriptionSchema = z.string().transform((s) => s.slice(0, MAX_SCAN_CHARS)).optional();
 
 export interface ReviewEdit {
   target: 'resume' | 'email';

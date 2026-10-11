@@ -36,7 +36,7 @@ server.registerTool(
       'Returns {pdf_path, resume_json (as rendered), facts {verdict, invented, unsupported, forbidden, warnings}, ats, ats_coverage, trimmed, fill_ratio}.',
     inputSchema: {
       resume_json: z.record(z.string(), z.any()),
-      job_description: z.string().optional(),
+      job_description: jobDescriptionSchema,
       job_title: z.string().optional(),
       keywords: z.array(keywordSchema).optional(),
     },
@@ -63,7 +63,7 @@ server.registerTool(
       'enqueue/send normalized_text, never the text you passed in.',
     inputSchema: {
       text: z.string(),
-      job_description: z.string().optional(),
+      job_description: jobDescriptionSchema,
       extra_source: z.string().optional(),
       job_title: z.string().optional(),
       company: z.string().optional(),

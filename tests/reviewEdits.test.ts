@@ -122,10 +122,12 @@ describe('applyReviewEdits', () => {
 });
 
 describe('apply_review_edits job_description schema', () => {
-  it('accepts a full 6000-char posting and the 20000 cap, rejects 20001', () => {
-    expect(jobDescriptionSchema.safeParse('x'.repeat(6000)).success).toBe(true);
-    expect(jobDescriptionSchema.safeParse('x'.repeat(20000)).success).toBe(true);
-    expect(jobDescriptionSchema.safeParse('x'.repeat(20001)).success).toBe(false);
+  it('accepts a full 6000-char posting unchanged and clamps longer postings to 20000 chars in code', () => {
+    expect(jobDescriptionSchema.parse('x'.repeat(6000))).toBe('x'.repeat(6000));
+    expect(jobDescriptionSchema.parse('x'.repeat(20000))).toBe('x'.repeat(20000));
+    expect(jobDescriptionSchema.parse('y'.repeat(20001))).toBe('y'.repeat(20000));
+    expect(jobDescriptionSchema.parse('z'.repeat(25000))).toHaveLength(20000);
     expect(jobDescriptionSchema.safeParse(undefined).success).toBe(true);
+    expect(jobDescriptionSchema.safeParse(42).success).toBe(false);
   });
 });
