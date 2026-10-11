@@ -3,6 +3,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { checkLiveness } from '../liveness.js';
 import { vetoResults } from '../vetoes.js';
+import BetterSqlite3 from 'better-sqlite3';
+import { openDb, saveGateResults } from '../db.js';
+import { jobFactsFromDb } from '../gateFacts.js';
+import { loadLanguageConfig } from '../languageGate.js';
+
+let db: BetterSqlite3.Database | null = null;
+const getDb = () => (db ??= openDb('data.sqlite'));
 
 const server = new McpServer({ name: 'gates', version: '0.1.0' });
 
@@ -23,7 +30,8 @@ const verdict = z.enum(['PASS', 'FAIL', 'FLAG']);
 server.registerTool(
   'apply_vetoes',
   {
-    description: 'Apply veto gates (location/language FAIL, deal-breaker keywords) to match results',
+    description:
+      'Apply veto gates to match results: location/language FAIL (model + deterministic language gate vs config/languages.json; FAIL only once that file has "confirmed": true), deal-breaker keywords, hard stops from the requirement table, suspicious legitimacy. Flags (never exclude): location/language FLAG, language gate config missing, stale postings (>30 days), legitimacy caution (reposts, age, thin JD, personal channels). Reads per-job facts from the db and persists legitimacy + flags on jobs.',
     inputSchema: {
       results: z.array(
         z.object({
@@ -37,7 +45,11 @@ server.registerTool(
     },
   },
   async ({ results, jobs }) => {
-    return { content: [{ type: 'text', text: JSON.stringify(vetoResults(results, jobs)) }] };
+    const d = getDb();
+    const facts = new Map(results.map((r) => [r.job_id, jobFactsFromDb(d, r.job_id)]));
+    const out = vetoResults(results, jobs, undefined, { facts, now: new Date(), languages: loadLanguageConfig() });
+    saveGateResults(d, out);
+    return { content: [{ type: 'text', text: JSON.stringify(out) }] };
   }
 );
 

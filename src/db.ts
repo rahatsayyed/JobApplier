@@ -2,6 +2,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { z } from 'zod';
 import { normalizeMatchRow, type MatchRowInput } from './score.js';
 import { classifyDeadlines, type DeadlineSweep } from './freshness.js';
+import type { Legitimacy } from './legitimacy.js';
 import { companyKey, repostCount, titleIdentityKey } from './reposts.js';
 
 /** enqueue_outreach.ats_coverage: an integer percentage, or null when the final render had no keywords (tailor contract). */
@@ -607,4 +608,13 @@ export function sweepDeadlines(db: BetterSqlite3.Database, now: Date = new Date(
     for (const u of out.unparseable) reported.run(u.deadline, u.job_id);
   })();
   return out;
+}
+
+export function saveGateResults(db: BetterSqlite3.Database, rows: Array<{ job_id: string; flags: string[]; legitimacy?: Legitimacy }>): number {
+  const upd = db.prepare('UPDATE jobs SET legitimacy = ?, legitimacy_signals = ?, gate_flags = ? WHERE id = ?');
+  let n = 0;
+  db.transaction(() => {
+    for (const r of rows) n += upd.run(r.legitimacy?.tier ?? null, JSON.stringify(r.legitimacy?.signals ?? []), JSON.stringify(r.flags ?? []), r.job_id).changes;
+  })();
+  return n;
 }
