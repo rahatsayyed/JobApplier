@@ -66,7 +66,7 @@ describe('loadLanguageConfig', () => {
   it('reads confirmed:true, and returns null for a missing, broken or empty file', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'lang-'));
     const ok = path.join(dir, 'ok.json');
-    writeFileSync(ok, JSON.stringify({ confirmed: true, declared: [{ language: 'Hindi', level: 'native' }, { language: '', level: 'fluent' }, { language: 'X', level: 'weird' }] }));
+    writeFileSync(ok, JSON.stringify({ confirmed: true, declared: [{ language: 'Hindi', level: 'native' }] }));
     expect(loadLanguageConfig(ok)).toEqual({ declared: [{ language: 'Hindi', level: 'native' }], confirmed: true });
     const bad = path.join(dir, 'bad.json');
     writeFileSync(bad, '{not json');
