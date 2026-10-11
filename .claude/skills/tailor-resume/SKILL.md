@@ -57,13 +57,14 @@ Job-fit technique (what separated the job-fit winners in the blind evaluation; a
 3. Numbers: only numbers the base states, attached to the SAME work the base attaches them to. Never merge two bullets if a number would then describe both. Never move a number to a different bullet's work.
 4. Keyword placement: use the posting's exact term wherever it is truthfully the same thing (posting "React.js", base "React": write "React.js"). Put the top supported keywords in the summary (at most 5) and in the FIRST bullet of each kept role. Skills: reorder only (most relevant first); never rename, rewrite or add skill items.
 5. Summary: 2-3 sentences, 35-55 words, no pronouns. Open with a base title (or a plain role-words variant: Software/Frontend/Backend/Full Stack Engineer/Developer), then the strongest matching stack, then one proof metric from the base. No self-characterisations copied from the posting ("product-minded", "cares about UI quality", "strong communicator"). Not a cover letter: no "this role needs", no gap disclosures, no first person.
-6. Headline (`jobTitle`): either the base value, or plain role words only (e.g. "Frontend Engineer", "Full Stack Engineer"). Never add specialty words ("AI Agent Systems", "Platform", "Product") and never copy the posting's title unless it is plain role words.
-   - Gate detail: the render gate also flags a headline or summary opener that is word-for-word the posting's title, even when the title is plain role words, and any opener word that is not a role word ("Frontend-focused"). So for a posting titled "Frontend Engineer", open with "Software Engineer" (a base title) or a different role-words variant ("Frontend Developer"); never "Frontend-focused Software Engineer".
+6. Headline (`jobTitle`) and the summary's opening role label: the base value, a base title ("Software Engineer"), or a plain role label made only of role words (e.g. "Full Stack Engineer"). Never add specialty words ("AI Agent Systems", "Platform", "Product", "Frontend-focused"), and never copy the posting's title verbatim, not even when it is plain role words: the render gate flags a headline or opener that is word-for-word the posting title. For a posting titled "Frontend Engineer", use "Software Engineer" (preferred, a base title), not "Frontend Engineer".
 7. Truthfulness, the escalations the render gate now BLOCKS unless the base says them: ownership ("owned", "owning"), "end to end", "from scratch"/greenfield, "set technical direction", mentoring/team lead/head of, size adjectives on codebases/apps/systems/teams ("large", "enterprise", "global"), "user-facing"/"customer-facing", microservices, "N+ years of commercial/professional/senior ... experience", a technology the base never mentions, a skills-list-only technology described as work in a bullet, and a "led/architected/directed" claim over work the base does not say was led. Skills-only technologies are the ones the base lists under Skills but no bullet shows work with (Node.js is one: it is the target role's core keyword and still skills-only, so it stays in the skills list and never appears in the summary or a bullet; the user decides whether to add a real Node.js work fact to `input/resume.json`, you never do).
    - Leadership verbs (led, directed, architected, drove, driving, headed, spearheaded) may describe ONLY the two pieces of work the base says were led: the policy-driven governance layer ("Led the architecture and implementation") and the system-wide React state management refactor ("Directed", "architected"). Anything else gets a plain verb (built, designed, developed, optimized, coordinated).
    - "using X", "built with X" and "worked with X" are checked as tool claims: X must appear in the base as a standalone word in that spelling ("using Lucid.js and Mesh.js" is in the base; "using React hooks" or "using D3" are not, since the base only says "D3-based"). Keep the base's own phrasing around tools.
-   - No new counts in any form: "3 teams", "two products", "dozens of features" all block. The only counts are the base's (9+ API calls, 12+ policies, 3+ model capabilities, 8+ smart contracts, 8 vulnerabilities, 3+ years).
+   - No new counts in any form. The gate catches digit counts only ("3 teams" blocks); spelled-out or vague counts ("two products", "dozens of features", "many teams") are NOT caught, so this part is self-enforced: never write them unless the base says exactly that. The only counts are the base's (9+ API calls, 12+ policies, 3+ model capabilities, 8+ smart contracts, 8 vulnerabilities, 3+ years).
+   - Years: the base's "3+ years" belongs to the base's own phrase ("3+ years of experience in frontend architecture, contract-driven API design, AI-integrated systems and blockchain"). Never bind it to a narrower stack or tool the base does not bind it to ("3+ years of experience in Docker-based build pipelines", "3+ years of React"): the judges flag it and the gate does not catch it. Keep the years with the base's domains and name the stack in a separate clause ("..., working in React, Next.js and TypeScript").
    - "production", "production-ready" and "production-grade" are flagged when the base does not say them; leave them out.
+   - Other phrasings the gate also blocks (verified): "from the ground up", "zero to one", "tech lead", "managed a team", "high-traffic", "large-scale", "global user base", "shaped/defined/drove the ... strategy/vision/roadmap", and "N+ years of industry/leadership experience".
 8. Truthfulness, what the gate cannot see and you must not do: change what the work was (base "AI interfaces" is not "product interfaces"; "policy enforcement" is not "product behavior"; governance is not "connecting agents to tools"); reframe internal tooling as customer product; restate the posting's requirement as the candidate's trait.
 9. Interview backtrack test for every rewritten line: could the candidate explain it in an interview without "well, what I actually meant was..."? If it is a stretch, rewrite it closer to the base, or keep it and add `"<bullet start>: stretch because <why>"` to `flags`.
 10. Humanizer: run summary and bullet text through `the-humanizer` skill's universal rules (resume content, not a channel). No em dashes anywhere; cut buzzwords (leverage, robust, seamless, spearheaded, results-driven, team player, detail-oriented).
@@ -73,19 +74,22 @@ Job-fit technique (what separated the job-fit winners in the blind evaluation; a
 
 ### Gate-verified examples (checked against the real render gate and the current base resume)
 
+These sentences are patterns, not text to copy. Write every line from the base facts and this posting; never paste example wording into the resume. In each DO example, every number and the years phrase sits next to the exact base work it belongs to (11 seconds: the React state management refactor; 70%: the contract-driven TypeScript APIs; ~50%: the governance layer; ~40%: the ingestion pipeline's centralized event tracing; ~10 minutes: the Docker build pipeline on AWS EC2). Keep that pairing in whatever you write.
+
 DO (each passes the gate with no warning):
 
 | Where | Text |
 |---|---|
-| Summary, full stack posting | Full Stack Engineer with 3+ years of experience building React and Next.js frontends and contract-driven TypeScript APIs, with Docker and AWS EC2 deployment work. Cut initial load time by 11 seconds through a state management refactor and development build time by ~10 minutes per cycle. |
-| Summary, posting titled "Frontend Engineer" | Software Engineer with 3+ years of experience building React.js, Next.js and TypeScript frontends backed by contract-driven APIs. Cut initial load time by 11 seconds with a system-wide React state management refactor and reduced integration-related regressions by 70%. |
-| Summary, AI agent posting | Software Engineer with 3+ years of experience in TypeScript and AI-integrated systems, building governance, auditing and observability for LLM, MCP and RAG agent workflows. Led a policy-driven governance layer for MCP access control that reduced policy misconfiguration issues by ~50%. |
-| Summary, platform posting | Software Engineer with 3+ years of experience in Docker-based build pipelines on AWS EC2, policy-driven access control and observability for AI-integrated systems. Built centralized event tracing that cut incident investigation time by approximately 40% and reduced development build time by ~10 minutes per cycle. |
+| Summary, full stack posting | Full Stack Engineer with 3+ years of experience in frontend architecture, contract-driven API design and AI-integrated systems, working in React, Next.js and TypeScript. Directed a React state management refactor that cut initial load time by 11 seconds, and optimized a Docker build pipeline on AWS EC2 to save ~10 minutes per development build. |
+| Summary, posting titled "Frontend Engineer" | Software Engineer with 3+ years of experience in frontend architecture, contract-driven API design and AI-integrated systems, working in React.js, Next.js and TypeScript. Cut initial load time by 11 seconds with a system-wide React state management refactor, and reduced integration-related regressions by 70% with contract-driven TypeScript APIs. |
+| Summary, AI agent posting | Software Engineer with 3+ years of experience in AI-integrated systems and contract-driven API design, building governance, auditing and observability for LLM, MCP and RAG agent workflows. Led a policy-driven governance layer for MCP access control that reduced policy misconfiguration issues by ~50%. |
+| Summary, platform posting | Software Engineer with 3+ years of experience in contract-driven API design and AI-integrated systems. Optimized a Docker-based build pipeline on AWS EC2 to save ~10 minutes per development build, and built a violations ingestion pipeline whose centralized event tracing cut incident investigation time by approximately 40%. |
 | Bullet, posting term mirrored | Directed a system-wide refactor of React.js state management, eliminating 9+ redundant API calls and cutting initial load time by 11 seconds. |
 | Bullet, clause tightened | Optimized a Docker-based frontend build pipeline on AWS EC2 with layer caching, cutting development build times by ~10 minutes per cycle. |
 | Bullet, relevant angle first | Designed contract-driven TypeScript APIs and multi-policy schemas, reducing integration-related regressions by 70% as AI interfaces evolved. |
 | Bullet, led work the base says was led | Led the architecture of a policy-driven governance layer centralizing MCP access control and model I/O auditing, reducing policy misconfiguration issues by ~50%. |
-| Headline | Full Stack Engineer |
+| Headline, posting "Senior React Full-stack Developer" | Full Stack Engineer |
+| Headline, posting "Frontend Engineer" | Software Engineer |
 
 DON'T (each one is blocked or flagged by the gate):
 
@@ -116,13 +120,26 @@ DON'T (each one is blocked or flagged by the gate):
 | Headline "Software Engineer, AI Agent Systems" | FLAG specialty words in the headline |
 | Headline "Frontend Web Application Developer" (the posting's title) | FLAG copies the posting title |
 | ...A high-bandwidth communicator who leaves ego at the door. | FLAG posting echo |
+| Headline "Frontend Engineer" on a posting titled "Frontend Engineer" | FLAG copies the posting title |
+
+DON'T, NOT caught by the gate (verified: these pass the gate, so you must catch them yourself; the blind judges flagged this kind):
+
+| Text | Why it is wrong |
+|---|---|
+| Software Engineer with 3+ years of experience in Docker-based build pipelines on AWS EC2. | Binds the base's 3+ years to one tool; the Docker work is one bullet in the current role |
+| ...Reduced integration-related regressions by 70% with a React state management refactor. | Moves the 70% from the contract-driven TypeScript APIs to the refactor |
+| Cut initial load time by 11 seconds with a state management refactor and reduced integration-related regressions by 70%. | Reads as if the refactor produced both numbers; name the APIs next to the 70% |
+| Coordinated two products across frontend, backend and AI teams... | Spelled-out count the base never states |
+| Built role-based authentication and dozens of features in Next.js... | Vague count the base never states |
 
 ### Pre-render self-check (do this before every render)
 
 Read the summary, headline and every bullet once more and fix anything that matches:
 - own/owned/owning/ownership, end to end, from scratch, greenfield, technical direction, mentor, lead/led (outside the two base-led items), drove/driving, architected (outside the state refactor and governance layer), large/enterprise/global/massive before a noun, user-facing/customer-facing, microservice, production, commercial/professional/senior before "experience".
 - Any skills-only technology (list in Step 2) in a bullet or the summary.
-- Any technology, number or count not in the base, or a base number now sitting in a bullet about different work.
+- Any technology, number or count (digits, spelled-out or vague) not in the base, or a base number now sitting next to different work, in a bullet or in the summary.
+- "N+ years" bound to a narrower stack or tool than the base binds it to.
+- Wording copied from the examples above instead of written from the base.
 - Headline or summary opener equal to the posting title, or containing a non-role word.
 - Any phrase lifted from the posting that describes the candidate's character or habits.
 - Em dashes, buzzwords, mixed bullet punctuation, a verb starting more than two bullets.

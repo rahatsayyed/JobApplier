@@ -98,7 +98,7 @@ export const TECH_TERMS: Array<[string, RegExp]> = [
   ['ruby', /\bruby\b/i], ['rails', /\brails\b/i], ['java', /\bjava\b(?!\s*script)/i], ['spring', /\bSpring(?:\s+Boot)?\b/],
   ['kotlin', /\bkotlin\b/i], ['swift', /\bswift(?:ui)?\b/i], ['flutter', /\bflutter\b/i], ['dart', /\bdart\b/i],
   ['php', /\bphp\b/i], ['laravel', /\blaravel\b/i], ['.net', /\.net\b|\bdotnet\b|\bc#/i], ['rust', /\brust\b/i],
-  ['golang', /\bgolang\b|(?:\b(?:in|with|using)\s+|,\s*)Go\b/], ['scala', /\bscala\b/i], ['elixir', /\belixir\b/i], ['haskell', /\bhaskell\b/i],
+  ['golang', /\b[Gg][Oo][Ll][Aa][Nn][Gg]\b|(?:\b(?:in|with|using)\s+|,\s*)Go\b/], ['scala', /\bscala\b/i], ['elixir', /\belixir\b/i], ['haskell', /\bhaskell\b/i],
   ['solidity', /\bsolidity\b/i], ['aws', /\baws\b|\bamazon web services\b/i], ['gcp', /\bgcp\b|\bgoogle cloud\b/i], ['azure', /\bazure\b/i],
   ['vercel', /\bvercel\b/i], ['heroku', /\bheroku\b/i], ['cloudflare', /\bcloudflare\b/i], ['docker', /\bdocker\b/i],
   ['jenkins', /\bjenkins\b/i], ['github actions', /\bgithub actions\b/i], ['gitlab ci', /\bgitlab[\s-]ci\b/i], ['ci/cd', /\bci\s*\/\s*cd\b/i],

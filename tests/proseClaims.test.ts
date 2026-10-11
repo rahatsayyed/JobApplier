@@ -185,3 +185,22 @@ describe('proseFindings: fail-closed size cap and performance', () => {
     expect(ms(() => proseFindings(base, t))).toBeLessThan(250);
   });
 });
+
+describe('proseFindings: golang spelling (case-insensitive) vs the verb "go"', () => {
+  for (const spelling of ['golang', 'Golang', 'GOLANG']) {
+    it(`blocks "${spelling}" claimed in the summary`, () => {
+      const t = clone(); t.summary += ` Most of my backend work is in ${spelling}.`;
+      expect(kinds(t)).toContain('block:tool:golang');
+    });
+  }
+  it('still blocks capitalised "Go" after in/with/using', () => {
+    const t = clone(); t.summary += ' Most of my backend work is in Go.';
+    expect(kinds(t)).toContain('block:tool:golang');
+  });
+  it('does not treat the verb "go" as Golang', () => {
+    const t = clone(); t.summary += ' Happy to go to meetings with frontend, backend and AI teams.';
+    expect(kinds(t).filter((k) => k.includes('golang'))).toEqual([]);
+    const u = clone(); u.summary += ' I go to meetings weekly.';
+    expect(kinds(u).filter((k) => k.includes('golang'))).toEqual([]);
+  });
+});
