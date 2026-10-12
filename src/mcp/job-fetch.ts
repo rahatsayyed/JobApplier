@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { openDb, isSeen, saveJob } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { fetchAllJobs } from '../sources/index.js';
+import { dropBoardDuplicates, fetchBoards, getLastBoardsResult, type SeenRow } from '../sources/boards/index.js';
 
 const db = openDb(dbPath());
 
@@ -12,7 +13,7 @@ const server = new McpServer({ name: 'job-fetch', version: '0.1.0' });
 server.registerTool(
   'search_jobs',
   {
-    description: 'Search job boards (Adzuna, Remotive, RemoteOK, Naukri) for a role',
+    description: 'Search job boards (Adzuna, Remotive, RemoteOK, Naukri, and the public Greenhouse/Lever/Ashby boards of companies enabled in config/portals.json; boards use only the portals.json filters, not role/location) for a role',
     inputSchema: {
       role: z.string(),
       location: z.string().optional(),
@@ -30,7 +31,7 @@ server.registerTool(
   'list_new_jobs',
   {
     description:
-      'Fetch jobs from all sources (Adzuna, Remotive, RemoteOK, Naukri) and return only ones not seen before, saving them to the db',
+      'Fetch jobs from all sources (Adzuna, Remotive, RemoteOK, Naukri, and the public Greenhouse/Lever/Ashby boards of companies enabled in config/portals.json; boards use only the portals.json filters, not role/location) and return only ones not seen before, saving them to the db',
     inputSchema: {
       role: z.string(),
       location: z.string().optional(),
@@ -38,12 +39,33 @@ server.registerTool(
   },
   async ({ role, location }) => {
     const jobs = await fetchAllJobs({ role, location });
-    const newJobs = jobs.filter((job) => !isSeen(db, job.id));
+    const fresh = jobs.filter((job) => !isSeen(db, job.id));
+    const recent = db
+      .prepare("SELECT id, source, company_key, title_key FROM jobs WHERE created_at >= datetime('now', '-30 days') AND company_key IS NOT NULL AND title_key IS NOT NULL")
+      .all() as SeenRow[];
+    const newJobs = dropBoardDuplicates(fresh, recent);
+    if (newJobs.length < fresh.length) console.error(`[boards] dropped ${fresh.length - newJobs.length} board job(s) duplicating a recently seen posting`);
     for (const job of newJobs) {
       saveJob(db, job);
     }
     return {
       content: [{ type: 'text', text: JSON.stringify(newJobs) }],
+    };
+  }
+);
+
+server.registerTool(
+  'board_status',
+  {
+    description:
+      'Read-only: per-company counts and errors from the most recent company-board fetch (fetches once if none has run in this session). Never writes to the db.',
+    inputSchema: {},
+  },
+  async () => {
+    if (!getLastBoardsResult()) await fetchBoards();
+    const r = getLastBoardsResult()!;
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ at: r.at, errors: r.errors, stats: r.stats }) }],
     };
   }
 );

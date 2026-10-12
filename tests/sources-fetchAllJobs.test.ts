@@ -22,6 +22,9 @@ vi.mock('../src/sources/remotive.js', () => ({
 vi.mock('../src/sources/remoteok.js', () => ({
   fetchRemoteok: vi.fn().mockResolvedValue([]),
 }));
+vi.mock('../src/sources/boards/index.js', () => ({
+  fetchBoards: vi.fn().mockResolvedValue({ jobs: [], errors: [], stats: [] }),
+}));
 vi.mock('../src/sources/naukri.js', () => ({
   fetchNaukri: vi.fn().mockResolvedValue([
     {
