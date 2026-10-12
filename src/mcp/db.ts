@@ -10,6 +10,7 @@ import { listApprovedFollowups, listFollowupCandidates, listStale, markFollowupF
 import { calibrate } from '../calibrate.js';
 import { funnelStats } from '../funnel.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
+import { patternStats } from '../patterns.js';
 
 const db = openDb(dbPath());
 
@@ -292,6 +293,11 @@ server.registerTool(
   },
   async ({ threshold }) => ({ content: [{ type: 'text', text: JSON.stringify(funnelStats(db, threshold ?? Number(process.env.MATCH_THRESHOLD ?? 60))) }] })
 );
+
+server.registerTool('get_patterns', {
+  description: 'Outcome breakdowns of contacted jobs by score band, ATS vendor, remote bucket, seniority and source (latest outcome per job: positive = replied/interview/offer/hired, negative = rejected/no_response). Refuses below 5 contacted jobs; buckets under 8 are marked insufficient.',
+  inputSchema: {},
+}, async () => ({ content: [{ type: 'text', text: JSON.stringify(patternStats(db)) }] }));
 
 server.registerTool(
   'list_queued_outreach',
