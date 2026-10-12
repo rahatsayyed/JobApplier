@@ -304,7 +304,7 @@ server.registerTool(
 server.registerTool(
   'update_outreach_status',
   {
-    description: 'Update one status field on an outreach_queue row after attempting its action (email/connect/apply), or the overall row status once all its actions are attempted.',
+    description: 'Update one status field on an outreach_queue row after attempting its action (email/connect/apply), or the overall row status once all its actions are attempted ("done"), or "skipped" for a queued row whose job was excluded (so list_skipped_outreach stops repeating it).',
     inputSchema: {
       id: z.number(),
       field: z.enum(['email_status', 'connect_status', 'apply_status', 'status']),

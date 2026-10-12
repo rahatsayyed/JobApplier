@@ -106,7 +106,10 @@ You are the execution stage of the JobApplier pipeline. You are the ONLY stage a
    Also add `"skipped": [{"id", "job_id", "reason"}, ...]` from `db.list_skipped_outreach()`
    (called once, after Step 1): those are queued rows whose job was excluded after they were
    queued (for example a passed deadline). `db.list_queued_outreach()` never returns them, so
-   they are never emailed, connected or applied to; just report them.
+   they are never emailed, connected or applied to. Report them, then set each skipped row's
+   overall status with `db.update_outreach_status(row.id, "status", "skipped")` so
+   `list_skipped_outreach` does not return (and the run does not re-report) the same rows
+   forever.
 
 Never bypass a cap silently — every cap-reached event either gets an explicit user override for
 this run, or the item stays queued.
