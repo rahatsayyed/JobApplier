@@ -634,11 +634,17 @@ export function recordOutcome(db: BetterSqlite3.Database, jobId: string, outcome
   skipPendingFollowups(db, jobId);
 }
 
-// The ONE helper that ends a job's pending follow-ups (drafted/approved -> skipped). recordOutcome calls it, and every outcome path goes
-// through recordOutcome (record_outcome/recordOutcomeChecked, auto-record in triageReplies, resolveReplyProposals approve, resolveStale),
-// so a follow-up can never be sent after an outcome exists (ruling Y4).
+// The ONE helper that ends a job's pending follow-ups (drafted -> skipped, approved -> cancelled). recordOutcome calls it, and every outcome
+// path goes through recordOutcome (record_outcome/recordOutcomeChecked, auto-record in triageReplies, resolveReplyProposals approve, resolveStale),
+// so a follow-up can never be sent after an outcome exists (ruling Y4). A `sending` row (claimed by the sender, send in flight) is left alone so
+// markFollowupSent can still record the truth (with late_block); a `cancelled` row can never become sent.
 export function skipPendingFollowups(db: BetterSqlite3.Database, jobId: string): number {
-  return db.prepare("UPDATE followups SET status = 'skipped', decided_at = datetime('now') WHERE job_id = ? AND status IN ('drafted', 'approved')").run(jobId).changes;
+  let n = 0;
+  db.transaction(() => {
+    n += db.prepare("UPDATE followups SET status = 'skipped', decided_at = datetime('now') WHERE job_id = ? AND status = 'drafted'").run(jobId).changes;
+    n += db.prepare("UPDATE followups SET status = 'cancelled', decided_at = datetime('now') WHERE job_id = ? AND status = 'approved'").run(jobId).changes;
+  })();
+  return n;
 }
 
 // Records the outcome even for an unknown job_id, but flags it so a typo'd id is visible.

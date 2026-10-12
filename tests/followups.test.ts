@@ -86,16 +86,23 @@ describe('follow-up candidates', () => {
 });
 
 describe('who must never get a follow-up', () => {
-  it('a non-noise processed reply for the job blocks it (even an unresolved or skipped proposal, or a bounce); an auto-ack or noise does not', () => {
+  it('a non-noise processed reply for the job blocks it (even an unresolved or skipped proposal, or a bounce); an ignored auto-ack or noise blocks only when the sender is a human (C1)', () => {
     for (const cls of ['replied', 'rejected', 'offer', 'interview', 'bounce', 'unknown']) {
       const db = setup();
       processed(db, 'x', 'j1', cls, 'hr@acme.dev', 'proposed');
       expect(listFollowupCandidates(db, now), cls).toEqual([]);
     }
+    // Final fix round C1 (expectation changed): an ignored auto_ack/noise matched to the job from a HUMAN address now blocks (was: did not).
     for (const cls of ['auto_ack', 'noise']) {
       const db = setup();
       processed(db, 'x', 'j1', cls, 'hr@acme.dev');
-      expect(listFollowupCandidates(db, now), cls).toHaveLength(1);
+      expect(listFollowupCandidates(db, now), cls).toEqual([]);
+    }
+    // Automated senders keep the old behaviour: an ignored auto-ack/noise from them does not block.
+    for (const [cls, from] of [['auto_ack', 'no-reply@acme.dev'], ['noise', 'alerts@linkedin.com'], ['auto_ack', 'notifications@greenhouse.io']]) {
+      const db = setup();
+      processed(db, 'x', 'j1', cls, from);
+      expect(listFollowupCandidates(db, now), `${cls} ${from}`).toHaveLength(1);
     }
   });
   it('an unmatched human reply from the exact address blocks every job sent to that address', () => {
@@ -127,9 +134,11 @@ describe('who must never get a follow-up', () => {
     const b = save(db2).id;
     setFollowupApproval(db2, [b], true);
     recordOutcome(db2, 'j1', 'rejected');
-    expect(db2.prepare('SELECT status FROM followups WHERE id = ?').get(b)).toEqual({ status: 'skipped' });
+    // Final fix round M1 (expectations changed): an approved row is now `cancelled` (was `skipped`) and can never be marked sent (was ok: true),
+    // since it was never claimed for sending. A claimed (`sending`) row keeps the late_block path: see the claim tests below.
+    expect(db2.prepare('SELECT status FROM followups WHERE id = ?').get(b)).toEqual({ status: 'cancelled' });
     expect(listApprovedFollowups(db2)).toEqual([]);
-    expect(markFollowupSent(db2, b, 'm')).toEqual({ ok: true, late_block: true }); // sent after an outcome landed: record the truth, warn
+    expect(markFollowupSent(db2, b, 'm')).toEqual({ ok: false, late_block: false });
   });
 });
 
@@ -207,7 +216,7 @@ describe('every outcome path ends pending follow-ups (ruling Y4, one helper in d
     const db = setup('2026-09-01 09:00:00');
     const id = pending(db);
     recordOutcomeChecked(db, 'j1', 'rejected', 'n');
-    expect(status(db, id)).toBe('skipped');
+    expect(status(db, id)).toBe('cancelled'); // M1: approved rows are cancelled (was skipped)
   });
   it('auto-record in triageReplies', () => {
     const db = setup('2026-09-01 09:00:00');
@@ -215,7 +224,7 @@ describe('every outcome path ends pending follow-ups (ruling Y4, one helper in d
     const id = pending(db);
     const r = triageReplies(db, [{ message_id: 'a', thread_id: 't-j1', from: 'hr@acme.dev', subject: 'Re: Frontend role', body: 'Could you share your availability for a call?' }], { config: { auto_record_enabled: true } });
     expect(r.auto_recorded).toHaveLength(1);
-    expect(status(db, id)).toBe('skipped');
+    expect(status(db, id)).toBe('cancelled'); // M1 (was skipped)
     expect(listApprovedFollowups(db)).toEqual([]);
   });
   it('resolveReplyProposals approve (an unresolved proposal already hides the approved follow-up from the send list)', () => {
@@ -226,13 +235,13 @@ describe('every outcome path ends pending follow-ups (ruling Y4, one helper in d
     expect(status(db, id)).toBe('approved');
     expect(listApprovedFollowups(db)).toEqual([]);
     expect(resolveReplyProposals(db, [{ message_id: 'c', approve: true }]).recorded).toBe(1);
-    expect(status(db, id)).toBe('skipped');
+    expect(status(db, id)).toBe('cancelled'); // M1 (was skipped)
   });
   it('resolveStale', () => {
     const db = setup('2026-08-01 09:00:00');
     db.prepare("INSERT INTO followups (job_id, n, subject, body, status) VALUES ('j1', 1, 's', 'b', 'approved')").run();
     expect(resolveStale(db, ['j1'], now).recorded).toEqual(['j1']);
-    expect(db.prepare('SELECT status FROM followups').get()).toEqual({ status: 'skipped' });
+    expect(db.prepare('SELECT status FROM followups').get()).toEqual({ status: 'cancelled' }); // M1 (was skipped)
   });
   it('only affects that job', () => {
     const db = setup('2026-09-01 09:00:00');
@@ -240,7 +249,7 @@ describe('every outcome path ends pending follow-ups (ruling Y4, one helper in d
     const a = pending(db);
     const b = saveFollowupDraft(db, draft({ job_id: 'j2' }), now, pass).id;
     recordOutcome(db, 'j1', 'replied');
-    expect(status(db, a)).toBe('skipped');
+    expect(status(db, a)).toBe('cancelled'); // M1 (was skipped)
     expect(status(db, b)).toBe('drafted');
   });
 });

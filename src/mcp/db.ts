@@ -4,9 +4,9 @@ import { z } from 'zod';
 import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listSentEmails, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordEmailSent, recordOutcomeChecked, setEmailThread, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
-import { buildReplyQuery } from '../replies.js';
+import { REPLY_WINDOW_DAYS } from '../replies.js';
 import { resolveReplyProposals, triageReplies } from '../replyTriage.js';
-import { listApprovedFollowups, listFollowupCandidates, listStale, markFollowupFailed, markFollowupSent, resolveStale, saveFollowupDraft, setFollowupApproval } from '../followups.js';
+import { claimFollowupForSend, listApprovedFollowups, listFollowupCandidates, replyWatchQueries, listStale, listStuckSending, markFollowupFailed, markFollowupSent, resolveStale, saveFollowupDraft, setFollowupApproval } from '../followups.js';
 import { calibrate } from '../calibrate.js';
 import { funnelStats } from '../funnel.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
@@ -364,7 +364,7 @@ server.registerTool(
   'record_email_sent',
   {
     description: 'After gmail.send_email succeeds: mark the queue row\'s email sent with the time and Gmail message id (parse it from "Email sent successfully with ID: <id>"). Also marks the other queue rows of the same job that share this email. Use instead of update_outreach_status(..., "email_status", "sent").',
-    inputSchema: { id: z.number(), message_id: z.string().optional() },
+    inputSchema: { id: z.number(), message_id: z.string().max(500).optional() },
   },
   async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: recordEmailSent(db, id, message_id ?? null) }) }] })
 );
@@ -373,7 +373,7 @@ server.registerTool(
   'set_email_thread',
   {
     description: 'Store the Gmail thread id (the "Thread ID" line of gmail.read_email) for a sent message id, so replies in that thread match their job with high confidence.',
-    inputSchema: { message_id: z.string(), thread_id: z.string() },
+    inputSchema: { message_id: z.string().max(500), thread_id: z.string().max(200) },
   },
   async ({ message_id, thread_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: setEmailThread(db, message_id, thread_id) }) }] })
 );
@@ -381,21 +381,22 @@ server.registerTool(
 server.registerTool(
   'list_sent_emails',
   {
-    description: 'For reply detection: one row per job whose cold email was sent (no bodies), the message ids that still lack a Gmail thread id (call gmail.read_email on each, then db.set_email_thread), and the Gmail search query to find replies.',
+    description: `For reply detection: one row per job whose cold email was sent (no bodies), the message ids that still lack a Gmail thread id (call gmail.read_email on each, then db.set_email_thread), and the Gmail search queries to find replies: \`queries\` covers EVERY sent email in the window plus every job still open for a follow-up or the stale sweep, split into queries of at most 15 terms (run ALL of them; \`query\` is just queries[0], kept for compatibility). Window: newer_than ${REPLY_WINDOW_DAYS}d.`,
     inputSchema: { since_days: z.number().int().min(1).max(365).optional() },
   },
   async ({ since_days }) => {
     const sent = listSentEmails(db, since_days ?? 120);
     const missing_thread = sent.filter((s) => s.message_id && !s.thread_id).map((s) => s.message_id as string);
     const slim = sent.map(({ body: _body, ...rest }) => rest);
-    return { content: [{ type: 'text', text: JSON.stringify({ sent: slim, missing_thread, query: buildReplyQuery(sent, 60) }) }] };
+    const queries = replyWatchQueries(db, sent);
+    return { content: [{ type: 'text', text: JSON.stringify({ sent: slim, missing_thread, queries, query: queries[0], window_days: REPLY_WINDOW_DAYS }) }] };
   }
 );
 
 server.registerTool(
   'triage_replies',
   {
-    description: 'Classify and match Gmail messages (already read with gmail.read_email) to sent cold emails. Auto-record is OFF by default (config/replies.json auto_record_enabled): by default every outcome is only PROPOSED and this tool never writes an outcome. When the user has enabled it, auto-records ONLY a high-confidence thread/sender match classified interview or rejected on a strong phrase from no/replied outcome (never over an existing interview/rejected/offer); proposes replied, offers, weaker matches and anything that would not raise the outcome for Telegram approval; reports bounces (never an outcome) and unmatched replies; ignores noise and out-of-office/auto-acknowledgements; records every message id (with the reply date) so none is triaged twice. dry_run: true classifies and matches but writes NOTHING (use it for checks against the real database).',
+    description: 'Classify and match Gmail messages (already read with gmail.read_email) to sent cold emails. Auto-record is OFF by default (config/replies.json auto_record_enabled): by default every outcome is only PROPOSED and this tool never writes an outcome. When the user has enabled it, auto-records ONLY a high-confidence thread/sender match classified interview or rejected on a strong phrase from no/replied outcome (never over an existing interview/rejected/offer); proposes replied, offers, weaker matches and anything that would not raise the outcome for Telegram approval; reports bounces (never an outcome) and unmatched replies; ignores noise and out-of-office/auto-acknowledgements but lists in `matched_ignored` every ignored message that matched a job with high or medium confidence (show them to the user); records every message id (with the reply date) so none is triaged twice. dry_run: true classifies and matches but writes NOTHING (use it for checks against the real database).',
     inputSchema: {
       messages: z.array(z.object({
         message_id: z.string().max(500), thread_id: z.string().max(200).nullable().optional(), from: z.string().max(320),
@@ -432,17 +433,25 @@ server.registerTool('set_followup_approval', {
 }, async ({ ids, approve }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: setFollowupApproval(db, ids, approve) }) }] }));
 
 server.registerTool('list_approved_followups', {
-  description: 'Approved, unsent follow-ups with recipient and Gmail thread id, for the sender\'s follow-up mode. Already excludes any job that has since got an outcome, a reply or a bounce.',
+  description: 'Returns {followups, stuck_sending, stuck_ids}. `followups`: approved, unsent follow-ups with recipient and Gmail thread id, for the sender\'s follow-up mode; already excludes any job that has since got an outcome, a reply or a bounce, and any row already claimed (`sending`). `stuck_sending`: count of rows left in `sending` by an earlier run that never confirmed sent/failed (the email may or may not have gone out): they are NEVER re-sent automatically; report them to the user, who decides.',
   inputSchema: {},
-}, async () => ({ content: [{ type: 'text', text: JSON.stringify(listApprovedFollowups(db)) }] }));
+}, async () => {
+  const stuck = listStuckSending(db);
+  return { content: [{ type: 'text', text: JSON.stringify({ followups: listApprovedFollowups(db), stuck_sending: stuck.length, stuck_ids: stuck.map((s) => s.id) }) }] };
+});
+
+server.registerTool('claim_followup_for_send', {
+  description: 'Call RIGHT BEFORE gmail.send_email for one approved follow-up: atomically moves it approved -> sending. Returns {claimed}. If claimed is false (already claimed or sent, skipped, cancelled by an outcome, or the job is now blocked by a reply/bounce) do NOT send it.',
+  inputSchema: { id: z.number().int() },
+}, async ({ id }) => ({ content: [{ type: 'text', text: JSON.stringify({ claimed: claimFollowupForSend(db, id) }) }] }));
 
 server.registerTool('mark_followup_sent', {
-  description: 'After gmail.send_email succeeds for an approved follow-up: mark it sent with the Gmail message id. Only approved rows change.',
+  description: 'After gmail.send_email succeeds for a claimed follow-up: mark it sent with the Gmail message id. Only `sending` (claimed) or `approved` rows change; a skipped or cancelled row is never marked sent (returns ok: false). Returns {ok, late_block}: late_block true means a reply/outcome arrived after the claim.',
   inputSchema: { id: z.number().int(), message_id: z.string().max(500).optional() },
 }, async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify(markFollowupSent(db, id, message_id ?? null)) }] }));
 
 server.registerTool('mark_followup_failed', {
-  description: 'Mark an approved follow-up failed after a send error (after one retry).',
+  description: 'Mark a claimed (sending) or approved follow-up failed after a send error (after one retry).',
   inputSchema: { id: z.number().int() },
 }, async ({ id }) => ({ content: [{ type: 'text', text: JSON.stringify({ ok: markFollowupFailed(db, id) }) }] }));
 

@@ -6,6 +6,8 @@ import { recordOutcome } from './db.js';
 import { normalizeText } from './atsText.js';
 import { getBaseResume } from './resume.js';
 import { checkTextWithNormalized } from './resumeFacts.js';
+import { buildReplyQueries, isAutomatedSender, REPLY_WINDOW_DAYS, STALE_DAYS } from './replies.js';
+import type { SentEmail } from './db.js';
 
 const DAY = 86_400_000;
 const parseSqlTime = (s: string) => Date.parse(`${s.replace(' ', 'T')}Z`);
@@ -30,7 +32,7 @@ function rows(db: BetterSqlite3.Database): Row[] {
       FROM outreach_queue WHERE email_status = 'sent' AND email_sent_at IS NOT NULL GROUP BY job_id
     ), fu AS (
       SELECT job_id, SUM(status = 'sent') AS n_sent, MAX(CASE WHEN status = 'sent' THEN sent_at END) AS last_fu,
-             MAX(CASE WHEN status = 'skipped' THEN decided_at END) AS last_skip, SUM(status IN ('drafted', 'approved')) AS pending
+             MAX(CASE WHEN status = 'skipped' THEN decided_at END) AS last_skip, SUM(status IN ('drafted', 'approved', 'sending')) AS pending
       FROM followups GROUP BY job_id
     )
     SELECT s.job_id, j.company, j.title, s.email_to, s.subject, s.body, s.thread_id, s.message_id, s.sent_at,
@@ -42,7 +44,8 @@ function rows(db: BetterSqlite3.Database): Row[] {
 const lastContact = (r: Row) => [r.sent_at, r.last_fu, r.last_skip].filter((x): x is string => !!x).sort().pop() as string;
 
 /** Jobs that must never get a (further) follow-up or a stale no_response: any outcome; any processed reply that is not noise or an
- *  auto-acknowledgement (replied, rejected, offer, interview, bounce, even a still-pending or skipped proposal); and every other job
+ *  auto-acknowledgement (replied, rejected, offer, interview, bounce, even a still-pending or skipped proposal); ANY processed message matched
+ *  to the job from a non-automated sender, whatever its class (C1); every candidate of an ambiguous reply or bounce (M5); and every other job
  *  sent to the same address as a job with an outcome, a human reply, or a bounce. `jobs.excluded_reason` and include overrides are
  *  deliberately ignored (Plan 2 AF1/W9): an emailed job keeps its follow-up and stale handling. */
 /** Bare lowercase address: `Jane <hr@x.com>` gives `hr@x.com`; a string without angle brackets is used whole. */
@@ -54,6 +57,23 @@ export function blockedJobIds(db: BetterSqlite3.Database): Set<string> {
   const all = <T,>(sql: string) => db.prepare(sql).all() as T[];
   for (const r of all<{ job_id: string }>('SELECT DISTINCT job_id FROM job_outcomes')) blocked.add(r.job_id);
   for (const r of all<{ job_id: string }>("SELECT DISTINCT job_id FROM processed_messages WHERE job_id IS NOT NULL AND (classification NOT IN ('noise', 'auto_ack') OR coalesce(action, '') != 'ignored')")) blocked.add(r.job_id);
+  // C1: ANY processed message matched to a job from a non-automated sender blocks it, whatever its class or action (a real reply filed as
+  // noise/auto-ack must never leave the job a follow-up candidate). Automated senders (no-reply, ATS, job boards, mailer-daemon) keep the rules above.
+  for (const r of all<{ job_id: string; from_addr: string | null }>('SELECT job_id, from_addr FROM processed_messages WHERE job_id IS NOT NULL')) {
+    if (!isAutomatedSender(r.from_addr)) blocked.add(r.job_id);
+  }
+  // M5: an ambiguous reply/bounce (no single job) blocks EVERY candidate job, unless it is ignored noise/auto-ack from an automated sender;
+  // a bounce also blocks every job sent to a candidate's address.
+  const bouncedCandidates = new Set<string>();
+  for (const r of all<{ candidates: string; classification: string | null; action: string | null; from_addr: string | null }>('SELECT candidates, classification, action, from_addr FROM processed_messages WHERE candidates IS NOT NULL')) {
+    let ids: unknown;
+    try { ids = JSON.parse(r.candidates); } catch { ids = []; }
+    if (!Array.isArray(ids)) continue;
+    const quiet = ['noise', 'auto_ack'].includes(r.classification ?? '') && (r.action ?? '') === 'ignored' && isAutomatedSender(r.from_addr);
+    if (quiet) continue;
+    for (const id of ids) if (typeof id === 'string') { blocked.add(id); if (r.classification === 'bounce' || r.action === 'bounced') bouncedCandidates.add(id); }
+  }
+  for (const r of all<{ job_id: string; a: string }>("SELECT job_id, email_to AS a FROM outreach_queue WHERE email_to IS NOT NULL")) if (bouncedCandidates.has(r.job_id)) addrs.add(bare(r.a));
   // Z1: a no_response outcome blocks its own job (above) but does not propagate to siblings at the same address.
   for (const r of all<{ a: string }>("SELECT DISTINCT q.email_to AS a FROM outreach_queue q JOIN job_outcomes o ON o.job_id = q.job_id WHERE q.email_to IS NOT NULL AND o.outcome != 'no_response'")) addrs.add(bare(r.a));
   for (const r of all<{ a: string }>("SELECT DISTINCT from_addr AS a FROM processed_messages WHERE from_addr IS NOT NULL AND classification NOT IN ('noise', 'auto_ack', 'bounce') AND coalesce(action, '') != 'bounced'")) addrs.add(bare(r.a));
@@ -62,12 +82,14 @@ export function blockedJobIds(db: BetterSqlite3.Database): Set<string> {
   return blocked;
 }
 
-export function listFollowupCandidates(db: BetterSqlite3.Database, now: Date = new Date(), opts: { afterDays?: number; max?: number } = {}): FollowupCandidate[] {
+/** A job is either follow-up eligible (10 <= quiet days < staleDays) or stale (quiet >= staleDays), never both. */
+export function listFollowupCandidates(db: BetterSqlite3.Database, now: Date = new Date(), opts: { afterDays?: number; max?: number; staleDays?: number } = {}): FollowupCandidate[] {
   const after = opts.afterDays ?? 10;
   const max = opts.max ?? 2;
+  const stale = opts.staleDays ?? STALE_DAYS;
   const blocked = blockedJobIds(db);
   return rows(db)
-    .filter((r) => !blocked.has(r.job_id) && r.email_to && r.pending === 0 && r.n_sent < max && daysBetween(lastContact(r), now) >= after)
+    .filter((r) => { const q = daysBetween(lastContact(r), now); return !blocked.has(r.job_id) && r.email_to && r.pending === 0 && r.n_sent < max && q >= after && q < stale; })
     .map((r) => ({
       job_id: r.job_id, company: r.company, title: r.title, email_to: r.email_to, subject: r.subject, body: r.body,
       thread_id: r.thread_id, message_id: r.message_id, sent_at: r.sent_at, followups_sent: r.n_sent,
@@ -142,26 +164,59 @@ export function listApprovedFollowups(db: BetterSqlite3.Database): Array<{ id: n
   return all.filter((r) => r.email_to && !blocked.has(r.job_id));
 }
 
-/** Called AFTER the email went out, so it records the truth: the row becomes `sent` even if the job got blocked in between (an outcome
- *  recorded meanwhile has already flipped an approved row to `skipped`; that row is still the one just sent). `late_block` tells the caller to warn
- *  the user ("sent, but a reply/outcome arrived meanwhile"). Pre-send protection lives in listApprovedFollowups and setFollowupApproval. */
+/** Rows left in `sending` (claimed, but never marked sent or failed: the sender stopped mid-send). Never re-sent automatically: the user decides. */
+export function listStuckSending(db: BetterSqlite3.Database): Array<{ id: number; job_id: string; n: number }> {
+  return db.prepare("SELECT id, job_id, n FROM followups WHERE status = 'sending' ORDER BY id").all() as Array<{ id: number; job_id: string; n: number }>;
+}
+
+/** The sender's claim step, called right BEFORE gmail.send_email: approved -> sending, atomically. Returns false (send nothing) when the row is
+ *  not approved (already claimed, sent, skipped, cancelled, failed, unknown), has no sent cold email to reply to, or its job is blocked now. */
+export function claimFollowupForSend(db: BetterSqlite3.Database, id: number): boolean {
+  return db.transaction(() => {
+    const row = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status = 'approved'").get(id) as { job_id: string } | undefined;
+    if (!row) return false;
+    if (!listApprovedFollowups(db).some((r) => r.id === id)) return false;
+    return db.prepare("UPDATE followups SET status = 'sending' WHERE id = ? AND status = 'approved'").run(id).changes > 0;
+  }).immediate();
+}
+
+/** Called AFTER the email went out, so it records the truth. Accepts only `approved` or `sending` rows (a skipped or cancelled row was never
+ *  claimed, so it cannot become sent). A `sending` row is never cancelled by an outcome (skipPendingFollowups leaves it), so a send in flight is
+ *  still recorded as sent; `late_block` tells the caller to warn the user ("sent, but a reply/outcome arrived meanwhile"). Pre-send protection
+ *  lives in claimFollowupForSend, listApprovedFollowups and setFollowupApproval. */
 export function markFollowupSent(db: BetterSqlite3.Database, id: number, messageId: string | null): { ok: boolean; late_block: boolean } {
-  const row = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status IN ('approved', 'skipped') AND sent_at IS NULL").get(id) as { job_id: string } | undefined;
+  const row = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status IN ('approved', 'sending') AND sent_at IS NULL").get(id) as { job_id: string } | undefined;
   if (!row) return { ok: false, late_block: false };
   const late_block = blockedJobIds(db).has(row.job_id);
-  const ok = db.prepare("UPDATE followups SET status = 'sent', sent_at = datetime('now'), message_id = ? WHERE id = ? AND status IN ('approved', 'skipped') AND sent_at IS NULL").run(messageId, id).changes > 0;
+  const ok = db.prepare("UPDATE followups SET status = 'sent', sent_at = datetime('now'), message_id = ? WHERE id = ? AND status IN ('approved', 'sending') AND sent_at IS NULL").run(messageId, id).changes > 0;
   return { ok, late_block: ok && late_block };
 }
 
 export function markFollowupFailed(db: BetterSqlite3.Database, id: number): boolean {
-  return db.prepare("UPDATE followups SET status = 'failed' WHERE id = ? AND status = 'approved'").run(id).changes > 0;
+  return db.prepare("UPDATE followups SET status = 'failed' WHERE id = ? AND status IN ('approved', 'sending')").run(id).changes > 0;
+}
+
+/** Every sent job that is NOT blocked yet (recent, follow-up candidate, pending draft or stale), as SentEmail rows, so the reply search
+ *  covers each one whatever the age of its cold email. */
+export function listReplyWatchJobs(db: BetterSqlite3.Database): SentEmail[] {
+  const blocked = blockedJobIds(db);
+  return rows(db).filter((r) => !blocked.has(r.job_id)).map((r) => ({
+    job_id: r.job_id, company: r.company, title: r.title, email_to: r.email_to, subject: r.subject, body: r.body, message_id: r.message_id, thread_id: r.thread_id, sent_at: r.sent_at,
+  }));
+}
+
+/** The reply-search queries for list_sent_emails: every sent email in `sent` (the tool's since_days window) plus every unblocked sent job
+ *  (follow-up candidate, pending draft or stale) whatever its age, chunked by buildReplyQueries, newer_than REPLY_WINDOW_DAYS. */
+export function replyWatchQueries(db: BetterSqlite3.Database, sent: SentEmail[]): string[] {
+  const seen = new Set(sent.map((s) => s.job_id));
+  return buildReplyQueries([...sent, ...listReplyWatchJobs(db).filter((s) => !seen.has(s.job_id))], REPLY_WINDOW_DAYS);
 }
 
 export interface StaleCandidate { job_id: string; company: string | null; title: string | null; days_quiet: number; followups_sent: number; why: 'silent 60+ days' | 'no reply after 2 follow-ups' }
 
 /** Sent jobs gone quiet. Jobs with an outcome, a reply (even an unresolved proposal) or a bounce are never listed: the user decides those. */
 export function listStale(db: BetterSqlite3.Database, now: Date = new Date(), opts: { staleDays?: number; afterDays?: number; max?: number } = {}): StaleCandidate[] {
-  const stale = opts.staleDays ?? 60;
+  const stale = opts.staleDays ?? STALE_DAYS;
   const after = opts.afterDays ?? 10;
   const max = opts.max ?? 2;
   const blocked = blockedJobIds(db);
