@@ -31,7 +31,10 @@ export interface NormalizedMatch extends MatchResultInput {
   deadline: string | null | undefined;
   language_note: string | null;
   // Which cap lowered the score (e.g. "evidence-ceiling:72", "empty-table:70"), or null when the dims sum stood.
+  // Prefixed "injection-suspect" (";"-joined) whenever the posting contains an injection phrase, even if the score was already <= 75.
   score_cap_reason: string | null;
+  // Injection phrases found in the posting (non-empty => score capped at 75 and score_cap_reason starts with "injection-suspect").
+  injection_phrases: string[];
 }
 
 const IMPORTANCE: Importance[] = ['critical', 'high', 'meaningful', 'preferred', 'low_signal'];
@@ -57,6 +60,38 @@ export function normalizeRequirements(reqs: unknown, description?: string): Requ
 // The model quotes what it read, which may be raw HTML (remotive/remoteok) or page text: accept a quote found in either form.
 const foldedPosting = (description: string, plain: string) => `${fold(description)} ${fold(plain)}`;
 
+// Prompt-injection phrases aimed at an AI screener. Kept narrow on purpose: ordinary job-ad uses of "rate", "ignore",
+// "AI", "score" or "system prompt" (e.g. "competitive rate of pay", "write system prompts for our agents") must not match.
+// Every pattern is linear (no nested quantifiers) and the scanned text is clamped, so a hostile posting cannot stall the scan.
+const INJECTION_RES: RegExp[] = [
+  /\bignore\s+(?:all|any)\s+(?:of\s+)?(?:the\s+|your\s+|my\s+)?(?:(?:previous|prior|above|earlier|other)\s+)?(?:instructions|prompts?|rules)\b/i,
+  /\bignore\s+(?:the\s+|your\s+|my\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|prompts?|rules)\b/i,
+  /\bscore\s+(?:this|the)\s+(?:candidate|applicant|resume|cv|application|profile)\s+(?:at\s+|as\s+)?(?:a\s+)?\d{1,3}\b/i,
+  /\bscore\s+(?:at\s+|of\s+)?\d{1,3}\s*(?:\/\s*100|out\s+of\s+100)\b/i,
+  /\b(?:give|assign|award)\s+(?:(?:this|the)\s+(?:candidate|applicant|resume|cv|application|profile)\s+)?(?:a\s+)?(?:(?:match|fit)\s+)?(?:score|rating)\s+(?:of\s+)?\d{1,3}\b/i,
+  /\brate\s+(?:this|the)\s+(?:candidate|applicant|resume|cv|application|profile)\b/i,
+  /\bmark\s+(?:every|all|each)\s+(?:of\s+the\s+)?(?:requirements?\s+|skills?\s+|items?\s+)?(?:as\s+)?(?:strong|met|matched)\b/i,
+  /\bAI\s+screen(?:ing|ers?)\b/i,
+  /\bas\s+an\s+(?:AI|LLM)(?:\s+(?:language\s+model|model|assistant|system))?(?=\s*[,.:;!]|\s+(?:you|please|ignore|give|rate|score|mark|must)\b)/i,
+  /\b(?:your|previous|original|hidden)\s+system\s+prompt\b|\bsystem\s+prompt\s*:/i,
+  /\byou\s+must\s+(?:give|rate|score|assign)\s+(?:(?:this|the|a|an)\s+)?(?:candidate|applicant|resume|cv|application|profile|score|rating)\b/i,
+  /\b(?:output|return|respond\s+with|reply\s+with)\s+a\s+(?:(?:match|fit)\s+)?(?:score|rating)\s+of\b/i,
+];
+const INJECTION_SCAN_MAX = 20000;
+export const INJECTION_SCORE_CAP = 75;
+
+/** The injection phrases found in a text (deduped, each cut to 80 chars), scanning at most the first 20000 chars of collapsed text. */
+export function injectionPhrases(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const t = text.slice(0, INJECTION_SCAN_MAX * 2).replace(/\s+/g, ' ').slice(0, INJECTION_SCAN_MAX);
+  const hits: string[] = [];
+  for (const re of INJECTION_RES) {
+    const m = re.exec(t);
+    if (m) hits.push(m[0].slice(0, 80));
+  }
+  return [...new Set(hits)];
+}
+
 function normalizeRequirementsWith(reqs: unknown, jd: string | null): Requirement[] {
   if (!Array.isArray(reqs)) return [];
   const out: Requirement[] = [];
@@ -71,6 +106,8 @@ function normalizeRequirementsWith(reqs: unknown, jd: string | null): Requiremen
       const q = jd_quote ? fold(jd_quote) : '';
       if (q.length < QUOTE_MIN || (jd != null && !jd.includes(q))) evidence = 'structural';
     }
+    // A "requirement" quoted from an injected instruction is not a requirement: inferred, so never critical/high nor a hard stop.
+    if (jd_quote && injectionPhrases(jd_quote).length) evidence = 'inferred';
     // Gate: inferred evidence can never be critical or high.
     if (evidence === 'inferred' && (importance === 'critical' || importance === 'high')) importance = 'meaningful';
     out.push({
@@ -88,9 +125,12 @@ const LOCATION_OR_LANGUAGE_RE = new RegExp(
   `\\b(?:on-?site|onsite|hybrid|remote|relocat\\w*|locat(?:ion|ed)|based in|reside\\w*|time ?zone|visa|work (?:permit|authori[sz]ation)|right to work|fluent|fluency|bilingual|native speaker|language|${LANGUAGES.join('|')})\\b`, 'i');
 const isLocationOrLanguage = (r: Requirement) => r.category === 'location' || r.category === 'language' || LOCATION_OR_LANGUAGE_RE.test(r.req);
 
-/** Hard stop = an explicit non-negotiable the candidate does not meet: critical + missing, stated or structural evidence, and not a location/language row. */
+/** Hard stop = an explicit non-negotiable the candidate does not meet: critical + missing, `stated` evidence (callers pass
+ *  requirements already through the quote check, so `stated` means verified), and not a location/language row.
+ *  Structural rows (including stated rows downgraded because their quote was too short or not found) and inferred rows never
+ *  create a hard stop: a fabricated or unverifiable critical requirement must not remove a job from the pipeline. */
 export function hardStops(reqs: Requirement[]): string[] {
-  const names = reqs.filter((r) => r.importance === 'critical' && r.match === 'missing' && r.evidence !== 'inferred' && !isLocationOrLanguage(r)).map((r) => r.req);
+  const names = reqs.filter((r) => r.importance === 'critical' && r.match === 'missing' && r.evidence === 'stated' && !isLocationOrLanguage(r)).map((r) => r.req);
   return [...new Set(names)];
 }
 
@@ -139,6 +179,14 @@ export function normalizeMatchRow(r: MatchRowInput, description?: string): { ok:
     const cap = evidenceCeiling(requirements);
     if (score > cap.ceiling) { score = cap.ceiling; capReason = cap.reason; }
   }
+  // Injection defence: a posting that talks to the AI screener cannot score above 75, whatever the model was talked into.
+  // Raw text is scanned too, so an instruction hidden in an HTML comment or attribute still counts.
+  const injection = [...new Set([...injectionPhrases(plain), ...injectionPhrases(description)])];
+  if (injection.length) {
+    // Keep the evidence-cap reason only when it is the binding one (it took the score to 75 or below).
+    if (score > INJECTION_SCORE_CAP) { score = INJECTION_SCORE_CAP; capReason = null; }
+    capReason = capReason ? `injection-suspect;${capReason}` : 'injection-suspect';
+  }
   // Loosely typed fields are sanitized here, never allowed to fail the call: only the score/dims decide rejection.
   const verdict = (v: unknown) => ((VERDICTS as readonly unknown[]).includes(v) ? (v as 'PASS' | 'FAIL' | 'FLAG') : undefined);
   return {
@@ -154,7 +202,9 @@ export function normalizeMatchRow(r: MatchRowInput, description?: string): { ok:
       requirements,
       strengths: cap3(r.strengths),
       gaps: cap3(r.gaps),
-      hard_stops: hardStops(requirements),
+      // Without the posting text no quote was verified, so no row can create a hard stop.
+      hard_stops: description ? hardStops(requirements) : [],
+      injection_phrases: injection,
       confidence: confidenceOf(requirements, plain?.length),
       deadline: r.deadline === undefined ? undefined : typeof r.deadline === 'string' && r.deadline.trim() ? r.deadline.trim() : null,
       language_note: typeof r.language_note === 'string' && r.language_note.trim() ? r.language_note.trim() : null,

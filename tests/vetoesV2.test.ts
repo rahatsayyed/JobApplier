@@ -53,7 +53,8 @@ describe('vetoResults ctx + db facts', () => {
     const db = openDb(':memory:');
     saveJob(db, { id: 'j1', source: 'remotive', title: 'React Developer', company: 'Acme', url: 'https://remotive.com/1', apply_url: 'https://boards.greenhouse.io/a/jobs/1', description: long, posted_at: '2026-10-01' });
     saveMatchResultsChecked(db, [{ job_id: 'j1', score: 0, reasons: '', missing_keywords: [], score_dims: { skills: 20, seniority: 20, domain: 10, location: 25 },
-      requirements: [{ req: 'Go', importance: 'critical', evidence: 'structural', jd_quote: null, match: 'missing' }] } as any]);
+      // AE1: a hard stop needs a verified stated quote (this row was structural before AE1, which no longer creates one).
+      requirements: [{ req: 'Go', importance: 'critical', evidence: 'stated', jd_quote: 'We build developer tools', match: 'missing' }] } as any]);
     const f = jobFactsFromDb(db, 'j1');
     expect(f).toEqual({ source: 'remotive', url: 'https://remotive.com/1', apply_url: 'https://boards.greenhouse.io/a/jobs/1', posted_at: '2026-10-01', hard_stops: ['Go'], repost_count: 0, snapshot_chars: 0 });
     const out = vetoResults([{ job_id: 'j1', score: 75 }], [{ id: 'j1', title: 'React Developer', description: long }], [], { facts: new Map([['j1', f]]), now, languages: langs });

@@ -12,7 +12,7 @@ export const matchResultsInputShape = {
       z.unknown().describe(
         'One matcher row: {job_id: string, score: int 0-100, score_dims: {skills, seniority, domain, location: int 0-25 each}, reasons: string, ' +
           'missing_keywords: string[], requirements: [{req: string, category: skill|experience|education|location|language|other, ' +
-          'importance: critical|high|meaningful|preferred|low_signal, evidence: stated|structural|inferred, jd_quote: verbatim posting text 12-300 chars for stated evidence, else null, ' +
+          'importance: critical|high|meaningful|preferred|low_signal, evidence: stated|structural|inferred, jd_quote: verbatim posting text 12-300 chars for stated evidence, else null (only a verified stated quote can make a critical missing row a hard stop), ' +
           'match: strong|partial|missing}] (max 12 rows; critical/high always kept), strengths: string[1-3], gaps: string[1-3], deadline: "YYYY-MM-DD" | short text | null, ' +
           'location_verdict: PASS|FAIL|FLAG, language_gate: PASS|FAIL|FLAG, language_note: string}. Or an error row {job_id, error: string}, which is reported, never saved.',
       ),

@@ -526,9 +526,13 @@ export function saveMatchResults(db: BetterSqlite3.Database, results: MatchResul
 export function saveMatchResultsChecked(
   db: BetterSqlite3.Database,
   rows: MatchRowInput[],
-): { saved: number; errors: Array<{ job_id: string; error: string }>; hard_stops: Array<{ job_id: string; hard_stops: string[] }> } {
+): {
+  saved: number; errors: Array<{ job_id: string; error: string }>; hard_stops: Array<{ job_id: string; hard_stops: string[] }>;
+  injection_suspects: Array<{ job_id: string; phrases: string[] }>;
+} {
   const errors: Array<{ job_id: string; error: string }> = [];
   const stops: Array<{ job_id: string; hard_stops: string[] }> = [];
+  const suspects: Array<{ job_id: string; phrases: string[] }> = [];
   let saved = 0;
   const descOf = db.prepare("SELECT trim(coalesce(description, '') || ' ' || coalesce(jd_snapshot, '')) AS d FROM jobs WHERE id = ?");
   const upd = db.prepare(`UPDATE jobs SET score = ?, match_reasons = ?, match_missing = ?, location_verdict = ?, language_gate = ?,
@@ -559,9 +563,10 @@ export function saveMatchResultsChecked(
       if (res.changes === 0) { errors.push({ job_id: x.job_id, error: 'unknown job_id' }); continue; }
       saved++;
       if (x.hard_stops.length) stops.push({ job_id: x.job_id, hard_stops: x.hard_stops });
+      if (x.injection_phrases.length) suspects.push({ job_id: x.job_id, phrases: x.injection_phrases });
     }
   })();
-  return { saved, errors, hard_stops: stops };
+  return { saved, errors, hard_stops: stops, injection_suspects: suspects };
 }
 
 export function markExcluded(

@@ -52,10 +52,12 @@ describe('normalizeRequirements', () => {
 });
 
 describe('hardStops', () => {
-  it('only critical + missing + not inferred', () => {
+  it('only critical + missing + stated (AE1: structural and inferred rows never create a hard stop)', () => {
     expect(hardStops([
       { req: 'A', importance: 'critical', evidence: 'stated', jd_quote: 'q', match: 'missing' },
       { req: 'B', importance: 'critical', evidence: 'structural', jd_quote: null, match: 'partial' },
+      { req: 'D', importance: 'critical', evidence: 'structural', jd_quote: null, match: 'missing' },
+      { req: 'E', importance: 'critical', evidence: 'inferred', jd_quote: null, match: 'missing' },
       { req: 'C', importance: 'high', evidence: 'stated', jd_quote: 'q', match: 'missing' },
     ])).toEqual(['A']);
   });

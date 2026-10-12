@@ -45,7 +45,7 @@ describe('evidence ceiling caps the score (dims 20/18/12/25 = 75 unless stated)'
     saveJob(db, { id: 'j1', source: 't', title: 'Dev', company: 'A', url: 'u', apply_url: 'u', description: desc });
     const mk = (d: any) => ({ job_id: 'j1', reasons: 'r', missing_keywords: [], score_dims: d, requirements: [req('critical', 'stated', 'strong', Q1)] });
     const out = saveMatchResultsChecked(db, [mk(dims), mk({ ...dims, skills: 5 })] as any);
-    expect(out).toEqual({ saved: 1, errors: [{ job_id: 'j1', error: 'duplicate job_id' }], hard_stops: [] });
+    expect(out).toEqual({ saved: 1, errors: [{ job_id: 'j1', error: 'duplicate job_id' }], hard_stops: [], injection_suspects: [] });
     expect((db.prepare("SELECT score FROM jobs WHERE id = 'j1'").get() as any).score).toBe(75);
   });
   it('7. dims 25/25/25/25 with all stated and met: 100; with an empty table: 70', () => {
@@ -101,7 +101,7 @@ describe('per-row batch handling', () => {
   it('an error row followed by a valid row for the same id: first wins, later is a duplicate error', () => {
     const db = setup();
     const out = saveMatchResultsChecked(db, [{ job_id: 'j1', error: 'batch over 5' }, good('j1')] as any);
-    expect(out).toEqual({ saved: 0, errors: [{ job_id: 'j1', error: 'batch over 5' }, { job_id: 'j1', error: 'duplicate job_id' }], hard_stops: [] });
+    expect(out).toEqual({ saved: 0, errors: [{ job_id: 'j1', error: 'batch over 5' }, { job_id: 'j1', error: 'duplicate job_id' }], hard_stops: [], injection_suspects: [] });
     expect((db.prepare("SELECT score FROM jobs WHERE id = 'j1'").get() as any).score).toBeNull();
   });
   it('an error row is any row with a string error, even when it carries a score', () => {
