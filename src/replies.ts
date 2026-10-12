@@ -72,16 +72,17 @@ const OUT_OF_OFFICE = [/\bout of (?:the )?office\b/i, /\bautomatic reply\b|\baut
   /\b(?:i am|i'm|i will be|i'll be|currently|we are|we're) (?:currently )?on (?:[a-z-]+ ){0,2}?(?:leave|vacation|holiday|holidays|break|pto|sabbatical|furlough)\b/i,
   /\baway until\b|\baway till\b|\baway from (?:my )?(?:desk|email)\b/i, /\bon (?:[a-z-]+ ){0,2}?(?:vacation|leave|holiday) (?:until|till)\b/i, /\bwith (?:limited|no) (?:access to )?(?:e-?mail|internet)\b/i,
   /\bchecking (?:my )?(?:e-?mails?|messages) (?:only )?(?:intermittently|occasionally|infrequently|sporadically)\b/i, /\bchh?utti\b/i, /\bout of town\b/i,
-  /\b(?:will be|am|i'm) (?:back|returning) (?:on|in|by)\b/i,
+  /\b(?:will be|am|i'm) (?:back|returning) (?:on|in|by)\b/i, /\bnicht im b(?:ü|u|ue)ro\b/i, /\babsente? du bureau\b/i,
   /\bwill (?:respond|reply|get back to you|be back|return)\b[^.]{0,30}\b(?:when|once|after|upon) i\b/i];
 
 // Rejections. STRONG phrases are unambiguous and make a mail auto-record ELIGIBLE; WEAK phrases still classify rejected but are proposal-only.
 const REJECT_STRONG = [/\bregret to (?:inform|tell|let)\b/i, /\bdecided (?:not to|to not) (?:proceed|move forward|progress|pursue|continue|move ahead|take)\b/i,
-  /\b(?:will not|won't|are not|aren't|am not|not|cannot|can't|unable to)\s+(?:be\s+)?(?:move|moving|proceed|proceeding|progress|progressing|go|going|take|taking)\s+(?:ahead|forward|further|on|with|your|this)\b/i,
+  /\b(?:will not|won't|are not|aren't|am not|not|cannot|can't|unable to)\s+(?:be\s+)?(?:move|moving|proceed|proceeding|progress|progressing|go|going|take|taking)\s+(?:ahead|forward|further|with|your|this)\b/i,
   /\b(?:proceed(?:ed|ing)?|mov(?:e|ed|ing)|go(?:ne|ing)?)\s+(?:ahead\s+|forward\s+)?with\s+(?:other|another|different|someone|a different)\b/i,
   /\bpursu(?:e|ing) other (?:candidates|applicants)\b/i, /\bfound (?:another|a better) (?:candidate|fit)\b/i,
   /\b(?:position|role|job|vacancy|opening|requisition) (?:has|have) (?:already )?been (?:filled|closed|cancell?ed)\b/i,
-  /\bno longer (?:available|open|accepting|considering|hiring|looking)\b/i, /\bnot (?:been )?(?:selected|shortlisted|chosen)\b/i];
+  /\bno longer (?:available|open|accepting|considering|hiring|looking)\b/i, /\bnot (?:been )?(?:selected|shortlisted|chosen)\b/i,
+  /\bcurrent status:?\s*(?:no longer under consideration|not selected|rejected|unsuccessful)\b/i, /\bno longer under consideration\b/i];
 const REJECT_WEAK = [/\bnot (?:a )?(?:good )?(?:fit|match)\b/i, /\b(?:(?:are|is|am) not|aren't|isn't|'re not|'m not)\s+(?:currently\s+)?(?:hiring|looking|recruiting)\b/i,
   /\b(?:don't|do not|doesn't|does not|have no|has no)\s+(?:currently\s+)?(?:have\s+)?(?:an?\s+|any\s+)?(?:suitable\s+|matching\s+|relevant\s+|open\s+|current\s+|available\s+)*(?:openings?|positions?|vacanc(?:y|ies)|roles?)\b/i,
   /\bunable to (?:offer|proceed|move forward|consider)\b/i, /\bno (?:open )?(?:positions|openings|vacancies)\b/i,
@@ -89,7 +90,9 @@ const REJECT_WEAK = [/\bnot (?:a )?(?:good )?(?:fit|match)\b/i, /\b(?:(?:are|is|
   /\b(?:was|been|is|has been) unsuccessful\b/i, /\brespectfully decline\b/i, /\bdifferent direction\b/i, /\bcandidates whose\b/i,
   /\bnot (?:be )?(?:extending|making|sending|issuing) (?:you )?(?:an|the) offer\b/i,
   /\b(?:does not|doesn't|did not|didn't) (?:match|meet|fit) (?:our|the) (?:current )?(?:requirements|needs|criteria)\b/i,
-  /\bnahi le (?:ja|jaa) rahe\b/i, /\bclose ho (?:gayi|gaya|gai)\b/i];
+  /\bnahi le (?:ja|jaa) rahe\b/i, /\bclose ho (?:gayi|gaya|gai)\b/i,
+  /\b(?:cannot|can't|can not|unable to) make (?:you )?an offer\b/i, /\bclosed the (?:req|requisition)\b/i, /\binternal candidate\b/i, /\bpursu(?:e|ing) candidates (?:with|who|whose)\b/i,
+  /\baage nahi badh\b/i, /\bkisi aur ko finali[sz]e\b/i, /\blamentablemente\b/i];
 const OFFER = [/\b(?:pleased|delighted|happy|thrilled) to offer\b/i, /\boffer letter\b/i, /\bextend(?:ing)? (?:you )?an offer\b/i, /\bmake you an offer\b/i,
   /\boffer you (?:the|a) (?:role|position|job)\b/i, /\bjob offer\b/i, /\boffer of employment\b/i];
 const NEGATION = /\b(?:not|never|unable|cannot|can't|won't|wouldn't|no longer|n't)\b/i;
@@ -99,9 +102,15 @@ const TIME = /\b(?:today|tomorrow|tonight|this (?:week|evening|afternoon|morning
 const SCHED_VERB = [/\b(?:schedule|scheduling|set up|setting up|arrange|arranging|book|booking|organi[sz]e)\s+(?:a|an|the|your|our|some|another|that|this)?\s*(?:[\w-]+\s+){0,3}?(?:call|chat|interview|meeting|conversation|discussion|round|screen|screening|time|slot)\b/i,
   /\b(?:can|could) we (?:connect|talk|chat|speak|catch up|hop on|jump on|meet|discuss)\b/i, /\blet'?s (?:connect|talk|chat|speak|catch up|schedule|set up|hop)\b/i,
   /\b(?:would like to|want to|like to|can|could|will) (?:call|phone|ring|speak (?:to|with)|talk (?:to|with)) you\b/i, /\bgive you a (?:call|ring)\b/i];
-const SCHEDULED_CONFIRM = /\b(?:is|are|has been|have been|been) (?:scheduled|confirmed) (?:for|on)\b|\binterview (?:is |has been )?(?:scheduled|confirmed)\b|\binvited to the following event\b/i;
+const SCHEDULED_CONFIRM = /\b(?:is|are|has been|have been|been) (?:scheduled|confirmed) (?:for|on)\b|\binterview (?:is |has been )?(?:scheduled|confirmed)\b|\binterview with [\w .&'-]{1,60} has been (?:scheduled|confirmed)\b|\binvited to the following event\b/i;
+// "your availability" only counts as a request (share/confirm/send/let me know ...) alongside an invitation or scheduling verb; a bare mention ("got your availability") decides nothing.
+const AVAIL_REQUEST = /\b(?:share|confirm|send|provide|let me know)\b[^.?!]{0,30}\bavailability\b/i;
+const INVITE_VERB = /\b(?:invite[ds]?|invitation|schedule[ds]?|set up|arrange|book|interview|call|chat|round|meeting|screen|discussion)\b/i;
+// A reschedule/cancellation mail talks about a live interview and must never be read as a verdict.
+const RESCHEDULE_VETO = /\b(?:reschedul\w*|cancel{1,2}(?:ed|ing|led)|postpon\w*|stands cancel{1,2}ed|new slot|another (?:time|slot|day)|alternative (?:time|slot)|move our (?:call|interview|meeting)|(?:can't|cannot|can not) make (?!an offer)|unwell|sick|emergency)\b/i;
+const REFUSED_OBJECT = /^\s*(?:with |on |for )?(?:the |our |your |this |that |a |an |next )?(?:[\w'-]+ ){0,2}?(?:call|slot|interview|meeting|day|week|today|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b/i;
 const INTERVIEW_STANDALONE = [/\bcalendly\.com\b|\bcal\.com\/|\bzoom\.us\b|\bmeet\.google\.com\b|\bteams\.microsoft\.com\/l\/meetup/i,
-  /\bare you (?:free|available)\b/i, /\bwhen (?:are|would|will) you (?:be )?(?:free|available)\b/i, /\byour availability\b/i, /\bwhat times? (?:work|suit)s?\b/i,
+  /\bare you (?:free|available)\b/i, /\bwhen (?:are|would|will) you (?:be )?(?:free|available)\b/i, /\bwhat times? (?:work|suit)s?\b/i,
   /\bshare (?:a|your|some) (?:good |convenient |suitable |preferred )?(?:times?|slots?)\b/i, /\bconvenient (?:time|slot)\b/i, /\bconfirm (?:your |the |a )?(?:availability|slot|time)\b/i, /\bbook a slot\b/i,
   SCHEDULED_CONFIRM, /\bcome in (?:on|for|tomorrow|today|this|next)\b/i,
   /\b(?:take[\s-]home|coding (?:challenge|test|assessment)|technical (?:assessment|test)|online (?:test|assessment)|assignment brief|attached assignment|complete (?:this|the) (?:test|assessment|assignment))\b/i,
@@ -112,13 +121,15 @@ const ACK_STRONG = [/\b(?:we have|we've|we) received your (?:application|email|e
   /\byour (?:application|request|message|email|submission) (?:has|have) been (?:received|submitted|forwarded)\b/i, /\bthis is an? (?:automated|automatic|auto-generated)\b/i,
   /\bplease do not reply\b|\bdo not reply to this\b/i, /\b(?:get back to you|reach out|contact you|be in touch|let you know) if\b/i,
   /\b(?:if|should) (?:you are |you're |we |your profile is )?(?:not )?(?:shortlisted|selected|a match|a fit)\b/i, /\bonly (?:selected|shortlisted) candidates\b/i, /\bshortlisted candidates (?:will|take|are)\b/i,
-  /\bnext steps?:?\s*our team (?:reviews|will review)\b/i, /\bteam (?:will|is|are) (?:still )?(?:review|reviewing)\b/i, /\bwill be (?:reviewed|reviewing|considered)\b/i, /\bunder review\b/i, /\brespond within \d+/i];
-const ACK_WEAK = [/\bthank(?:s| you) for (?:contacting|applying|your (?:application|interest|email|message|submission))\b/i, /\bwill (?:get back|respond|reply|revert) to you (?:shortly|soon|within)\b/i];
+  /\bnext steps?:?\s*our team (?:reviews|will review)\b/i, /\bwill be (?:reviewed|reviewing|considered)\b/i, /\bunder review\b/i, /\brespond within \d+/i];
+// "our team will review it there" is an acknowledgement only from an automated sender; from a human it is a plain reply.
+const ACK_AUTOMATED_ONLY = /\bteam (?:will|is|are) (?:still )?(?:review|reviewing)\b/i;
+const ACK_WEAK =[/\bthank(?:s| you) for (?:contacting|applying|your (?:application|interest|email|message|submission))\b/i, /\bwill (?:get back|respond|reply|revert) to you (?:shortly|soon|within)\b/i];
 // A sentence that only says what happens "if/should/once" something occurs is not a statement about THIS application.
 const CONDITIONAL = /\b(?:if|in case|should|unless|once|whenever)\b/i;
 const PIVOT = /\b(?:but|however|although|though)\b/i;
 // After a "but" the sentence turns to something else (a referral, another role, a call): the rejection before it is then not the message's verdict.
-const REDIRECT = /\b(?:refer\w*|passed|forwarded|pass(?:ing)?|might|may|could|who is|other (?:team|role|opening|position)|another (?:team|role|opening|position)|senior|call|schedule|interview|assignment|talk|chat|meet)\b/i;
+const REDIRECT = /\b(?:refer\w*|passed|forwarded|pass(?:ing)?|might|may|could|who is|other (?:team|role|opening|position)|another (?:team|role|opening|position)|senior|call|schedule|interview|assignment|talk|chat|meet|reconnect|revisit|in january|next quarter|hiring freeze|later)\b/i;
 
 // ---------------------------------------------------------------- quote stripping
 const ent: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", rsquo: "'", lsquo: "'", ldquo: '"', rdquo: '"', ndash: '-', mdash: '-', hellip: '...',
@@ -206,7 +217,7 @@ export function classifyReplyDetail(subject: string, body: string, from = '', ou
   const no = (cls: ReplyClass): ReplyClassification => ({ cls, eligible: false });
 
   if (BOUNCE_SENDER.test(clamp(from, 500)) || BOUNCE_TEXT.some((r) => r.test(text))) return no('bounce');
-  if (inList(dom, JOB_BOARDS) || NOISE.some((r) => r.test(text))) return no('noise');
+  if (NOISE.some((r) => r.test(text))) return no('noise');
   if (OUT_OF_OFFICE.some((r) => r.test(text))) return no('auto_ack');
 
   const firmSentences = [subj, ...sentences(head)].filter((s) => !CONDITIONAL.test(s));
@@ -215,11 +226,20 @@ export function classifyReplyDetail(subject: string, body: string, from = '', ou
   const rejWeak = !rejStrong && firmSentences.some((s) => rejectionHit(s, REJECT_WEAK));
   const rej = rejStrong || rejWeak;
   const offer = firmSentences.some((s) => OFFER.some((r) => r.test(s)) && !NEGATION.test(s));
-  const sched = INTERVIEW_STANDALONE.some((r) => r.test(firm)) || (TIME.test(firm) && SCHED_VERB.some((r) => r.test(firm)));
+  const sched = INTERVIEW_STANDALONE.some((r) => r.test(firm)) || (TIME.test(firm) && SCHED_VERB.some((r) => r.test(firm))) || (AVAIL_REQUEST.test(firm) && INVITE_VERB.test(firm));
   // An automated sender (no-reply, ATS notification) can only evidence an interview by a plain "has been scheduled/confirmed" or a calendar invite.
   const interview = sched && (!automated || SCHEDULED_CONFIRM.test(firm));
 
+  // A job-board mailer is noise, unless it carries a rejection or a confirmed interview: then a human must look (proposal, never ignored).
+  if (inList(dom, JOB_BOARDS)) return no(rej || SCHEDULED_CONFIRM.test(firm) ? 'replied' : 'noise');
+  // Reschedule / cancellation talk, or a rejection whose refused object is a call/slot/interview/day: about a live interview, never a verdict. Proposal only.
+  const refusedSchedule = firmSentences.some((s) => REJECT_STRONG.some((r) => { const m = r.exec(s); return !!m && REFUSED_OBJECT.test(s.slice(m.index + m[0].length, m.index + m[0].length + 70)); }));
+  if ((rej || interview || offer) && (RESCHEDULE_VETO.test(text) || refusedSchedule)) return no('replied');
+  // Scheduling vocabulary from an ATS/automated sender that is not a plain confirmation is still shown to the user, never silently ignored.
+  if (automated && sched && !interview && !rej) return no('replied');
+
   if (ACK_STRONG.some((r) => r.test(text)) && !rej && !offer && !interview) return no('auto_ack');
+  if (automated && ACK_AUTOMATED_ONLY.test(text) && !rej && !offer && !interview) return no('auto_ack');
   if (rej && interview) return no('replied');
   if (rej) return { cls: 'rejected', eligible: rejStrong };
   if (offer) return no('offer');

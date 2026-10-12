@@ -22,6 +22,31 @@ describe('loadRepliesConfig (opt-in, safe default false)', () => {
   });
 });
 
+describe('classifier precision (fix round 2)', () => {
+  const H = 'Neha <neha@zentrix.in>';
+  it.each([
+    ['cancellation with a regret phrase', 'Interview cancelled', 'We regret to inform you that the interviewer is unwell and today\'s interview stands cancelled.', H, 'replied'],
+    ['refused object is a call', 'Re: x', 'We are not moving forward with the call tomorrow.', H, 'replied'],
+    ['plural "interviews" is a generic rejection, not a refused slot', 'Re: x', 'After careful consideration we are not moving ahead with interviews for your profile.', H, 'rejected'],
+    ['"can\'t move on" is no longer a strong rejection', 'Re: x', "Sorry, we can't move on anything right now.", H, 'replied'],
+    ['bare "got your availability" is not an interview', 'Re: x', 'Thanks, got your availability. We will be in touch.', H, 'replied'],
+    ['a request for availability with an invitation verb is an interview', 'Re: x', 'We would like to invite you for a technical interview. Please confirm your availability.', H, 'interview'],
+    ['ATS status line is a rejection', 'Application Status', 'Current status: No longer under consideration', 'Workday <acme@myworkday.com>', 'rejected'],
+    ['ATS "interview with X has been scheduled" is shown, from an automated sender', 'Interview', 'Your interview with Corvid has been scheduled for Monday.', 'no-reply@ashbyhq.com', 'interview'],
+    ['job-board mail carrying a rejection is proposed, not ignored', 'Update', 'Unfortunately we will not be moving forward with your application.', 'Naukri <info@naukri.com>', 'replied'],
+    ['"our team will review it there" from a human is a plain reply', 'Re: x', 'Please apply on our careers portal and our team will review it there.', 'hr@acme.dev', 'replied'],
+    ['same sentence from an automated sender is an ack', 'Re: x', 'Please apply on our careers portal and our team will review it there.', 'no-reply@acme.dev', 'auto_ack'],
+    ['German and French out-of-office', 'Re: x', 'Ich bin bis Montag nicht im Büro.', H, 'auto_ack'],
+  ] as Array<[string, string, string, string, ReplyClass]>)('%s', (_l, subject, body, from, expected) => {
+    expect(classifyReply(subject, body, from)).toBe(expected);
+  });
+  it('weak phrases are rejected but never eligible', () => {
+    for (const b of ['We cannot make an offer at this time.', 'An internal candidate took it.', 'We closed the req internally.', 'Lamentablemente no avanzamos.', 'Hum aage nahi badh rahe.']) {
+      expect(classifyReplyDetail('Re: x', b, 'hr@acme.dev')).toEqual({ cls: 'rejected', eligible: false });
+    }
+  });
+});
+
 describe('classifier precision (fix round 1)', () => {
   const H = 'Neha <neha@zentrix.in>';
   it.each([
