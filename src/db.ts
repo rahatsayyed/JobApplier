@@ -612,6 +612,15 @@ export function getCalibrationRows(db: BetterSqlite3.Database): { score: number;
   `).all() as { score: number; outcome: Outcome }[];
 }
 
+/** True when we already acted on the job (sent email/connect, submitted application): follow-ups must survive a passed deadline. */
+export function jobHasActedWork(db: BetterSqlite3.Database, jobId: string): boolean {
+  return db.prepare(`SELECT 1 FROM jobs WHERE id = ? AND (
+      EXISTS (SELECT 1 FROM outreach_queue q WHERE q.job_id = jobs.id
+        AND (q.email_status = 'sent' OR q.connect_status = 'sent' OR q.apply_status = 'submitted'))
+      OR EXISTS (SELECT 1 FROM outreach o WHERE o.job_id = jobs.id AND o.status = 'sent')
+      OR EXISTS (SELECT 1 FROM applications a WHERE a.job_id = jobs.id AND a.status = 'submitted'))`).get(jobId) !== undefined;
+}
+
 /** Run at hunt start: expire scored, not-yet-excluded jobs whose ISO deadline has passed; report closing-soon and unparseable ones.
  *  Jobs we already acted on (sent email/connect, submitted application) are left alone: excluding them would stop their follow-ups.
  *  An unparseable deadline is reported once (remembered in deadline_reported); changing the text reports it again. */

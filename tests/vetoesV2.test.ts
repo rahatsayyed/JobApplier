@@ -56,7 +56,7 @@ describe('vetoResults ctx + db facts', () => {
       // AE1: a hard stop needs a verified stated quote (this row was structural before AE1, which no longer creates one).
       requirements: [{ req: 'Go', importance: 'critical', evidence: 'stated', jd_quote: 'We build developer tools', match: 'missing' }] } as any]);
     const f = jobFactsFromDb(db, 'j1');
-    expect(f).toEqual({ source: 'remotive', url: 'https://remotive.com/1', apply_url: 'https://boards.greenhouse.io/a/jobs/1', posted_at: '2026-10-01', hard_stops: ['Go'], repost_count: 0, snapshot_chars: 0 });
+    expect(f).toEqual({ source: 'remotive', url: 'https://remotive.com/1', apply_url: 'https://boards.greenhouse.io/a/jobs/1', posted_at: '2026-10-01', deadline: null, acted: false, hard_stops: ['Go'], repost_count: 0, snapshot_chars: 0 });
     const out = vetoResults([{ job_id: 'j1', score: 75 }], [{ id: 'j1', title: 'React Developer', description: long }], [], { facts: new Map([['j1', f]]), now, languages: langs });
     expect(out[0]).toMatchObject({ job_id: 'j1', excluded: true, reason: 'hard stop: Go' });
     expect(saveGateResults(db, out)).toBe(1);

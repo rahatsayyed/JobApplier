@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { languageGate, type LanguageConfig } from './languageGate.js';
-import { ageDays, staleFlag } from './freshness.js';
+import { ageDays, deadlinePassed, staleFlag } from './freshness.js';
 import { assessLegitimacy, type Legitimacy } from './legitimacy.js';
 
 export type Verdict = 'PASS' | 'FAIL' | 'FLAG';
 
-export interface JobFacts { source?: string | null; url?: string | null; apply_url?: string | null; posted_at?: string | null; hard_stops?: string[]; repost_count?: number; snapshot_chars?: number; hard_stops_unreadable?: boolean }
+export interface JobFacts { source?: string | null; url?: string | null; apply_url?: string | null; posted_at?: string | null; deadline?: string | null; acted?: boolean; hard_stops?: string[]; repost_count?: number; snapshot_chars?: number; hard_stops_unreadable?: boolean }
 /** `languagesInvalid` (with `languages: null`) = config file present but an entry is invalid; null alone = file missing. */
 export interface VetoExtras { facts?: JobFacts; now?: Date; languages?: LanguageConfig | null; languagesInvalid?: string }
 /** `gate_flags` (excluded jobs only): the soft flags computed anyway, persisted by saveGateResults while `flags` stays empty. */
@@ -52,6 +52,10 @@ export function applyVetoes(
   if (extras?.facts?.hard_stops_unreadable) return out({ excluded: true, reason: 'gate data unreadable: hard_stops', flags });
   const stops = extras?.facts?.hard_stops ?? [];
   if (stops.length) return out({ excluded: true, reason: `hard stop: ${stops.join('; ')}`, flags });
+  // A passed deadline excludes in the first run too (same rule as sweepDeadlines), unless we already acted on the job.
+  if (extras?.facts?.deadline && !extras.facts.acted && deadlinePassed(extras.facts.deadline, now)) {
+    return out({ excluded: true, reason: `deadline passed: ${extras.facts.deadline.trim()}`, flags });
+  }
   if (legit?.tier === 'suspicious') return out({ excluded: true, reason: `legitimacy: ${legit.signals.filter((s) => !s.startsWith('info:')).join('; ')}`, flags });
 
   return out({ excluded: false, flags: soft });

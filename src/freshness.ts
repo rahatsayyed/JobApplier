@@ -29,6 +29,13 @@ export interface DeadlineSweep {
   unparseable: Array<{ job_id: string; deadline: string; source: string | null }>;
 }
 
+/** True only for a plain ISO-day deadline strictly before today (UTC day); same parsing rule as classifyDeadlines. */
+export function deadlinePassed(deadline: string | null | undefined, now: Date): boolean {
+  if (typeof deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(deadline.trim())) return false;
+  const d = parseIsoDay(deadline);
+  return d != null && d < today(now);
+}
+
 export function classifyDeadlines(rows: Array<{ id: string; deadline: string; source: string | null }>, now: Date): DeadlineSweep {
   const out: DeadlineSweep = { expired: [], closingSoon: [], unparseable: [] };
   for (const r of rows) {
