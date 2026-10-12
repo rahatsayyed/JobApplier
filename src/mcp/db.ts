@@ -407,12 +407,12 @@ server.registerTool('list_followup_candidates', {
 
 server.registerTool('save_followup_draft', {
   description: 'Store a drafted follow-up (status drafted; nothing is sent). n must be the candidate\'s next_n (1 or 2). Runs the fact gate itself (original email as extra source, job title and company blanked) and refuses a block; also enforces subject = "Re: <original subject>", 40-120 words and the banned phrases; stores the gate\'s normalized text. On refusal it throws with the reason (redraft once, then skip). Returns {id, subject, body, warnings}: show THESE stored texts and warnings for approval.',
-  inputSchema: { job_id: z.string(), n: z.number().int().min(1).max(2), subject: z.string().min(1), body: z.string().min(1) },
+  inputSchema: { job_id: z.string().max(200), n: z.number().int().min(1).max(2), subject: z.string().min(1).max(300), body: z.string().min(1).max(5000) },
 }, async (d) => ({ content: [{ type: 'text', text: JSON.stringify(saveFollowupDraft(db, d)) }] }));
 
 server.registerTool('set_followup_approval', {
   description: 'Record the user\'s Telegram decision on drafted follow-ups: approve=true -> approved (sender may send them), false -> skipped (counts as the last contact).',
-  inputSchema: { ids: z.array(z.number().int()), approve: z.boolean() },
+  inputSchema: { ids: z.array(z.number().int()).max(200), approve: z.boolean() },
 }, async ({ ids, approve }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: setFollowupApproval(db, ids, approve) }) }] }));
 
 server.registerTool('list_approved_followups', {
@@ -422,7 +422,7 @@ server.registerTool('list_approved_followups', {
 
 server.registerTool('mark_followup_sent', {
   description: 'After gmail.send_email succeeds for an approved follow-up: mark it sent with the Gmail message id. Only approved rows change.',
-  inputSchema: { id: z.number().int(), message_id: z.string().optional() },
+  inputSchema: { id: z.number().int(), message_id: z.string().max(500).optional() },
 }, async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ ok: markFollowupSent(db, id, message_id ?? null) }) }] }));
 
 server.registerTool('mark_followup_failed', {
@@ -437,7 +437,7 @@ server.registerTool('list_stale', {
 
 server.registerTool('resolve_stale', {
   description: 'Record no_response (note "stale resolved no_response (date)") for the job ids the user approved; ids no longer stale are skipped.',
-  inputSchema: { job_ids: z.array(z.string()) },
+  inputSchema: { job_ids: z.array(z.string().max(200)).max(200) },
 }, async ({ job_ids }) => ({ content: [{ type: 'text', text: JSON.stringify(resolveStale(db, job_ids)) }] }));
 
 async function main() {

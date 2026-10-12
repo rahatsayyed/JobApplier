@@ -45,16 +45,20 @@ const lastContact = (r: Row) => [r.sent_at, r.last_fu, r.last_skip].filter((x): 
  *  auto-acknowledgement (replied, rejected, offer, interview, bounce, even a still-pending or skipped proposal); and every other job
  *  sent to the same address as a job with an outcome, a human reply, or a bounce. `jobs.excluded_reason` and include overrides are
  *  deliberately ignored (Plan 2 AF1/W9): an emailed job keeps its follow-up and stale handling. */
+/** Bare lowercase address: `Jane <hr@x.com>` gives `hr@x.com`; a string without angle brackets is used whole. */
+export const bare = (s: string): string => { const m = /<([^<>]{1,320})>/.exec(s.slice(0, 1000)); return (m ? m[1] : s).trim().toLowerCase(); };
+
 export function blockedJobIds(db: BetterSqlite3.Database): Set<string> {
   const blocked = new Set<string>();
   const addrs = new Set<string>();
   const all = <T,>(sql: string) => db.prepare(sql).all() as T[];
   for (const r of all<{ job_id: string }>('SELECT DISTINCT job_id FROM job_outcomes')) blocked.add(r.job_id);
   for (const r of all<{ job_id: string }>("SELECT DISTINCT job_id FROM processed_messages WHERE job_id IS NOT NULL AND (classification NOT IN ('noise', 'auto_ack') OR coalesce(action, '') != 'ignored')")) blocked.add(r.job_id);
-  for (const r of all<{ a: string }>('SELECT DISTINCT lower(q.email_to) AS a FROM outreach_queue q JOIN job_outcomes o ON o.job_id = q.job_id WHERE q.email_to IS NOT NULL')) addrs.add(r.a);
-  for (const r of all<{ a: string }>("SELECT DISTINCT lower(from_addr) AS a FROM processed_messages WHERE from_addr IS NOT NULL AND classification NOT IN ('noise', 'auto_ack', 'bounce') AND coalesce(action, '') != 'bounced'")) addrs.add(r.a);
-  for (const r of all<{ a: string }>("SELECT DISTINCT lower(q.email_to) AS a FROM processed_messages p JOIN outreach_queue q ON q.job_id = p.job_id WHERE (p.classification = 'bounce' OR p.action = 'bounced') AND q.email_to IS NOT NULL")) addrs.add(r.a);
-  for (const r of all<{ job_id: string; a: string }>("SELECT job_id, lower(email_to) AS a FROM outreach_queue WHERE email_to IS NOT NULL AND email_status = 'sent'")) if (addrs.has(r.a)) blocked.add(r.job_id);
+  // Z1: a no_response outcome blocks its own job (above) but does not propagate to siblings at the same address.
+  for (const r of all<{ a: string }>("SELECT DISTINCT q.email_to AS a FROM outreach_queue q JOIN job_outcomes o ON o.job_id = q.job_id WHERE q.email_to IS NOT NULL AND o.outcome != 'no_response'")) addrs.add(bare(r.a));
+  for (const r of all<{ a: string }>("SELECT DISTINCT from_addr AS a FROM processed_messages WHERE from_addr IS NOT NULL AND classification NOT IN ('noise', 'auto_ack', 'bounce') AND coalesce(action, '') != 'bounced'")) addrs.add(bare(r.a));
+  for (const r of all<{ a: string }>("SELECT DISTINCT q.email_to AS a FROM processed_messages p JOIN outreach_queue q ON q.job_id = p.job_id WHERE (p.classification = 'bounce' OR p.action = 'bounced') AND q.email_to IS NOT NULL")) addrs.add(bare(r.a));
+  for (const r of all<{ job_id: string; a: string }>("SELECT job_id, email_to AS a FROM outreach_queue WHERE email_to IS NOT NULL AND email_status = 'sent'")) if (addrs.has(bare(r.a))) blocked.add(r.job_id);
   return blocked;
 }
 
@@ -114,8 +118,17 @@ export function saveFollowupDraft(db: BetterSqlite3.Database, d: { job_id: strin
 /** Approve or skip drafted rows. The decision time is stored: a skip counts as the last contact so the job is not re-drafted at once. */
 export function setFollowupApproval(db: BetterSqlite3.Database, ids: number[], approve: boolean): number {
   const upd = db.prepare("UPDATE followups SET status = ?, decided_at = datetime('now') WHERE id = ? AND status = 'drafted'");
+  const jobOf = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status = 'drafted'");
+  const blocked = blockedJobIds(db);
   let n = 0;
-  db.transaction(() => { for (const id of ids) n += upd.run(approve ? 'approved' : 'skipped', id).changes; })();
+  db.transaction(() => {
+    for (const id of ids) {
+      const j = (jobOf.get(id) as { job_id: string } | undefined)?.job_id;
+      // A draft whose job became blocked (outcome, reply, bounce) is never approved: it is skipped and not counted.
+      if (j !== undefined && blocked.has(j)) { upd.run('skipped', id); continue; }
+      n += upd.run(approve ? 'approved' : 'skipped', id).changes;
+    }
+  })();
   return n;
 }
 
@@ -130,6 +143,11 @@ export function listApprovedFollowups(db: BetterSqlite3.Database): Array<{ id: n
 }
 
 export function markFollowupSent(db: BetterSqlite3.Database, id: number, messageId: string | null): boolean {
+  const row = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status = 'approved'").get(id) as { job_id: string } | undefined;
+  if (row && blockedJobIds(db).has(row.job_id)) {
+    db.prepare("UPDATE followups SET status = 'skipped', decided_at = datetime('now') WHERE id = ? AND status = 'approved'").run(id);
+    return false;
+  }
   return db.prepare("UPDATE followups SET status = 'sent', sent_at = datetime('now'), message_id = ? WHERE id = ? AND status = 'approved'").run(messageId, id).changes > 0;
 }
 

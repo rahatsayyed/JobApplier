@@ -245,6 +245,42 @@ describe('every outcome path ends pending follow-ups (ruling Y4, one helper in d
   });
 });
 
+describe('fix round 1', () => {
+  it('Z1: no_response blocks its own job but not siblings at the same address; a real outcome still does', () => {
+    const db = setup();
+    addJob(db, 'j2', 'hr@acme.dev', '2026-10-05 09:00:00');
+    recordOutcome(db, 'j1', 'no_response');
+    expect(listFollowupCandidates(db, now).map((c) => c.job_id)).toEqual(['j2']);
+    recordOutcome(db, 'j1', 'rejected');
+    expect(listFollowupCandidates(db, now)).toEqual([]);
+  });
+  it('a reply from `Jane <hr@x.com>` with no job match blocks a sibling job at hr@x.com', () => {
+    const db = openDb(':memory:');
+    addJob(db, 'j1', 'HR@x.com', '2026-10-05 09:00:00');
+    processed(db, 'x', null, 'replied', 'Jane <hr@x.com>');
+    expect(listFollowupCandidates(db, now)).toEqual([]);
+    const db2 = openDb(':memory:');
+    addJob(db2, 'j1', 'hr@x.com', '2026-10-05 09:00:00');
+    processed(db2, 'x', null, 'replied', 'Jane <other@x.com>');
+    expect(listFollowupCandidates(db2, now)).toHaveLength(1);
+  });
+  it('setFollowupApproval refuses a draft whose job became blocked (marks it skipped, returns 0)', () => {
+    const db = setup('2026-09-01 09:00:00');
+    const id = save(db).id;
+    processed(db, 'x', 'j1', 'replied', 'hr@acme.dev', 'proposed');
+    expect(setFollowupApproval(db, [id], true)).toBe(0);
+    expect(db.prepare('SELECT status FROM followups WHERE id = ?').get(id)).toEqual({ status: 'skipped' });
+  });
+  it('markFollowupSent re-checks at mark time: blocked gives false and the draft is skipped', () => {
+    const db = setup('2026-09-01 09:00:00');
+    const id = save(db).id;
+    setFollowupApproval(db, [id], true);
+    processed(db, 'x', 'j1', 'bounce', 'mailer-daemon@g.com', 'bounced');
+    expect(markFollowupSent(db, id, 'm')).toBe(false);
+    expect(db.prepare('SELECT status FROM followups WHERE id = ?').get(id)).toEqual({ status: 'skipped' });
+  });
+});
+
 describe('Y4 address and bounce rules', () => {
   it('a processed message with a job id that was acted on (bounced/proposed/recorded) blocks, even with a noise-like class', () => {
     for (const action of ['bounced', 'proposed', 'recorded', 'approved', 'skipped']) {
