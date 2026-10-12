@@ -134,7 +134,7 @@ describe('matchReply', () => {
   });
   it('a tie across two jobs is ambiguous, never a guess', () => {
     const two = [sent({}), sent({ job_id: 'j3', message_id: 'm3', thread_id: 't3' })];
-    expect(matchReply({ message_id: 'r', from: 'hr@acme.dev', subject: '', body: '' }, two)).toEqual({ job_id: null, confidence: 'none', via: 'ambiguous' });
+    expect(matchReply({ message_id: 'r', from: 'hr@acme.dev', subject: '', body: '' }, two)).toEqual({ job_id: null, confidence: 'none', via: 'ambiguous', candidates: ['j1', 'j3'] });
   });
   it('short company names need a word boundary', () => {
     const io = [sent({ job_id: 'j9', company: 'IO', email_to: 'a@io-labs.dev', thread_id: null })];
