@@ -6,6 +6,7 @@ import { dbPath } from '../dbPath.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { buildReplyQuery } from '../replies.js';
 import { resolveReplyProposals, triageReplies } from '../replyTriage.js';
+import { listApprovedFollowups, listFollowupCandidates, listStale, markFollowupFailed, markFollowupSent, resolveStale, saveFollowupDraft, setFollowupApproval } from '../followups.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
@@ -398,6 +399,46 @@ server.registerTool(
   },
   async ({ decisions }) => ({ content: [{ type: 'text', text: JSON.stringify(resolveReplyProposals(db, decisions)) }] })
 );
+
+server.registerTool('list_followup_candidates', {
+  description: 'Jobs whose cold email got no recorded outcome after >= 10 quiet days, with fewer than 2 follow-ups sent and no pending draft. Never lists a job with any outcome, any reply on file (even an unresolved proposal), a bounce, or whose address belongs to a contact who replied, bounced or rejected another job. Includes the original subject/body (the facts a follow-up may reuse) and thread id.',
+  inputSchema: {},
+}, async () => ({ content: [{ type: 'text', text: JSON.stringify(listFollowupCandidates(db)) }] }));
+
+server.registerTool('save_followup_draft', {
+  description: 'Store a drafted follow-up (status drafted; nothing is sent). n must be the candidate\'s next_n (1 or 2). Runs the fact gate itself (original email as extra source, job title and company blanked) and refuses a block; also enforces subject = "Re: <original subject>", 40-120 words and the banned phrases; stores the gate\'s normalized text. On refusal it throws with the reason (redraft once, then skip). Returns {id, subject, body, warnings}: show THESE stored texts and warnings for approval.',
+  inputSchema: { job_id: z.string(), n: z.number().int().min(1).max(2), subject: z.string().min(1), body: z.string().min(1) },
+}, async (d) => ({ content: [{ type: 'text', text: JSON.stringify(saveFollowupDraft(db, d)) }] }));
+
+server.registerTool('set_followup_approval', {
+  description: 'Record the user\'s Telegram decision on drafted follow-ups: approve=true -> approved (sender may send them), false -> skipped (counts as the last contact).',
+  inputSchema: { ids: z.array(z.number().int()), approve: z.boolean() },
+}, async ({ ids, approve }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: setFollowupApproval(db, ids, approve) }) }] }));
+
+server.registerTool('list_approved_followups', {
+  description: 'Approved, unsent follow-ups with recipient and Gmail thread id, for the sender\'s follow-up mode. Already excludes any job that has since got an outcome, a reply or a bounce.',
+  inputSchema: {},
+}, async () => ({ content: [{ type: 'text', text: JSON.stringify(listApprovedFollowups(db)) }] }));
+
+server.registerTool('mark_followup_sent', {
+  description: 'After gmail.send_email succeeds for an approved follow-up: mark it sent with the Gmail message id. Only approved rows change.',
+  inputSchema: { id: z.number().int(), message_id: z.string().optional() },
+}, async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ ok: markFollowupSent(db, id, message_id ?? null) }) }] }));
+
+server.registerTool('mark_followup_failed', {
+  description: 'Mark an approved follow-up failed after a send error (after one retry).',
+  inputSchema: { id: z.number().int() },
+}, async ({ id }) => ({ content: [{ type: 'text', text: JSON.stringify({ ok: markFollowupFailed(db, id) }) }] }));
+
+server.registerTool('list_stale', {
+  description: 'Sent jobs with no outcome, no reply or bounce on file, that went silent for 60+ days, or got no reply 10+ days after the 2nd follow-up. Show them to the user before resolving.',
+  inputSchema: {},
+}, async () => ({ content: [{ type: 'text', text: JSON.stringify(listStale(db)) }] }));
+
+server.registerTool('resolve_stale', {
+  description: 'Record no_response (note "stale resolved no_response (date)") for the job ids the user approved; ids no longer stale are skipped.',
+  inputSchema: { job_ids: z.array(z.string()) },
+}, async ({ job_ids }) => ({ content: [{ type: 'text', text: JSON.stringify(resolveStale(db, job_ids)) }] }));
 
 async function main() {
   const transport = new StdioServerTransport();

@@ -150,6 +150,19 @@ export function openDb(path: string = dbPath()): BetterSqlite3.Database {
       reply_date TEXT,
       processed_at TEXT DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS followups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      n INTEGER NOT NULL,
+      subject TEXT,
+      body TEXT,
+      status TEXT NOT NULL,
+      message_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      sent_at TEXT,
+      decided_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_followups_job ON followups(job_id);
     CREATE TABLE IF NOT EXISTS job_exclusion_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id TEXT NOT NULL,
@@ -615,6 +628,14 @@ export type Outcome = 'replied' | 'interview' | 'offer' | 'hired' | 'rejected' |
 
 export function recordOutcome(db: BetterSqlite3.Database, jobId: string, outcome: Outcome, note?: string): void {
   db.prepare('INSERT INTO job_outcomes (job_id, outcome, note) VALUES (?, ?, ?)').run(jobId, outcome, note ?? null);
+  skipPendingFollowups(db, jobId);
+}
+
+// The ONE helper that ends a job's pending follow-ups (drafted/approved -> skipped). recordOutcome calls it, and every outcome path goes
+// through recordOutcome (record_outcome/recordOutcomeChecked, auto-record in triageReplies, resolveReplyProposals approve, resolveStale),
+// so a follow-up can never be sent after an outcome exists (ruling Y4).
+export function skipPendingFollowups(db: BetterSqlite3.Database, jobId: string): number {
+  return db.prepare("UPDATE followups SET status = 'skipped', decided_at = datetime('now') WHERE job_id = ? AND status IN ('drafted', 'approved')").run(jobId).changes;
 }
 
 // Records the outcome even for an unknown job_id, but flags it so a typo'd id is visible.
