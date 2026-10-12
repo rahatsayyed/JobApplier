@@ -204,6 +204,9 @@ export function openDb(path: string = dbPath()): BetterSqlite3.Database {
   for (const col of ['email_sent_at', 'email_message_id', 'email_thread_id']) {
     if (!outreachQueueColumnNames.has(col)) db.exec(`ALTER TABLE outreach_queue ADD COLUMN ${col} TEXT`);
   }
+  // Migration: processed_messages.candidates (JSON array of job ids) for an ambiguous reply/bounce, so follow-ups are blocked for every candidate.
+  const pmCols = new Set((db.prepare('PRAGMA table_info(processed_messages)').all() as { name: string }[]).map((c) => c.name));
+  if (!pmCols.has('candidates')) db.exec('ALTER TABLE processed_messages ADD COLUMN candidates TEXT');
   // Backfill: rows sent before email_sent_at existed. updated_at is when the sender marked them sent. Idempotent, and guarded:
   // a legacy table without email_status or updated_at has nothing to backfill (and must still open).
   const queueNow = new Set((db.prepare('PRAGMA table_info(outreach_queue)').all() as { name: string }[]).map((c) => c.name));

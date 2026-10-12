@@ -102,7 +102,10 @@ const TIME = /\b(?:today|tomorrow|tonight|this (?:week|evening|afternoon|morning
 const SCHED_VERB = [/\b(?:schedule|scheduling|set up|setting up|arrange|arranging|book|booking|organi[sz]e)\s+(?:a|an|the|your|our|some|another|that|this)?\s*(?:[\w-]+\s+){0,3}?(?:call|chat|interview|meeting|conversation|discussion|round|screen|screening|time|slot)\b/i,
   /\b(?:can|could) we (?:connect|talk|chat|speak|catch up|hop on|jump on|meet|discuss)\b/i, /\blet'?s (?:connect|talk|chat|speak|catch up|schedule|set up|hop)\b/i,
   /\b(?:would like to|want to|like to|can|could|will) (?:call|phone|ring|speak (?:to|with)|talk (?:to|with)) you\b/i, /\bgive you a (?:call|ring)\b/i];
-const SCHEDULED_CONFIRM = /\b(?:is|are|has been|have been|been) (?:scheduled|confirmed) (?:for|on)\b|\binterview (?:is |has been )?(?:scheduled|confirmed)\b|\binterview with [\w .&'-]{1,60} has been (?:scheduled|confirmed)\b|\binvited to the following event\b/i;
+// A scheduling ASK addressed to the candidate ("let's set up a call", "can we talk next Monday"): only these (with a concrete time) beat an
+// out-of-office phrase. A delegation ("schedule a call with him") or a promise ("will call you on my return") does not.
+const HUMAN_ASK = [/\blet'?s (?:connect|talk|chat|speak|catch up|schedule|set up|hop on|jump on|meet)\b/i, /\b(?:can|could|shall) we (?:connect|talk|chat|speak|catch up|hop on|jump on|meet|discuss|schedule|set up|do)\b/i];
+const SCHEDULED_CONFIRM =/\b(?:is|are|has been|have been|been) (?:scheduled|confirmed) (?:for|on)\b|\binterview (?:is |has been )?(?:scheduled|confirmed)\b|\binterview with [\w .&'-]{1,60} has been (?:scheduled|confirmed)\b|\binvited to the following event\b/i;
 // "your availability" only counts as a request (share/confirm/send/let me know ...) alongside an invitation or scheduling verb; a bare mention ("got your availability") decides nothing.
 const AVAIL_REQUEST = /\b(?:share|confirm|send|provide|let me know)\b[^.?!]{0,30}\bavailability\b/i;
 const INVITE_VERB = /\b(?:invite[ds]?|invitation|schedule[ds]?|set up|arrange|book|interview|call|chat|round|meeting|screen|discussion)\b/i;
@@ -124,6 +127,7 @@ const ACK_STRONG = [/\b(?:we have|we've|we) received your (?:application|email|e
   /\bnext steps?:?\s*our team (?:reviews|will review)\b/i, /\bwill be (?:reviewed|reviewing|considered)\b/i, /\bunder review\b/i, /\brespond within \d+/i];
 // "our team will review it there" is an acknowledgement only from an automated sender; from a human it is a plain reply.
 const ACK_AUTOMATED_ONLY = /\bteam (?:will|is|are) (?:still )?(?:review|reviewing)\b/i;
+const HUMAN_ACTION = /\b(?:i|i've|i have|i'll|i will|i just|i've just|i have just|i already)\s+(?:have\s+)?(?:just\s+|already\s+)?(?:forwarded|passed (?:on|along)|shared|sent|referred)\s+(?:your|you)\b/i;
 const ACK_WEAK =[/\bthank(?:s| you) for (?:contacting|applying|your (?:application|interest|email|message|submission))\b/i, /\bwill (?:get back|respond|reply|revert) to you (?:shortly|soon|within)\b/i];
 // A sentence that only says what happens "if/should/once" something occurs is not a statement about THIS application.
 const CONDITIONAL = /\b(?:if|in case|should|unless|once|whenever)\b/i;
@@ -186,6 +190,30 @@ export function stripQuoted(body: string): string {
   return out.join('\n').trim();
 }
 
+// A sign-off line ("Best,", "Regards,", "Thanks,") or a "-- " signature delimiter ends the reply's own content: what follows is a
+// signature or a marketing footer ("Join our webinar", "Subscribe to our newsletter") and must not decide noise or out-of-office.
+const SIGNOFF = /^\s*(?:best|best regards|best wishes|kind regards|warm regards|warmest regards|regards|many thanks|thanks|thanks (?:and|&) regards|thank you|cheers|sincerely|yours sincerely|yours truly|br|thanks again)\s*[,.!]?\s*$/i;
+const SIG_DELIM = /^\s*--\s*$/;
+/** The reply's own text before the first sign-off or signature delimiter that follows some content; the whole text when there is none. */
+export function mainContent(own: string): string {
+  const lines = own.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!SIG_DELIM.test(lines[i]) && !SIGNOFF.test(lines[i])) continue;
+    const before = lines.slice(0, i).join('\n');
+    if (before.trim()) return before;
+  }
+  return own;
+}
+
+/** True for a mass/automated sender: no-reply style local parts, ATS and job-board domains, and bounce daemons. A human address is anything else. */
+export function isAutomatedSender(from: string | null | undefined): boolean {
+  const f = clamp(from, 500);
+  if (BOUNCE_SENDER.test(f)) return true;
+  const addr = emailAddress(f) ?? (f.includes('@') ? f.trim().toLowerCase() : null);
+  const dom = domainOf(addr);
+  return AUTOMATED_LOCAL.test(localOf(addr)) || inList(dom, ATS_DOMAINS) || inList(dom, JOB_BOARDS);
+}
+
 const sentences = (t: string) => t.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
 const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -215,10 +243,18 @@ export function classifyReplyDetail(subject: string, body: string, from = '', ou
   const dom = domainOf(addr);
   const automated = AUTOMATED_LOCAL.test(localOf(addr)) || inList(dom, ATS_DOMAINS);
   const no = (cls: ReplyClass): ReplyClassification => ({ cls, eligible: false });
+  const firmOf = (s: string, body: string) => [s, ...sentences(body)].filter((x) => !CONDITIONAL.test(x)).join('\n');
+  const schedOf = (f: string) => INTERVIEW_STANDALONE.some((r) => r.test(f)) || (TIME.test(f) && SCHED_VERB.some((r) => r.test(f))) || (AVAIL_REQUEST.test(f) && INVITE_VERB.test(f));
 
   if (BOUNCE_SENDER.test(clamp(from, 500)) || BOUNCE_TEXT.some((r) => r.test(text))) return no('bounce');
-  if (NOISE.some((r) => r.test(text))) return no('noise');
-  if (OUT_OF_OFFICE.some((r) => r.test(text))) return no('auto_ack');
+  // Noise and out-of-office are judged on the reply's own content only (not its signature/footer). A human sender's scheduling ask in that
+  // content ("are you available Tuesday at 3pm", "I'm travelling, could we do Monday 11am?") wins over both; such a mail is never auto-recorded.
+  const main = `${subj}\n${mainContent(head)}`;
+  const mainFirm = firmOf(subj, mainContent(head));
+  const humanSched = !automated && (INTERVIEW_STANDALONE.some((r) => r.test(mainFirm)) || (TIME.test(mainFirm) && HUMAN_ASK.some((r) => r.test(mainFirm))) || (AVAIL_REQUEST.test(mainFirm) && INVITE_VERB.test(mainFirm)));
+  const mixed = NOISE.some((r) => r.test(main)) || OUT_OF_OFFICE.some((r) => r.test(main));
+  if (!humanSched && NOISE.some((r) => r.test(main))) return no('noise');
+  if (!humanSched && OUT_OF_OFFICE.some((r) => r.test(main))) return no('auto_ack');
 
   const firmSentences = [subj, ...sentences(head)].filter((s) => !CONDITIONAL.test(s));
   const firm = firmSentences.join('\n');
@@ -226,7 +262,7 @@ export function classifyReplyDetail(subject: string, body: string, from = '', ou
   const rejWeak = !rejStrong && firmSentences.some((s) => rejectionHit(s, REJECT_WEAK));
   const rej = rejStrong || rejWeak;
   const offer = firmSentences.some((s) => OFFER.some((r) => r.test(s)) && !NEGATION.test(s));
-  const sched = INTERVIEW_STANDALONE.some((r) => r.test(firm)) || (TIME.test(firm) && SCHED_VERB.some((r) => r.test(firm))) || (AVAIL_REQUEST.test(firm) && INVITE_VERB.test(firm));
+  const sched = humanSched || schedOf(firm);
   // An automated sender (no-reply, ATS notification) can only evidence an interview by a plain "has been scheduled/confirmed" or a calendar invite.
   const interview = sched && (!automated || SCHEDULED_CONFIRM.test(firm));
 
@@ -238,13 +274,15 @@ export function classifyReplyDetail(subject: string, body: string, from = '', ou
   // Scheduling vocabulary from an ATS/automated sender that is not a plain confirmation is still shown to the user, never silently ignored.
   if (automated && sched && !interview && !rej) return no('replied');
 
-  if (ACK_STRONG.some((r) => r.test(text)) && !rej && !offer && !interview) return no('auto_ack');
+  // "I have forwarded your resume to the hiring manager" from a human is a person acting on THIS application: a reply, never an acknowledgement.
+  const personal = !automated && HUMAN_ACTION.test(firm);
+  if (!personal && ACK_STRONG.some((r) => r.test(text)) && !rej && !offer && !interview) return no('auto_ack');
   if (automated && ACK_AUTOMATED_ONLY.test(text) && !rej && !offer && !interview) return no('auto_ack');
   if (rej && interview) return no('replied');
-  if (rej) return { cls: 'rejected', eligible: rejStrong };
+  if (rej) return { cls: 'rejected', eligible: rejStrong && !mixed };
   if (offer) return no('offer');
-  if (interview) return { cls: 'interview', eligible: !automated };
-  if (ACK_WEAK.some((r) => r.test(text))) return no('auto_ack');
+  if (interview) return { cls: 'interview', eligible: !automated && !mixed };
+  if (!personal && ACK_WEAK.some((r) => r.test(text))) return no('auto_ack');
   if (!own.trim()) return no('unknown');
   // Leftover text from an automated sender is not a human reply: an ATS notification is an acknowledgement, anything else (newsletter, no-reply) is noise.
   if (automated) return no(inList(dom, ATS_DOMAINS) ? 'auto_ack' : 'noise');
@@ -318,7 +356,8 @@ export function decideReply(cls: ReplyClass, m: ReplyMatch, latest: Outcome | nu
 // ---------------------------------------------------------------- Gmail query
 const ADDRESS = /^[\w.+'-]+@[\w.-]+$/;
 
-/** Gmail query for replies: never `in:inbox` (it hides archived/filtered mail). Newest sends first so the 20-term caps keep recent jobs;
+/** LEGACY single query (capped at 20 companies/domains/addresses, so it can miss jobs): list_sent_emails uses buildReplyQueries.
+ *  Gmail query for replies: never `in:inbox` (it hides archived/filtered mail). Newest sends first so the 20-term caps keep recent jobs;
  *  shared-domain recipients (gmail.com etc.) get an exact `from:<address>`; 60 days matches the stale sweep. `-in:sent` is also what
  *  keeps our own messages out of the results (the watcher does not filter by own address). */
 export function buildReplyQuery(sent: SentEmail[], newerThanDays = 60): string {
@@ -330,4 +369,26 @@ export function buildReplyQuery(sent: SentEmail[], newerThanDays = 60): string {
   const addresses = uniq(recipients.filter((a) => isShared(domainOf(a)))).slice(0, 20);
   const terms = [...companies, ...[...domains, ...addresses, ...ATS_SENDERS].map((d) => `from:${d}`)];
   return `newer_than:${newerThanDays}d -in:sent -in:drafts {${terms.join(' ')}}`;
+}
+
+/** The stale threshold (days since last contact) shared by the stale sweep and the follow-up cut-off. */
+export const STALE_DAYS = 60;
+/** ONE reply-search window: it must reach past the stale threshold so every job that can still be a follow-up candidate or stale is covered. */
+export const REPLY_WINDOW_DAYS = Math.max(60, STALE_DAYS + 10);
+export const QUERY_MAX_TERMS = 15;
+
+/** Every company, recipient domain (exact address for shared domains like gmail.com) and ATS sender, with NO cap, split into several
+ *  Gmail queries of at most `maxTerms` OR-terms each (newest sends first). The reply watcher runs every one of them. */
+export function buildReplyQueries(sent: SentEmail[], newerThanDays = REPLY_WINDOW_DAYS, maxTerms = QUERY_MAX_TERMS): string[] {
+  const newest = [...sent].sort((a, b) => String(b.sent_at ?? '').localeCompare(String(a.sent_at ?? '')));
+  const uniq = <T,>(xs: T[]) => [...new Set(xs)];
+  const companies = uniq(newest.map((s) => (s.company ?? '').replace(/["{}]/g, '').trim()).filter(Boolean)).map((c) => `"${c}"`);
+  const recipients = newest.map((s) => (s.email_to ?? '').trim().toLowerCase()).filter((a) => ADDRESS.test(a));
+  const domains = uniq(recipients.map((a) => domainOf(a)).filter((d): d is string => !!d && !isShared(d)));
+  const addresses = uniq(recipients.filter((a) => isShared(domainOf(a))));
+  const terms = uniq([...companies, ...[...domains, ...addresses, ...ATS_SENDERS].map((d) => `from:${d}`)]);
+  const size = Math.max(1, Math.floor(maxTerms));
+  const out: string[] = [];
+  for (let i = 0; i < terms.length; i += size) out.push(`newer_than:${newerThanDays}d -in:sent -in:drafts {${terms.slice(i, i + size).join(' ')}}`);
+  return out;
 }

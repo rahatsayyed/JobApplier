@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { listSentEmails, recordOutcome, type Outcome } from './db.js';
-import { classifyReplyDetail, decideReply, emailAddress, loadRepliesConfig, matchReply, type IncomingMessage, type RepliesConfig } from './replies.js';
+import { classifyReplyDetail, decideReply, emailAddress, isAutomatedSender, loadRepliesConfig, matchReply, type IncomingMessage, type RepliesConfig } from './replies.js';
 
 export interface TriageResult {
   dry_run: boolean;
@@ -9,6 +9,8 @@ export interface TriageResult {
   bounced: Array<{ message_id: string; job_id: string | null; from: string; subject: string }>;
   ambiguous: Array<{ message_id: string; class: string; candidates: string[] }>;
   unmatched: Array<{ message_id: string; from: string; subject: string; classification: string }>;
+  /** Ignored messages (noise, auto-ack, unknown) that matched a job with high or medium confidence: shown to the user, since a real reply may hide here. Also counted in `ignored`. */
+  matched_ignored: Array<{ message_id: string; job_id: string; from: string; subject: string; class: string }>;
   ignored: number;
   already_processed: number;
 }
@@ -31,12 +33,12 @@ const clampStr = (v: unknown, n: number): string => String(v ?? '').slice(0, n);
 export function triageReplies(db: BetterSqlite3.Database, messages: IncomingMessage[], opts: { dry_run?: boolean; config?: RepliesConfig } = {}): TriageResult {
   const dry = opts.dry_run === true;
   const config = opts.config ?? loadRepliesConfig();
-  const out: TriageResult = { dry_run: dry, auto_recorded: [], proposals: [], bounced: [], ambiguous: [], unmatched: [], ignored: 0, already_processed: 0 };
+  const out: TriageResult = { dry_run: dry, auto_recorded: [], proposals: [], bounced: [], ambiguous: [], unmatched: [], matched_ignored: [], ignored: 0, already_processed: 0 };
   const sent = listSentEmails(db, 365);
   const seen = db.prepare('SELECT 1 FROM processed_messages WHERE message_id = ?');
   const latestStmt = db.prepare('SELECT outcome FROM job_outcomes WHERE job_id = ? ORDER BY id DESC LIMIT 1');
-  const ins = db.prepare(`INSERT INTO processed_messages (message_id, job_id, classification, action, proposed_outcome, from_addr, subject, reply_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const ins = db.prepare(`INSERT INTO processed_messages (message_id, job_id, classification, action, proposed_outcome, from_addr, subject, reply_date, candidates)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const latest = new Map<string, Outcome | null>(); // in-memory so a dry run decides exactly like a real one
   const latestOf = (jobId: string): Outcome | null => {
     if (!latest.has(jobId)) latest.set(jobId, ((latestStmt.get(jobId) as { outcome: Outcome } | undefined)?.outcome) ?? null);
@@ -53,12 +55,17 @@ export function triageReplies(db: BetterSqlite3.Database, messages: IncomingMess
       batchSeen.add(m.message_id);
       const match = matchReply(m, sent);
       const ours = (match.job_id ? sent.filter((e) => e.job_id === match.job_id) : sent).map((e) => e.body ?? '').join('\n');
-      const { cls, eligible } = classifyReplyDetail(m.subject ?? '', m.body ?? '', m.from ?? '', ours);
+      const detail = classifyReplyDetail(m.subject ?? '', m.body ?? '', m.from ?? '', ours);
+      // A high-confidence thread/exact-sender match from a human is never noise: at minimum it is a reply the user sees as a proposal.
+      const humanHigh = match.confidence === 'high' && (match.via === 'thread' || match.via === 'sender') && !isAutomatedSender(m.from);
+      const { cls, eligible } = humanHigh && detail.cls === 'noise' ? { cls: 'replied' as const, eligible: false } : detail;
       const d = decideReply(cls, match, match.job_id ? latestOf(match.job_id) : null, config, eligible);
       const subject = m.subject.slice(0, 200);
       const addr = emailAddress(m.from ?? '') ?? m.from.toLowerCase();
       const rd = replyDate(m.date);
-      const record = (action: string, outcome: Outcome | null) => { if (!dry) ins.run(m.message_id, match.job_id, cls, action, outcome, addr, subject, rd); };
+      // An ambiguous match stores every candidate job so follow-ups are blocked for all of them (blockedJobIds).
+      const candidates = match.via === 'ambiguous' && match.candidates?.length ? JSON.stringify(match.candidates) : null;
+      const record = (action: string, outcome: Outcome | null) => { if (!dry) ins.run(m.message_id, match.job_id, cls, action, outcome, addr, subject, rd, candidates); };
       if (d.action === 'auto_record' && match.job_id && d.outcome) {
         if (!dry) recordOutcome(db, match.job_id, d.outcome, `auto: ${cls} reply via ${match.via} from ${m.from}: ${subject}`);
         latest.set(match.job_id, d.outcome);
@@ -75,7 +82,10 @@ export function triageReplies(db: BetterSqlite3.Database, messages: IncomingMess
         record('ignored', null);
         if (match.via === 'ambiguous' && ['rejected', 'offer', 'interview', 'replied'].includes(cls)) out.ambiguous.push({ message_id: m.message_id, class: cls, candidates: match.candidates ?? [] });
         else if (!match.job_id && ['rejected', 'offer', 'interview', 'replied'].includes(cls)) out.unmatched.push({ message_id: m.message_id, from: m.from, subject, classification: cls });
-        else out.ignored++;
+        else {
+          out.ignored++;
+          if (match.job_id && (match.confidence === 'high' || match.confidence === 'medium')) out.matched_ignored.push({ message_id: m.message_id, job_id: match.job_id, from: m.from, subject, class: cls });
+        }
       }
     }
   };
