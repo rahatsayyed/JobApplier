@@ -60,9 +60,11 @@ describe('evidence ceiling caps the score (dims 20/18/12/25 = 75 unless stated)'
     const x = run(dims, [req('preferred', 'stated', 'strong', Q1)]);
     expect([x.score, x.score_cap_reason]).toEqual([70, 'no-weighted-rows:70']);
   });
-  it('legacy rows without dims are not capped; the cap reason is stored', () => {
-    const l = normalizeMatchRow({ job_id: 'j', score: 90, reasons: '', missing_keywords: [] }, desc);
-    expect(l.ok && [l.row.score, l.row.score_cap_reason]).toEqual([90, null]);
+  // Changed deliberately (final review M1): a legacy row without dims is no longer accepted uncapped; only an expired row is.
+  it('legacy rows without dims are rejected unless expired; the cap reason is stored for dims rows', () => {
+    expect(normalizeMatchRow({ job_id: 'j', score: 90, reasons: '', missing_keywords: [] }, desc)).toEqual({ ok: false, error: 'missing score_dims' });
+    const l = normalizeMatchRow({ job_id: 'j', score: 0, reasons: 'expired', missing_keywords: [] }, desc);
+    expect(l.ok && [l.row.score, l.row.score_cap_reason]).toEqual([0, null]);
     const db = openDb(':memory:');
     saveJob(db, { id: 'j1', source: 't', title: 'Dev', company: 'A', url: 'u', apply_url: 'u', description: desc });
     saveMatchResultsChecked(db, [{ job_id: 'j1', reasons: '', missing_keywords: [], score_dims: dims, requirements: [] } as any]);

@@ -29,7 +29,7 @@ describe('save_match_result tool', () => {
       { job_id: 'strdim', error: 'invalid score_dims.skills: 20' },
       { job_id: 'booldim', error: 'invalid score_dims.seniority: true' },
       { job_id: 'medium', error: 'invalid score_dims.domain: medium' },
-      { job_id: 'noscore', error: 'invalid score: undefined' },
+      { job_id: 'noscore', error: 'missing score_dims' },
       { job_id: 'overflow', error: 'batch over 5; resend in a new batch' },
     ]);
     expect((db.prepare("SELECT score FROM jobs WHERE id = 'good'").get() as any).score).toBe(75);

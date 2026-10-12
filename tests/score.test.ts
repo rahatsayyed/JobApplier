@@ -80,10 +80,12 @@ describe('normalizeMatchRow', () => {
     const r = normalizeMatchRow(row({ score_dims: { ...dims, skills: bad } }), desc);
     expect(r).toEqual({ ok: false, error: `invalid score_dims.skills: ${String(bad)}` });
   });
-  it('accepts a legacy row without dims, rounding 72.5 to 73', () => {
-    const r = normalizeMatchRow({ job_id: 'j', score: 72.5, reasons: '', missing_keywords: [] }, desc);
-    expect(r.ok && r.row.score).toBe(73);
-    expect(normalizeMatchRow({ job_id: 'j', score: 101, reasons: '', missing_keywords: [] }, desc)).toEqual({ ok: false, error: 'invalid score: 101' });
+  // Changed deliberately (final review M1): a legacy row without dims used to be accepted with its own score; now only an expired row is.
+  it('a row without dims is accepted only as an expired row (score 0); any other score is "missing score_dims"', () => {
+    const r = normalizeMatchRow({ job_id: 'j', score: 0, reasons: 'expired', missing_keywords: [] }, desc);
+    expect(r.ok && r.row.score).toBe(0);
+    expect(normalizeMatchRow({ job_id: 'j', score: 72.5, reasons: '', missing_keywords: [] }, desc)).toEqual({ ok: false, error: 'missing score_dims' });
+    expect(normalizeMatchRow({ job_id: 'j', score: 101, reasons: '', missing_keywords: [] }, desc)).toEqual({ ok: false, error: 'missing score_dims' });
   });
   it('caps strengths/gaps at 3, stores them verbatim, keeps deadline as given', () => {
     const r = normalizeMatchRow(row({ strengths: ['a', ' b ', 'c', 'd'], gaps: ['<script>x</script>'], deadline: 'ASAP' }), desc);
@@ -95,7 +97,7 @@ describe('normalizeMatchRow', () => {
     expect((normalizeMatchRow(row(), desc) as any).row.confidence).toBe('low');
   });
   it('rejects a row with neither dims nor a numeric score, and sanitizes loose enum/text fields instead of failing', () => {
-    expect(normalizeMatchRow({ job_id: 'j', reasons: 'r', missing_keywords: [] } as any, desc)).toEqual({ ok: false, error: 'invalid score: undefined' });
+    expect(normalizeMatchRow({ job_id: 'j', reasons: 'r', missing_keywords: [] } as any, desc)).toEqual({ ok: false, error: 'missing score_dims' });
     const r = normalizeMatchRow(row({ reasons: 42, missing_keywords: 'x', location_verdict: 'medium', language_gate: 'PASS' }), desc);
     expect(r.ok && [r.row.reasons, r.row.missing_keywords, r.row.location_verdict, r.row.language_gate]).toEqual(['', [], undefined, 'PASS']);
   });

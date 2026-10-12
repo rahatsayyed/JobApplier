@@ -170,8 +170,10 @@ export function normalizeMatchRow(r: MatchRowInput, description?: string): { ok:
     dims = { skills: r.score_dims.skills, seniority: r.score_dims.seniority, domain: r.score_dims.domain, location: r.score_dims.location };
     score = dims.skills + dims.seniority + dims.domain + dims.location;
   } else {
-    if (typeof r.score !== 'number' || !Number.isFinite(r.score) || r.score < 0 || r.score > 100) return { ok: false, error: `invalid score: ${String(r.score)}` };
-    score = Math.round(r.score);
+    // Without score_dims only an expired row (score 0, reasons "expired") is acceptable; anything else would bypass the evidence ceiling.
+    const expired = r.score === 0 && typeof r.reasons === 'string' && r.reasons.trim().toLowerCase() === 'expired';
+    if (!expired) return { ok: false, error: 'missing score_dims' };
+    score = 0;
   }
   const plain = description != null ? htmlToText(description) : undefined;
   const requirements = normalizeRequirementsWith(r.requirements, description ? foldedPosting(description, plain ?? '') : null);
