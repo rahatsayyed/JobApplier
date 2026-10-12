@@ -579,14 +579,17 @@ is not measured by it.
 
 ### After merge: user checklist
 
-1. Reconnect the `resume` and `db` MCP servers (`/mcp`, or restart Claude Code) so the
-   `render_resume` options, `check_text`, `apply_review_edits` and the new `enqueue_outreach`
-   fields are live.
-2. Restart Claude Code so the new `review-application` skill is picked up.
+1. FULLY quit and restart Claude Code (not a selective MCP reconnect). Every stdio MCP server
+   (`db`, `gates`, `resume`, `job-fetch`, `contacts`, `connect`, `apply`, `discover`) loads the
+   changed `src/db.ts` (new columns, the `job_exclusion_log` table, the `unexclude` tool, the
+   stored-score and queue changes), and a restart also reloads `CLAUDE.md`, the agents and the
+   skills (`match-jobs`, `review-application`, ...).
+2. Review `config/languages.json`: add the languages you really speak and set `"confirmed":
+   true`. Until then the language gate only flags, it never excludes.
 3. Rerun the eval to measure the rewritten DO examples: `npm run eval:gen`, then
    `npm run eval:metrics`, then `npm run eval:judge -- scripts/eval/runs/<date> --compare A,C
    --model sonnet` (always pass `--model` explicitly). Start gen and judge in the background.
-4. Run one supervised `/runhunt` and read the first outputs yourself (resumes, emails, the
+4. After steps 1 and 2, run one supervised `/runhunt` and read the first outputs yourself (resumes, emails, the
    per-job ATS coverage and gap lines), since the gate cannot catch paraphrased inflation. That
    run is the first-ever LLM execution of review-application -> apply_review_edits -> re-render
    -> check_text: none of it has run end to end with a real model before, so watch it closely.

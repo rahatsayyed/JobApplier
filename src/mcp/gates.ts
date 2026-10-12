@@ -33,7 +33,7 @@ server.registerTool(
   'apply_vetoes',
   {
     description:
-      'Apply veto gates to match results: location/language FAIL (model + deterministic language gate vs config/languages.json; FAIL only once that file has "confirmed": true), deal-breaker keywords, hard stops from the requirement table, suspicious legitimacy. Flags (never exclude): location/language FLAG, language gate config missing, stale postings (>30 days), legitimacy caution (reposts, age, thin JD, personal channels). Reads per-job facts from the db and persists legitimacy + flags on jobs.',
+      'Apply veto gates to match results (pass each result\'s STORED score from save_match_result.scores): location/language FAIL (model + deterministic language gate vs config/languages.json; FAIL only once that file has "confirmed": true), deal-breaker keywords, hard stops from the requirement table, "deadline passed: <date>" (stored ISO-day deadline before today, UTC; not applied to a job already emailed, connected or applied to), suspicious legitimacy, and "gate data unreadable: hard_stops" (corrupt stored hard_stops: fail closed). Flags (never exclude): location/language FLAG, "language gate config missing" or "language gate config invalid: <entry>", stale postings (>30 days), legitimacy caution (reposts, age, thin JD, personal channels). Reads per-job facts from the db and persists legitimacy + flags on jobs.',
     inputSchema: {
       results: z.array(
         z.object({
