@@ -8,6 +8,7 @@ import { buildReplyQuery } from '../replies.js';
 import { resolveReplyProposals, triageReplies } from '../replyTriage.js';
 import { listApprovedFollowups, listFollowupCandidates, listStale, markFollowupFailed, markFollowupSent, resolveStale, saveFollowupDraft, setFollowupApproval } from '../followups.js';
 import { calibrate } from '../calibrate.js';
+import { funnelStats } from '../funnel.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
 const db = openDb(dbPath());
@@ -281,6 +282,15 @@ server.registerTool(
   async () => {
     return { content: [{ type: 'text', text: JSON.stringify(calibrate(getCalibrationRows(db)), null, 2) }] };
   }
+);
+
+server.registerTool(
+  'get_funnel',
+  {
+    description: 'Funnel discovered -> matched (score >= threshold) -> contacted -> replied -> interview -> offer, counted per job from outcome HISTORY (a job that reached interview then got rejected still counts as interview), with rates, median days to first response, and industry benchmarks for context.',
+    inputSchema: { threshold: z.number().optional() },
+  },
+  async ({ threshold }) => ({ content: [{ type: 'text', text: JSON.stringify(funnelStats(db, threshold ?? Number(process.env.MATCH_THRESHOLD ?? 60))) }] })
 );
 
 server.registerTool(
