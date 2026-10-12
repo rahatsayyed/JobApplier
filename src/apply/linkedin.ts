@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, getJob, getExcludedReason, saveApplication } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 import {
   resolveControlWithFallback,
@@ -23,7 +24,7 @@ const ANSWERS_CONFIG_PATH = path.join(projectRoot, 'config', 'easy-apply-answers
 
 const DEFAULT_MAX_APPLIES_PER_DAY = 5;
 
-const db = openDb('data.sqlite');
+const db = openDb(dbPath());
 
 export interface EasyApplyAnswers {
   years_experience: number;

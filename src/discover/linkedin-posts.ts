@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { chromium, type Browser } from 'playwright';
 import type BetterSqlite3 from 'better-sqlite3';
 import { openDb, isSeen, saveJob, type Job } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { loadDiscoverConfig, type DiscoverLinkedInConfig, type ParseResult } from './linkedin-jobs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -100,7 +101,7 @@ export async function fetchLinkedInPosts(
   const config = deps.configOverride ?? loadDiscoverConfig();
   const role = params.role ?? config.posts.role;
   const geo = params.geo ?? config.posts.geo;
-  const db = deps.db ?? openDb('data.sqlite');
+  const db = deps.db ?? openDb(dbPath());
   const browserLauncher = deps.chromium ?? chromium;
   const burnerStatePath = deps.burnerStatePath ?? BURNER_STATE_PATH;
 

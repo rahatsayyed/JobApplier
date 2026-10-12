@@ -5,11 +5,12 @@ import { checkLivenessDetailed } from '../liveness.js';
 import { vetoResults } from '../vetoes.js';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, saveGateResults, saveJdSnapshot } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { jobFactsFromDb } from '../gateFacts.js';
 import { loadLanguageConfigStatus } from '../languageGate.js';
 
 let db: BetterSqlite3.Database | null = null;
-const getDb = () => (db ??= openDb('data.sqlite'));
+const getDb = () => (db ??= openDb(dbPath()));
 
 const server = new McpServer({ name: 'gates', version: '0.1.0' });
 

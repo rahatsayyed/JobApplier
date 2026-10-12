@@ -2,12 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { openDb, saveContact, type Contact } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { extractEmails, classify, rankEmails, genPatterns } from '../lib/emails.js';
 import { scrapeEmails } from '../lib/scrape.js';
 import { verifyEmail } from '../lib/verify.js';
 import { hunterDomainSearch } from '../lib/hunter.js';
 
-const db = openDb('data.sqlite');
+const db = openDb(dbPath());
 
 const SOCIAL_HOSTS = [
   'linkedin.com',

@@ -2,11 +2,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
-const db = openDb('data.sqlite');
+const db = openDb(dbPath());
 
 const server = new McpServer({ name: 'db', version: '1.0.0' });
 

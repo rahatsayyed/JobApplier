@@ -1,6 +1,7 @@
 import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, getJob, getExcludedReason, saveApplication } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { getBaseResume } from '../resume.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 import { resolveControlWithFallback, type FallbackDeps } from '../lib/domFallback.js';
@@ -60,7 +61,7 @@ async function findAndClickControl(
 // rationale on the `checkAndIncrement` call below.
 const DEFAULT_MAX_APPLIES_PER_DAY = 5;
 
-const db = openDb('data.sqlite');
+const db = openDb(dbPath());
 
 interface AtsModule {
   detect(url: string): string | null;

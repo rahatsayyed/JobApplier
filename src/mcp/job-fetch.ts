@@ -2,9 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { openDb, isSeen, saveJob } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { fetchAllJobs } from '../sources/index.js';
 
-const db = openDb('data.sqlite');
+const db = openDb(dbPath());
 
 const server = new McpServer({ name: 'job-fetch', version: '0.1.0' });
 

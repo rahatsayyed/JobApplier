@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser } from 'playwright';
 import type BetterSqlite3 from 'better-sqlite3';
 import { openDb, isSeen, saveJob, type Job } from '../db.js';
+import { dbPath } from '../dbPath.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -141,7 +142,7 @@ const JOB_CARD_SELECTOR = '.job-card-container, .jobs-search-results__list-item'
 
 export async function fetchLinkedInJobs(deps: LinkedInJobsDeps = {}): Promise<Job[]> {
   const config = deps.configOverride ?? loadDiscoverConfig();
-  const db = deps.db ?? openDb('data.sqlite');
+  const db = deps.db ?? openDb(dbPath());
   const browserLauncher = deps.chromium ?? chromium;
   const burnerStatePath = deps.burnerStatePath ?? BURNER_STATE_PATH;
 

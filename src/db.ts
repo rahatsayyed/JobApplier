@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { normalizeMatchRow, type MatchRowInput } from './score.js';
 import { classifyDeadlines, type DeadlineSweep } from './freshness.js';
 import type { Legitimacy } from './legitimacy.js';
+import { dbPath } from './dbPath.js';
 import { companyKey, repostCount, titleIdentityKey } from './reposts.js';
 
 /** enqueue_outreach.ats_coverage: an integer percentage, or null when the final render had no keywords (tailor contract). */
 export const atsCoverageSchema = z.number().int().min(0).max(100).nullable().optional();
 
-export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
+export function openDb(path: string = dbPath()): BetterSqlite3.Database {
   const db = new BetterSqlite3(path);
 
   // Create tables if they don't exist

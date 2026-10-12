@@ -7,6 +7,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, saveConnection } from '../db.js';
+import { dbPath } from '../dbPath.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 import { resolveControlWithFallback, type FallbackDeps } from '../lib/domFallback.js';
 
@@ -33,7 +34,7 @@ export const MAX_NOTE_LENGTH = 300;
 // false-positive 'sent' result (see docs/phase2-known-issues.md).
 const DEBUG_SCREENSHOT_DIR = path.join(projectRoot, 'debug', 'connect');
 
-const db = openDb('data.sqlite');
+const db = openDb(dbPath());
 
 export interface ProfileCandidate {
   profile_url: string;
