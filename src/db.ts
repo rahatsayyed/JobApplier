@@ -545,10 +545,13 @@ export function saveMatchResultsChecked(
 ): {
   saved: number; errors: Array<{ job_id: string; error: string }>; hard_stops: Array<{ job_id: string; hard_stops: string[] }>;
   injection_suspects: Array<{ job_id: string; phrases: string[] }>;
+  // The STORED values per saved row (after the evidence ceiling and injection cap): callers filter on these, never on the matcher's own score.
+  scores: Array<{ job_id: string; score: number; score_cap_reason: string | null; confidence: 'high' | 'medium' | 'low' }>;
 } {
   const errors: Array<{ job_id: string; error: string }> = [];
   const stops: Array<{ job_id: string; hard_stops: string[] }> = [];
   const suspects: Array<{ job_id: string; phrases: string[] }> = [];
+  const scores: Array<{ job_id: string; score: number; score_cap_reason: string | null; confidence: 'high' | 'medium' | 'low' }> = [];
   let saved = 0;
   const descOf = db.prepare("SELECT trim(coalesce(description, '') || ' ' || coalesce(jd_snapshot, '')) AS d FROM jobs WHERE id = ?");
   const upd = db.prepare(`UPDATE jobs SET score = ?, match_reasons = ?, match_missing = ?, location_verdict = ?, language_gate = ?,
@@ -578,11 +581,12 @@ export function saveMatchResultsChecked(
         JSON.stringify(x.gaps), JSON.stringify(x.hard_stops), x.confidence, x.deadline ?? null, x.score_cap_reason, x.job_id);
       if (res.changes === 0) { errors.push({ job_id: x.job_id, error: 'unknown job_id' }); continue; }
       saved++;
+      scores.push({ job_id: x.job_id, score: x.score, score_cap_reason: x.score_cap_reason, confidence: x.confidence });
       if (x.hard_stops.length) stops.push({ job_id: x.job_id, hard_stops: x.hard_stops });
       if (x.injection_phrases.length) suspects.push({ job_id: x.job_id, phrases: x.injection_phrases });
     }
   })();
-  return { saved, errors, hard_stops: stops, injection_suspects: suspects };
+  return { saved, errors, hard_stops: stops, injection_suspects: suspects, scores };
 }
 
 export function markExcluded(
