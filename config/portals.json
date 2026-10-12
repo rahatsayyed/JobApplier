@@ -1,0 +1,16 @@
+{
+  "tracked_companies": [
+    { "name": "GitLab", "ats": "greenhouse", "slug": "gitlab", "enabled": true },
+    { "name": "Razorpay", "ats": "greenhouse", "slug": "razorpaysoftwareprivatelimited", "enabled": true },
+    { "name": "Meesho", "ats": "lever", "slug": "meesho", "enabled": true },
+    { "name": "Linear", "ats": "ashby", "slug": "linear", "enabled": true }
+  ],
+  "title_filter": {
+    "positive": ["frontend", "front-end", "front end", "full stack", "full-stack", "fullstack", "react", "javascript", "typescript", "node", "web developer", "software engineer", "software development engineer", "sde", "word:mern", "word:ui engineer", "word:ui developer"],
+    "negative": ["word:staff", "principal", "director", "manager", "head of", "vp", "word:intern", "word:interns", "word:internship", "word:sales", "account executive", "lead:marketing", "recruiter", "lead:designer", "data scientist", "lead:android", "lead:ios", "lead:qa"]
+  },
+  "location_filter": {
+    "allow": ["india", "bengaluru", "bangalore", "pune", "mumbai", "hyderabad", "chennai", "delhi", "new delhi", "gurgaon", "gurugram", "noida", "kolkata", "ahmedabad", "jaipur", "kochi", "apac"],
+    "global": ["remote", "anywhere", "worldwide", "global"]
+  }
+}
