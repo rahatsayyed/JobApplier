@@ -63,9 +63,9 @@ export function patternStats(db: BetterSqlite3.Database, opts: { minContacted?: 
       UNION SELECT job_id FROM applications WHERE status = 'submitted'
       UNION SELECT job_id FROM outreach WHERE status = 'sent'
     )
-    SELECT j.id, j.score, j.apply_url, j.source, j.title, coalesce(j.description, '') AS description,
-           (SELECT o.outcome FROM job_outcomes o WHERE o.job_id = j.id ORDER BY o.id DESC LIMIT 1) AS outcome
-    FROM contacted c JOIN jobs j ON j.id = c.job_id`).all() as Array<{ id: string; score: number | null; apply_url: string | null; source: string | null; title: string; description: string; outcome: string | null }>;
+    SELECT c.job_id AS id, j.id IS NOT NULL AS known, j.score, j.apply_url, j.source, coalesce(j.title, '') AS title, coalesce(j.description, '') AS description,
+           (SELECT o.outcome FROM job_outcomes o WHERE o.job_id = c.job_id ORDER BY o.id DESC LIMIT 1) AS outcome
+    FROM contacted c LEFT JOIN jobs j ON j.id = c.job_id`).all() as Array<{ id: string; known: number; score: number | null; apply_url: string | null; source: string | null; title: string; description: string; outcome: string | null }>;
   const empty = { score_band: [], ats_vendor: [], remote: [], seniority: [], source: [] } as Record<Dim, Bucket[]>;
   if (rows.length < minContacted) {
     return { contacted: rows.length, insufficient: true, message: `Need at least ${minContacted} contacted jobs before patterns mean anything (have ${rows.length}).`, by: empty };
@@ -81,7 +81,8 @@ export function patternStats(db: BetterSqlite3.Database, opts: { minContacted?: 
   for (const dim of Object.keys(keyOf) as Dim[]) {
     const m = new Map<string, Bucket>();
     for (const r of rows) {
-      const k = keyOf[dim](r);
+      // A contacted job without a jobs row is still counted (same contacted set as the funnel), in an 'unknown' bucket on every dimension.
+      const k = r.known ? keyOf[dim](r) : 'unknown';
       const b = m.get(k) ?? { key: k, n: 0, positive: 0, negative: 0, pending: 0, conversion: null, decided: null, sufficient: false, note: null };
       b.n++;
       if (r.outcome && POS.includes(r.outcome)) b.positive++;
