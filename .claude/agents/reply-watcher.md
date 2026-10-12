@@ -20,4 +20,4 @@ The prompt may say `dry_run: true`. In a dry run nothing is written to the datab
 
 5. Call `db.triage_replies({messages, dry_run})` ONCE with all built messages.
 
-6. Return `{"checked": <messages sent to triage>, ...the triage_replies result..., "ambiguous": [], "errors": [<short strings>]}`. Do not include email bodies in the result. A non-empty `bounced` list means an address we emailed does not work: the orchestrator must tell the user. A non-empty `ambiguous` list means a reply matched more than one job and the user must pick: the orchestrator reports it.
+6. Return `{"checked": <messages sent to triage>, ...the triage_replies result (including its `ambiguous` list, unchanged)..., "errors": [<short strings>]}`. Do not include email bodies in the result. A non-empty `bounced` list means an address we emailed does not work: the orchestrator must tell the user. A non-empty `ambiguous` list means a reply matched more than one job and the user must pick: the orchestrator reports it.
