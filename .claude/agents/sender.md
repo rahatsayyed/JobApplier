@@ -1,7 +1,7 @@
 ---
 name: sender
 description: Executes the full outreach_queue backlog — sends emails, sends connection requests, and applies — respecting daily caps, prompting Telegram on overrun. Use as the final stage of every hunt run.
-tools: mcp__db__list_queued_outreach, mcp__db__list_skipped_outreach, mcp__db__update_outreach_status, mcp__db__check_and_increment, mcp__gmail__send_email, mcp__connect__check_connection_status, mcp__connect__connect_send, mcp__connect__send_linkedin_message, mcp__apply__linkedin, mcp__apply__greenhouse, mcp__apply__lever, mcp__apply__workday, mcp__apply__ashby
+tools: mcp__db__list_queued_outreach, mcp__db__list_skipped_outreach, mcp__db__update_outreach_status, mcp__db__record_email_sent, mcp__db__check_and_increment, mcp__gmail__send_email, mcp__connect__check_connection_status, mcp__connect__connect_send, mcp__connect__send_linkedin_message, mcp__apply__linkedin, mcp__apply__greenhouse, mcp__apply__lever, mcp__apply__workday, mcp__apply__ashby
 ---
 
 You are the execution stage of the JobApplier pipeline. You are the ONLY stage allowed to call
@@ -25,8 +25,9 @@ You are the execution stage of the JobApplier pipeline. You are the ONLY stage a
      acting on this row's email fields, check whether any OTHER row already processed in this
      backlog (this dispatch, from `db.list_queued_outreach()`'s full result) has the same `job_id`
      and an `email_status` of `"sent"` or `"failed"`. If so, do NOT call `gmail.send_email` again —
-     just copy that same status onto this row via `db.update_outreach_status(row.id,
-     "email_status", <that same status>)` and move on to this row's other actions. Only send once
+     for `"failed"`, copy that status onto this row via `db.update_outreach_status(row.id,
+     "email_status", "failed")`; for `"sent"` there is nothing to copy (`record_email_sent`
+     already marked the duplicate rows). Then move on to this row's other actions. Only send once
      per distinct `job_id`.
    - Call `db.check_and_increment({key: "send_email", limit: SEND_LIMIT_PER_RUN})`.
    - If `allowed: false`: this is a cap-reached event for the `email` action type — go to Step 3
@@ -35,8 +36,7 @@ You are the execution stage of the JobApplier pipeline. You are the ONLY stage a
    - If `allowed: true`: call `gmail.send_email` with `to: email_to`, `subject: email_subject`,
      the PDF at `resume_pdf_path` attached, and both `body` (plain, unmodified) and `htmlBody`
      (paragraphs wrapped in `<p>`, single newlines as `<br>`) with `mimeType:
-     "multipart/alternative"`. On success, `db.update_outreach_status(row.id, "email_status",
-     "sent")`. On a tool error, retry once; if it still errors,
+     "multipart/alternative"`. On success, parse the message id from the tool's text `Email sent successfully with ID: <id>` and call `db.record_email_sent({id: row.id, message_id: <id>})` (omit `message_id` if the text has no id). This also marks the job's duplicate rows. On a tool error, retry once; if it still errors,
      `db.update_outreach_status(row.id, "email_status", "failed")`.
 
    **Connect** (if `connect_profile_url` is set and `connect_status` is not already `'sent'`):

@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordEmailSent, recordOutcomeChecked, setEmailThread, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { calibrate } from '../calibrate.js';
@@ -339,6 +339,24 @@ server.registerTool(
     inputSchema: {},
   },
   async () => ({ content: [{ type: 'text', text: JSON.stringify(sweepDeadlines(db)) }] })
+);
+
+server.registerTool(
+  'record_email_sent',
+  {
+    description: 'After gmail.send_email succeeds: mark the queue row\'s email sent with the time and Gmail message id (parse it from "Email sent successfully with ID: <id>"). Also marks the other queue rows of the same job that share this email. Use instead of update_outreach_status(..., "email_status", "sent").',
+    inputSchema: { id: z.number(), message_id: z.string().optional() },
+  },
+  async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: recordEmailSent(db, id, message_id ?? null) }) }] })
+);
+
+server.registerTool(
+  'set_email_thread',
+  {
+    description: 'Store the Gmail thread id (the "Thread ID" line of gmail.read_email) for a sent message id, so replies in that thread match their job with high confidence.',
+    inputSchema: { message_id: z.string(), thread_id: z.string() },
+  },
+  async ({ message_id, thread_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: setEmailThread(db, message_id, thread_id) }) }] })
 );
 
 async function main() {

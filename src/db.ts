@@ -121,6 +121,9 @@ export function openDb(path: string = dbPath()): BetterSqlite3.Database {
       fact_warnings TEXT,
       review_applied INTEGER,
       review_rejected INTEGER,
+      email_sent_at TEXT,
+      email_message_id TEXT,
+      email_thread_id TEXT,
       status TEXT DEFAULT 'queued',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -174,9 +177,46 @@ export function openDb(path: string = dbPath()): BetterSqlite3.Database {
   for (const [col, type] of [['ats_coverage', 'INTEGER'], ['ats_gaps', 'TEXT'], ['fact_warnings', 'TEXT'], ['review_applied', 'INTEGER'], ['review_rejected', 'INTEGER']] as const) {
     if (!outreachQueueColumnNames.has(col)) db.exec(`ALTER TABLE outreach_queue ADD COLUMN ${col} ${type}`);
   }
+  for (const col of ['email_sent_at', 'email_message_id', 'email_thread_id']) {
+    if (!outreachQueueColumnNames.has(col)) db.exec(`ALTER TABLE outreach_queue ADD COLUMN ${col} TEXT`);
+  }
+  // Backfill: rows sent before email_sent_at existed. updated_at is when the sender marked them sent. Idempotent, and guarded:
+  // a legacy table without email_status or updated_at has nothing to backfill (and must still open).
+  const queueNow = new Set((db.prepare('PRAGMA table_info(outreach_queue)').all() as { name: string }[]).map((c) => c.name));
+  if (queueNow.has('email_status') && queueNow.has('updated_at')) {
+    db.exec("UPDATE outreach_queue SET email_sent_at = updated_at WHERE email_status = 'sent' AND email_sent_at IS NULL AND updated_at IS NOT NULL");
+  }
 
   backfillJobKeys(db);
   return db;
+}
+
+/** Mark a queued email sent (and its duplicate rows for the same job+recipient, which share one email). */
+export function recordEmailSent(db: BetterSqlite3.Database, queueId: number, messageId: string | null): number {
+  const r = db.prepare('SELECT job_id, email_to FROM outreach_queue WHERE id = ?').get(queueId) as { job_id: string; email_to: string | null } | undefined;
+  if (!r) return 0;
+  return db.prepare(`UPDATE outreach_queue SET email_status = 'sent', email_sent_at = datetime('now'), email_message_id = ?, updated_at = datetime('now')
+    WHERE id = ? OR (job_id = ? AND email_to IS ? AND coalesce(email_status, '') != 'sent')`).run(messageId, queueId, r.job_id, r.email_to).changes;
+}
+
+export function setEmailThread(db: BetterSqlite3.Database, messageId: string, threadId: string): number {
+  return db.prepare('UPDATE outreach_queue SET email_thread_id = ? WHERE email_message_id = ?').run(threadId, messageId).changes;
+}
+
+export interface SentEmail {
+  job_id: string; company: string | null; title: string | null; email_to: string | null; subject: string | null;
+  body: string | null; message_id: string | null; thread_id: string | null; sent_at: string;
+}
+
+/** One row per job whose cold email was sent in the last `sinceDays` days (earliest send). */
+export function listSentEmails(db: BetterSqlite3.Database, sinceDays = 120): SentEmail[] {
+  return db.prepare(`
+    SELECT q.job_id, j.company, j.title, q.email_to, q.email_subject AS subject, q.email_body AS body,
+           q.email_message_id AS message_id, q.email_thread_id AS thread_id, q.email_sent_at AS sent_at
+    FROM outreach_queue q LEFT JOIN jobs j ON j.id = q.job_id
+    WHERE q.email_status = 'sent' AND q.email_sent_at IS NOT NULL AND q.email_sent_at >= datetime('now', ?)
+      AND q.id = (SELECT MIN(q2.id) FROM outreach_queue q2 WHERE q2.job_id = q.job_id AND q2.email_status = 'sent' AND q2.email_sent_at IS NOT NULL)
+    ORDER BY q.email_sent_at ASC`).all(`-${Math.max(1, Math.floor(sinceDays))} days`) as SentEmail[];
 }
 
 export function isSeen(db: BetterSqlite3.Database, id: string): boolean {
