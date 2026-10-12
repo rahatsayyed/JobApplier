@@ -142,13 +142,15 @@ export function listApprovedFollowups(db: BetterSqlite3.Database): Array<{ id: n
   return all.filter((r) => r.email_to && !blocked.has(r.job_id));
 }
 
-export function markFollowupSent(db: BetterSqlite3.Database, id: number, messageId: string | null): boolean {
-  const row = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status = 'approved'").get(id) as { job_id: string } | undefined;
-  if (row && blockedJobIds(db).has(row.job_id)) {
-    db.prepare("UPDATE followups SET status = 'skipped', decided_at = datetime('now') WHERE id = ? AND status = 'approved'").run(id);
-    return false;
-  }
-  return db.prepare("UPDATE followups SET status = 'sent', sent_at = datetime('now'), message_id = ? WHERE id = ? AND status = 'approved'").run(messageId, id).changes > 0;
+/** Called AFTER the email went out, so it records the truth: the row becomes `sent` even if the job got blocked in between (an outcome
+ *  recorded meanwhile has already flipped an approved row to `skipped`; that row is still the one just sent). `late_block` tells the caller to warn
+ *  the user ("sent, but a reply/outcome arrived meanwhile"). Pre-send protection lives in listApprovedFollowups and setFollowupApproval. */
+export function markFollowupSent(db: BetterSqlite3.Database, id: number, messageId: string | null): { ok: boolean; late_block: boolean } {
+  const row = db.prepare("SELECT job_id FROM followups WHERE id = ? AND status IN ('approved', 'skipped') AND sent_at IS NULL").get(id) as { job_id: string } | undefined;
+  if (!row) return { ok: false, late_block: false };
+  const late_block = blockedJobIds(db).has(row.job_id);
+  const ok = db.prepare("UPDATE followups SET status = 'sent', sent_at = datetime('now'), message_id = ? WHERE id = ? AND status IN ('approved', 'skipped') AND sent_at IS NULL").run(messageId, id).changes > 0;
+  return { ok, late_block: ok && late_block };
 }
 
 export function markFollowupFailed(db: BetterSqlite3.Database, id: number): boolean {

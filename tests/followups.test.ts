@@ -46,8 +46,8 @@ describe('follow-up candidates', () => {
     expect(() => save(db)).toThrow(/not a follow-up candidate/);
     expect(setFollowupApproval(db, [id1], true)).toBe(1);
     expect(listApprovedFollowups(db)).toEqual([{ id: id1, job_id: 'j1', n: 1, subject: 'Re: Frontend role', body: BODY, email_to: 'hr@acme.dev', thread_id: null }]);
-    expect(markFollowupSent(db, id1, 'fm1')).toBe(true);
-    expect(markFollowupSent(db, id1, 'fm1')).toBe(false);
+    expect(markFollowupSent(db, id1, 'fm1')).toEqual({ ok: true, late_block: false });
+    expect(markFollowupSent(db, id1, 'fm1')).toEqual({ ok: false, late_block: false });
     db.prepare("UPDATE followups SET sent_at = '2026-10-01 09:00:00' WHERE id = ?").run(id1);
     const c2 = listFollowupCandidates(db, now);
     expect(c2[0]).toMatchObject({ next_n: 2, followups_sent: 1, days_quiet: 19 });
@@ -129,7 +129,7 @@ describe('who must never get a follow-up', () => {
     recordOutcome(db2, 'j1', 'rejected');
     expect(db2.prepare('SELECT status FROM followups WHERE id = ?').get(b)).toEqual({ status: 'skipped' });
     expect(listApprovedFollowups(db2)).toEqual([]);
-    expect(markFollowupSent(db2, b, 'm')).toBe(false);
+    expect(markFollowupSent(db2, b, 'm')).toEqual({ ok: true, late_block: true }); // sent after an outcome landed: record the truth, warn
   });
 });
 
@@ -271,13 +271,13 @@ describe('fix round 1', () => {
     expect(setFollowupApproval(db, [id], true)).toBe(0);
     expect(db.prepare('SELECT status FROM followups WHERE id = ?').get(id)).toEqual({ status: 'skipped' });
   });
-  it('markFollowupSent re-checks at mark time: blocked gives false and the draft is skipped', () => {
+  it('markFollowupSent after the email went out records the truth: stays sent (with message id) and reports late_block', () => {
     const db = setup('2026-09-01 09:00:00');
     const id = save(db).id;
     setFollowupApproval(db, [id], true);
     processed(db, 'x', 'j1', 'bounce', 'mailer-daemon@g.com', 'bounced');
-    expect(markFollowupSent(db, id, 'm')).toBe(false);
-    expect(db.prepare('SELECT status FROM followups WHERE id = ?').get(id)).toEqual({ status: 'skipped' });
+    expect(markFollowupSent(db, id, 'm')).toEqual({ ok: true, late_block: true });
+    expect(db.prepare('SELECT status, message_id FROM followups WHERE id = ?').get(id)).toEqual({ status: 'sent', message_id: 'm' });
   });
 });
 

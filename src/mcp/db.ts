@@ -423,7 +423,7 @@ server.registerTool('list_approved_followups', {
 server.registerTool('mark_followup_sent', {
   description: 'After gmail.send_email succeeds for an approved follow-up: mark it sent with the Gmail message id. Only approved rows change.',
   inputSchema: { id: z.number().int(), message_id: z.string().max(500).optional() },
-}, async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ ok: markFollowupSent(db, id, message_id ?? null) }) }] }));
+}, async ({ id, message_id }) => ({ content: [{ type: 'text', text: JSON.stringify(markFollowupSent(db, id, message_id ?? null)) }] }));
 
 server.registerTool('mark_followup_failed', {
   description: 'Mark an approved follow-up failed after a send error (after one retry).',
