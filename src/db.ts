@@ -283,8 +283,14 @@ export function setJobExcluded(db: BetterSqlite3.Database, jobId: string, reason
   return db.prepare('UPDATE jobs SET excluded_reason = ? WHERE id = ?').run(reason, jobId).changes > 0;
 }
 
+/** True when the user manually un-excluded the job (a row in job_exclusion_log): a durable override. */
+export function hasExclusionOverride(db: BetterSqlite3.Database, jobId: string): boolean {
+  return db.prepare('SELECT 1 FROM job_exclusion_log WHERE job_id = ? LIMIT 1').get(jobId) !== undefined;
+}
+
 /** Manual override (/include #N): clears excluded_reason and logs the previous reason in job_exclusion_log.
- *  An un-excluded job is not re-vetoed automatically (the hunt only scores unseen jobs). */
+ *  The log row is a durable override: sweepDeadlines and apply_vetoes' deadline rule skip the job from then on.
+ *  It does NOT resume outreach_queue rows already marked "skipped" (re-enqueue them or ask). */
 export function unexcludeJob(
   db: BetterSqlite3.Database,
   jobId: string,
@@ -315,8 +321,9 @@ export function getFirstHardStop(db: BetterSqlite3.Database, jobId: string): str
   if (raw == null || raw.trim() === '') return null;
   try {
     const v = JSON.parse(raw);
-    if (!Array.isArray(v)) return 'unreadable hard_stops data';
-    const first = v.find((x): x is string => typeof x === 'string' && x.trim() !== '');
+    // Any non-string item means the stored value is corrupt: fail closed.
+    if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) return 'unreadable hard_stops data';
+    const first = v.find((x: string) => x.trim() !== '');
     return first ?? null;
   } catch {
     return 'unreadable hard_stops data';
@@ -669,6 +676,7 @@ export function jobHasActedWork(db: BetterSqlite3.Database, jobId: string): bool
 export function sweepDeadlines(db: BetterSqlite3.Database, now: Date = new Date()): DeadlineSweep {
   const rows = db.prepare(`SELECT id, deadline, source, deadline_reported FROM jobs
     WHERE deadline IS NOT NULL AND excluded_reason IS NULL AND score IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM job_exclusion_log l WHERE l.job_id = jobs.id)
       AND NOT EXISTS (SELECT 1 FROM outreach_queue q WHERE q.job_id = jobs.id
         AND (q.email_status = 'sent' OR q.connect_status = 'sent' OR q.apply_status = 'submitted'))
       AND NOT EXISTS (SELECT 1 FROM outreach o WHERE o.job_id = jobs.id AND o.status = 'sent')

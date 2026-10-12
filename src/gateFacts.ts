@@ -1,5 +1,5 @@
 import type BetterSqlite3 from 'better-sqlite3';
-import { jobHasActedWork, repostCountForJob } from './db.js';
+import { hasExclusionOverride, jobHasActedWork, repostCountForJob } from './db.js';
 import type { JobFacts } from './vetoes.js';
 
 /** Per-job facts the gates need, read from the jobs table (never from the model). */
@@ -18,7 +18,7 @@ export function jobFactsFromDb(db: BetterSqlite3.Database, jobId: string): JobFa
       else unreadable = true;
     } catch { unreadable = true; }
   }
-  const f: JobFacts = { source: r.source, url: r.url, apply_url: r.apply_url, posted_at: r.posted_at, deadline: r.deadline, acted: jobHasActedWork(db, jobId), hard_stops: hard, repost_count: repostCountForJob(db, jobId), snapshot_chars: r.snapshot_chars };
+  const f: JobFacts = { source: r.source, url: r.url, apply_url: r.apply_url, posted_at: r.posted_at, deadline: r.deadline, acted: jobHasActedWork(db, jobId), overridden: hasExclusionOverride(db, jobId), hard_stops: hard, repost_count: repostCountForJob(db, jobId), snapshot_chars: r.snapshot_chars };
   if (unreadable) f.hard_stops_unreadable = true;
   return f;
 }
