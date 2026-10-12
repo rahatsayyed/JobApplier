@@ -477,8 +477,24 @@ export function listQueuedOutreach(db: BetterSqlite3.Database): OutreachQueueIte
     .prepare(`SELECT id, job_id, resume_pdf_path, email_subject, email_body, email_to, email_status,
       connect_note, connect_profile_url, connect_category, connect_company, connect_status,
       apply_platform, apply_url, apply_status, status, created_at, updated_at
-      FROM outreach_queue WHERE status = 'queued' ORDER BY created_at ASC`)
+      FROM outreach_queue
+      WHERE status = 'queued'
+        AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = outreach_queue.job_id AND j.excluded_reason IS NOT NULL)
+      ORDER BY created_at ASC`)
     .all() as OutreachQueueItem[];
+}
+
+// Queued rows that listQueuedOutreach skips because their job was excluded after the row was queued
+// (the sender reports these instead of sending).
+export function listExcludedQueuedOutreach(
+  db: BetterSqlite3.Database
+): { id: number; job_id: string; reason: string }[] {
+  return db
+    .prepare(`SELECT q.id AS id, q.job_id AS job_id, j.excluded_reason AS reason
+      FROM outreach_queue q JOIN jobs j ON j.id = q.job_id
+      WHERE q.status = 'queued' AND j.excluded_reason IS NOT NULL
+      ORDER BY q.created_at ASC, q.id ASC`)
+    .all() as { id: number; job_id: string; reason: string }[];
 }
 
 const UPDATABLE_FIELDS = ['email_status', 'connect_status', 'apply_status', 'status'] as const;

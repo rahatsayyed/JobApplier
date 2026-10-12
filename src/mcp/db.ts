@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, updateOutreachStatus } from '../db.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
@@ -278,6 +278,15 @@ server.registerTool(
     const rows = listQueuedOutreach(db);
     return { content: [{ type: 'text', text: JSON.stringify(rows) }] };
   }
+);
+
+server.registerTool(
+  'list_skipped_outreach',
+  {
+    description: 'List queued outreach_queue rows that list_queued_outreach does NOT return because their job was excluded after the row was queued: [{id, job_id, reason}]. The sender reports these as skipped and never sends them.',
+    inputSchema: {},
+  },
+  async () => ({ content: [{ type: 'text', text: JSON.stringify(listExcludedQueuedOutreach(db)) }] })
 );
 
 server.registerTool(

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { openDb, isSeen, saveJob, getJob, saveContact, saveOutreach, enqueueOutreach, listQueuedOutreach, updateOutreachStatus, type OutreachQueueItem } from '../src/db.js';
+import { openDb, isSeen, saveJob, getJob, saveContact, saveOutreach, enqueueOutreach, listQueuedOutreach, listExcludedQueuedOutreach, updateOutreachStatus, type OutreachQueueItem } from '../src/db.js';
 import type Database from 'better-sqlite3';
 
 describe('db', () => {
@@ -162,6 +162,25 @@ describe('outreach_queue', () => {
     expect(queued).toHaveLength(2);
     expect(queued.every((r) => r.job_id === 'job-d')).toBe(true);
     expect(queued.map((r) => r.connect_category).sort()).toEqual(['peer', 'recruiter']);
+  });
+
+  it('listQueuedOutreach skips queued rows whose job has an excluded_reason, and listExcludedQueuedOutreach reports them', () => {
+    const db = openDb(':memory:');
+    const mkJob = (id: string) => saveJob(db, { id, source: 'remotive', title: 'Dev', company: 'Co', url: `https://example.test/${id}`, apply_url: null, description: 'd', posted_at: null } as any);
+    mkJob('ex-1');
+    mkJob('ok-1');
+    const row = (job_id: string) => enqueueOutreach(db, {
+      job_id, resume_pdf_path: null, email_subject: 'S', email_body: 'B', email_to: 'a@b.com',
+      connect_note: null, connect_profile_url: null, connect_category: null, connect_company: null,
+      apply_platform: 'none', apply_url: null,
+    });
+    const exId = row('ex-1');
+    row('ok-1');
+    row('no-job-row'); // no jobs row at all: still listed (legacy behaviour)
+    db.prepare("UPDATE jobs SET excluded_reason = 'deadline passed: 2026-01-01' WHERE id = 'ex-1'").run();
+
+    expect(listQueuedOutreach(db).map((r) => r.job_id).sort()).toEqual(['no-job-row', 'ok-1']);
+    expect(listExcludedQueuedOutreach(db)).toEqual([{ id: exId, job_id: 'ex-1', reason: 'deadline passed: 2026-01-01' }]);
   });
 
   it('listQueuedOutreach omits resume_json but keeps every other column', () => {

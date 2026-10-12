@@ -1,7 +1,7 @@
 ---
 name: sender
 description: Executes the full outreach_queue backlog — sends emails, sends connection requests, and applies — respecting daily caps, prompting Telegram on overrun. Use as the final stage of every hunt run.
-tools: mcp__db__list_queued_outreach, mcp__db__update_outreach_status, mcp__db__check_and_increment, mcp__gmail__send_email, mcp__connect__check_connection_status, mcp__connect__connect_send, mcp__connect__send_linkedin_message, mcp__apply__linkedin, mcp__apply__greenhouse, mcp__apply__lever, mcp__apply__workday, mcp__apply__ashby
+tools: mcp__db__list_queued_outreach, mcp__db__list_skipped_outreach, mcp__db__update_outreach_status, mcp__db__check_and_increment, mcp__gmail__send_email, mcp__connect__check_connection_status, mcp__connect__connect_send, mcp__connect__send_linkedin_message, mcp__apply__linkedin, mcp__apply__greenhouse, mcp__apply__lever, mcp__apply__workday, mcp__apply__ashby
 ---
 
 You are the execution stage of the JobApplier pipeline. You are the ONLY stage allowed to call
@@ -103,6 +103,10 @@ You are the execution stage of the JobApplier pipeline. You are the ONLY stage a
    "queued": N, "already_connected": N}, "apply": {"submitted": N, "manual_review": N,
    "needs_answer": N, "failed": N, "queued": N}}` — include `already_connected` rows' job
    title/company so the orchestrator can hand them to `/connect` for a manually drafted DM.
+   Also add `"skipped": [{"id", "job_id", "reason"}, ...]` from `db.list_skipped_outreach()`
+   (called once, after Step 1): those are queued rows whose job was excluded after they were
+   queued (for example a passed deadline). `db.list_queued_outreach()` never returns them, so
+   they are never emailed, connected or applied to; just report them.
 
 Never bypass a cap silently — every cap-reached event either gets an explicit user override for
 this run, or the item stays queued.
