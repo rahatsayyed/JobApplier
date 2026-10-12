@@ -28,6 +28,14 @@ describe('learned ATS platform registry', () => {
     return configPath;
   }
 
+  it('detectLearned normalizes case and one trailing dot like hostMatches', () => {
+    const p = freshConfigPath();
+    saveLearnedPlatform('jobs.example.com', fakeFieldMap, p);
+    expect(detectLearned('https://Jobs.Example.com./apply', p)?.platform).toBe('jobs.example.com');
+    expect(detectLearned('https://jobs.example.com/apply', p)?.platform).toBe('jobs.example.com');
+    expect(detectLearned('https://jobs.example.com.evil.net/apply', p)).toBeNull();
+  });
+
   it('loadLearnedPlatforms returns {} when the file does not exist yet (first run)', () => {
     const p = freshConfigPath();
     expect(loadLearnedPlatforms(p)).toEqual({});

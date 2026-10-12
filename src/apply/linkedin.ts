@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb, getJob, getExcludedReason, getFirstHardStop, saveApplication } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
+import { hostMatches } from '../lib/hostClass.js';
 import {
   resolveControlWithFallback,
   resolveAnswerTopicWithFallback,
@@ -392,6 +393,11 @@ export async function applyEasyApply(
   const hardStop = getFirstHardStop(database, job_id);
   if (hardStop) {
     return recordAndReturn(database, job_id, 'manual_review', `hard stop: ${hardStop}`);
+  }
+
+  // The page is opened with the burner session at job.url: only a linkedin.com URL may receive it.
+  if (!hostMatches(job.url, 'linkedin.com')) {
+    return recordAndReturn(database, job_id, 'manual_review', 'job url is not a linkedin.com host; refusing to use the burner session');
   }
 
   let answers: EasyApplyAnswers;

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { openDb, isSeen, saveJob } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { fetchAllJobs } from '../sources/index.js';
-import { dropBoardDuplicates, fetchBoards, getLastBoardsResult, type SeenRow } from '../sources/boards/index.js';
+import { boardStatusPayload, dropBoardDuplicates, type SeenRow } from '../sources/boards/index.js';
 
 const db = openDb(dbPath());
 
@@ -58,15 +58,11 @@ server.registerTool(
   'board_status',
   {
     description:
-      'Read-only: per-company counts and errors from the most recent company-board fetch (fetches once if none has run in this session). Never writes to the db.',
+      'Read-only: per-company counts and errors from the most recent company-board fetch (call it after list_new_jobs; it never fetches, and returns ran:false when no fetch has run in this session). Never writes to the db.',
     inputSchema: {},
   },
   async () => {
-    if (!getLastBoardsResult()) await fetchBoards();
-    const r = getLastBoardsResult()!;
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ at: r.at, errors: r.errors, stats: r.stats }) }],
-    };
+    return { content: [{ type: 'text', text: JSON.stringify(boardStatusPayload()) }] };
   }
 );
 

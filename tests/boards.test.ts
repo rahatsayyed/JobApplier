@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { dropBoardDuplicates, fetchBoards, getLastBoardsResult } from '../src/sources/boards/index.js';
+import { boardStatusPayload, dropBoardDuplicates, fetchBoards, getLastBoardsResult } from '../src/sources/boards/index.js';
 import { companyKey, titleIdentityKey } from '../src/reposts.js';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -144,6 +144,17 @@ describe('fetchBoards', () => {
     expect(last.stats).toEqual([{ company: 'A', ats: 'greenhouse', fetched: 6, kept: 2 }]);
     expect(Number.isNaN(Date.parse(last.at))).toBe(false);
     expect('jobs' in last).toBe(true);
+  });
+});
+
+describe('boardStatusPayload', () => {
+  it('reports ran:false without fetching when nothing has run, and the last result afterwards', async () => {
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    expect(boardStatusPayload(null)).toEqual({ ran: false, errors: [], stats: [], note: 'no board fetch has run in this session' });
+    expect(f).not.toHaveBeenCalled();
+    const p = boardStatusPayload({ jobs: [], errors: ['e'], stats: [], at: '2026-01-01T00:00:00.000Z' });
+    expect(p).toEqual({ ran: true, at: '2026-01-01T00:00:00.000Z', errors: ['e'], stats: [] });
   });
 });
 

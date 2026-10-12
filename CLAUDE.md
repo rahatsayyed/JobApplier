@@ -42,7 +42,7 @@ change for day-to-day tuning.
   compares posting requirements against it. It ships with English only and `confirmed: false`;
   while unconfirmed an undeclared required language is only a FLAG, never an exclusion. Confirm
   or extend the list, then set `confirmed` to `true`.
-- **Target companies**: `config/portals.json` (`tracked_companies[{name, ats: greenhouse|lever|ashby, slug, enabled, region?: "eu"}]`, `title_filter{positive, negative}` with `word:`/`lead:`/`stem:`/`a + b` rules (`lead:` judges only the part of the title before the first `(`, `,`, `:`, `|` or spaced dash), `location_filter{allow, global}`: a posting passes if a location contains an `allow` term, or, when remote, is bare/global such as "Remote" or "Worldwide"; "Remote, <other place>" and "(excl. India)" fail; semicolon-separated locations are split). Slugs must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`. Check a new slug first with `npx tsx scripts/check-portal.ts <ats> <slug>`; the slug is the path segment of the company's board URL (`boards.greenhouse.io/<slug>`, `jobs.lever.co/<slug>`, `jobs.ashbyhq.com/<slug>`). Board fetch errors and per-company counts go to stderr, to the `job-fetch.board_status` tool, and to the discoverer's final `BOARD_STATUS:` line; surface them in the run report so a dead slug or a malformed `portals.json` is never silent. Limits as implemented: at most 2000 jobs read per board, 200 kept per company after the filters, descriptions cut to 8000 characters, 3 boards fetched at once, 30 s per board and a 120 s budget for the whole fetch (boards not started by then are reported as errors).
+- **Target companies**: `config/portals.json` (`tracked_companies[{name, ats: greenhouse|lever|ashby, slug, enabled, region?: "eu"}]`, `title_filter{positive, negative}` with `word:`/`lead:`/`stem:`/`a + b` rules (`lead:` judges only the part of the title before the first `(`, `,`, `:`, `|` or spaced dash), `location_filter{allow, global}`: a posting passes if a location contains an `allow` term, or, when remote, is bare/global such as "Remote" or "Worldwide"; "Remote, <other place>" and "(excl. India)" fail; semicolon-separated locations are split). Slugs must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`. Check a new slug first with `npx tsx scripts/check-portal.ts <ats> <slug>`; the slug is the path segment of the company's board URL (`boards.greenhouse.io/<slug>`, `jobs.lever.co/<slug>`, `jobs.ashbyhq.com/<slug>`). Board fetch errors and per-company counts go to stderr, to the read-only `job-fetch.board_status` tool (call it after `list_new_jobs`; it never fetches and returns `ran: false` if no fetch ran), and to the discoverer's final `BOARD_STATUS:` line; surface them in the run report so a dead slug or a malformed `portals.json` is never silent. Limits as implemented: at most 2000 jobs read per board, 200 kept per company after the filters, descriptions cut to 8000 characters, 3 boards fetched at once, 30 s per board and a 120 s budget for the whole fetch (boards not started by then are reported as errors).
 - **MATCH_THRESHOLD**: `60` (env var; jobs scoring below this are skipped — see `.env`)
 - **SEND_LIMIT_PER_RUN**: `1` (env var; max real emails — enforced as a daily counter via
   `db.check_and_increment`, not literally reset per invocation, so two hunt runs in the same day
@@ -340,9 +340,10 @@ Steps, for each targeted job:
    no embedded credentials, and `apply.auto`'s LinkedIn check uses the same rule. A look-alike
    host (such as `evil-greenhouse.io` or `evillinkedin.com`) is refused with `manual_review`
    BEFORE any ATS bootstrap, so it is never learned as a new platform and never receives
-   application data. Known gaps: `applyExternal` has no URL scheme check yet (`javascript:` or
-   `file:` URLs pass the look-alike guard; tracked, not fixed), and the direct `apply.linkedin`
-   tool has no host check (only `apply.auto` is protected).
+   application data. `applyExternal` also refuses any non-http(s) `apply_url` (`javascript:`,
+   `file:`, `data:`, protocol-relative, unparseable) with `manual_review` before detection, the
+   bootstrap, the browser or the rate counter, and the direct `apply.linkedin` tool refuses a job
+   `url` whose host is not `linkedin.com` before any session or browser use.
 2. Each call returns one of: `submitted`, `manual_review` (a genuinely unrecoverable case —
    missing burner/main session, no Easy Apply button, no submit control found, a platform
    mismatch per above, or a submit click that couldn't be confirmed — never a guessed
@@ -635,7 +636,7 @@ is not measured by it.
    `reply-watcher`, `followup-drafter`, the changed `sender` and the new `db` tools; then run the
    dry runs in docs/superpowers/plans/2026-10-08-3-post-send-replies-followups-funnel.md (U3-U7).
 7. Plan 4 (board discovery): run the live slug check (four commands in the plan) from a shell
-   with network, then the same full restart; board_status is read-only.
+   with network, then the same full restart; board_status is read-only and never fetches (it returns the last `list_new_jobs` board result, or `ran: false`).
 
 Board discovery known limits: the Greenhouse/Lever/Ashby response shapes are not live-verified
 inside the hunt yet (only the seeded slugs were checked while writing), and Workday boards are

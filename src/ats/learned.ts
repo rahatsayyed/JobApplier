@@ -46,7 +46,7 @@ export function detectLearned(
 ): LearnedDetection | null {
   let hostname: string;
   try {
-    hostname = new URL(url).hostname.toLowerCase();
+    hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
   } catch {
     return null;
   }

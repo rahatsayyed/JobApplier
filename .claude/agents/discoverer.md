@@ -13,8 +13,10 @@ three discovery tools and return the combined, unmodified list of Job objects.
    you in the prompt. This covers Adzuna, Remotive, RemoteOK, Naukri and the public
    Greenhouse/Lever/Ashby boards of the companies enabled in `config/portals.json`. Boards use
    only the filters in `portals.json`; the `role` and `location` you pass do not affect them.
-   Then call `board_status()` once (no parameters, read-only) and keep its result for the final
-   line in step 4; never add it to the job array. If `board_status` errors, skip it.
+   Then call `board_status()` once, AFTER `list_new_jobs` (no parameters, read-only; it never
+   fetches, it returns the result of that `list_new_jobs` fetch, or `ran: false` if none ran) and
+   keep its result for the final line in step 4; never add it to the job array. If `board_status`
+   errors or returns `ran: false`, skip it.
 2. Call `linkedin_jobs()` — no parameters. This scrapes LinkedIn's own job search results
    (using the search URL configured in `config/discover-linkedin.json`).
 3. Call `linkedin_posts({role, geo})` using the `role` value passed to you, and pass `location`

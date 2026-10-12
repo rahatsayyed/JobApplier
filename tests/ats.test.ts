@@ -440,6 +440,28 @@ describe('applyExternal rate limiting (Finding 1)', () => {
     expect(row).toBeUndefined();
   });
 
+  it('refuses a non-http(s) apply_url before any detection, bootstrap, browser or counter use', async () => {
+    const launch = vi.fn();
+    const runClaude = vi.fn();
+    const learnedPlatformsPath = path.join(mkdtempSync(path.join(tmpdir(), 'scheme-')), 'learned-ats-platforms.json');
+    const urls = ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', '//jobs.example.com/apply/1', 'not a url'];
+    for (const [i, u] of urls.entries()) {
+      saveJob(db, { id: `job-scheme-${i}`, source: 'other', title: 'T', company: 'C', url: 'https://example.com/x', apply_url: u, description: 'd' });
+      saveOutreach(db, { job_id: `job-scheme-${i}`, contact_email: 'h@acme.com', subject: 's', body: 'b', resume_path: '/tmp/fake-resume.pdf' });
+      const result = await applyExternal(
+        { job_id: `job-scheme-${i}` },
+        { db, maxAppliesPerDay: 5, chromium: { launch }, bootstrap: { runClaude }, learnedPlatformsPath }
+      );
+      expect(result.status).toBe('manual_review');
+      expect(result.reason).toContain('not an http(s) URL');
+    }
+    expect(launch).not.toHaveBeenCalled();
+    expect(runClaude).not.toHaveBeenCalled();
+    expect(existsSync(learnedPlatformsPath)).toBe(false);
+    const row = db.prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?").get('easy_apply');
+    expect(row).toBeUndefined();
+  });
+
   it('refuses a look-alike ATS host with no expected_platform before any bootstrap, browser launch or learned-platform write', async () => {
     saveJob(db, {
       id: 'job-ext-lookalike',

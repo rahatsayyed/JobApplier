@@ -232,6 +232,14 @@ export async function applyExternal(
     return recordAndReturn(database, job_id, null, 'manual_review', 'apply_url host is a look-alike of a known ATS/LinkedIn domain; refusing to apply or bootstrap');
   }
 
+  // Only http(s) URLs may proceed: javascript:, file:, data:, protocol-relative and unparseable URLs never reach
+  // detectAts/detectLearned, the bootstrap, the browser or the rate counter.
+  let schemeOk = false;
+  try { const proto = new URL(job.apply_url).protocol; schemeOk = proto === 'http:' || proto === 'https:'; } catch { /* unparseable */ }
+  if (!schemeOk) {
+    return recordAndReturn(database, job_id, null, 'manual_review', 'apply_url is not an http(s) URL; refusing to apply');
+  }
+
   const prepared = findPreparedApplicationMaterials(database, job_id);
 
   if (!prepared || !prepared.resume_path) {

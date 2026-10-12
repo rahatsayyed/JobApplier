@@ -270,6 +270,19 @@ describe('applyEasyApply control flow', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('refuses a non-linkedin job url before any browser, session or counter use', async () => {
+    const launch = vi.fn();
+    for (const [i, url] of ['https://evillinkedin.com/jobs/view/1', 'https://linkedin.com.evil.net/x', 'https://www.linkedin.com@evil.net/x', 'javascript:alert(1)'].entries()) {
+      saveJob(db, { id: `job-nl-${i}`, source: 'linkedin', title: 'T', company: 'C', url, apply_url: url, description: 'd' });
+      const result = await applyEasyApply({ job_id: `job-nl-${i}` }, { db, chromium: { launch } });
+      expect(result.status).toBe('manual_review');
+      expect(result.reason).toContain('not a linkedin.com host');
+    }
+    expect(launch).not.toHaveBeenCalled();
+    const row = db.prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?").get('easy_apply');
+    expect(row).toBeUndefined();
+  });
+
   it('does not burn a quota slot on a cheap pre-flight rejection (Finding 2: job not found)', async () => {
     const launch = vi.fn();
     const fakeChromium = { launch };

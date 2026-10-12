@@ -36,6 +36,12 @@ let last: (BoardsResult & { at: string }) | null = null;
 /** The most recent fetchBoards() result in this process (read by the job-fetch `board_status` tool). */
 export function getLastBoardsResult(): (BoardsResult & { at: string }) | null { return last; }
 
+/** Payload of the read-only job-fetch `board_status` tool: the last result, or ran:false. Never triggers a fetch. */
+export function boardStatusPayload(r: (BoardsResult & { at: string }) | null = last) {
+  if (!r) return { ran: false as const, errors: [] as string[], stats: [] as BoardsResult['stats'], note: 'no board fetch has run in this session' };
+  return { ran: true as const, at: r.at, errors: r.errors, stats: r.stats };
+}
+
 type Slot = { c: TrackedCompany; jobs?: BoardJob[]; error?: string };
 
 async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {

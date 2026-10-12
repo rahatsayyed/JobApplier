@@ -39,6 +39,18 @@ vi.mock('../src/sources/naukri.js', () => ({
   ]),
 }));
 
+describe('fetchAllJobs resilience', () => {
+  it('a throwing source contributes nothing but keeps the other sources and the boards', async () => {
+    const { fetchRemoteok } = await import('../src/sources/remoteok.js');
+    const { fetchBoards } = await import('../src/sources/boards/index.js');
+    vi.mocked(fetchRemoteok).mockRejectedValueOnce(new Error('remoteok down'));
+    vi.mocked(fetchBoards).mockResolvedValueOnce({ jobs: [{ id: 'gh:a:1', source: 'greenhouse', title: 'T', company: 'A', url: 'u', apply_url: 'u', description: '' }], errors: [], stats: [] });
+    const { fetchAllJobs } = await import('../src/sources/index.js');
+    const jobs = await fetchAllJobs({ role: 'r' });
+    expect(jobs.map((j) => j.id)).toEqual(expect.arrayContaining(['adzuna:1', 'naukri:12345', 'gh:a:1']));
+  });
+});
+
 describe('fetchAllJobs seam with a caller-owned isSeen/saveJob dedup pass', () => {
   it('returns a Naukri job that a fresh caller db has never seen, and survives list_new_jobs-style dedup+persist', async () => {
     const { fetchAllJobs } = await import('../src/sources/index.js');
