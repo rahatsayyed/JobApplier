@@ -25,6 +25,13 @@ describe('routeApplyAuto', () => {
     expect(routeApplyAuto('https://www.linkedin.com/jobs/view/123456')).toEqual({ kind: 'linkedin' });
   });
 
+  it('does not treat look-alike LinkedIn hosts as LinkedIn (no burner-session Easy Apply)', () => {
+    for (const url of ['https://evillinkedin.com/jobs/view/1', 'https://linkedin.com.evil.net/jobs/view/1', 'https://www.linkedin.com@evil.net/jobs/view/1']) {
+      expect(routeApplyAuto(url)).toEqual({ kind: 'external', platform: null });
+    }
+    expect(routeApplyAuto('https://linkedin.com/jobs/view/1')).toEqual({ kind: 'linkedin' });
+  });
+
   it('routes an unrecognized domain to the bootstrap path (external, no expected_platform)', () => {
     expect(routeApplyAuto('https://jobs.newats.example/apply/123')).toEqual({
       kind: 'external',

@@ -1,13 +1,10 @@
 import { detectAts } from '../apply/external.js';
+import { hostMatches } from '../lib/hostClass.js';
 
 export type ApplyAutoRoute = { kind: 'linkedin' } | { kind: 'external'; platform: string | null };
 
 function isLinkedInUrl(url: string): boolean {
-  try {
-    return new URL(url).hostname.toLowerCase().endsWith('linkedin.com');
-  } catch {
-    return false;
-  }
+  return hostMatches(url, 'linkedin.com');
 }
 
 /**

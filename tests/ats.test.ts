@@ -440,6 +440,43 @@ describe('applyExternal rate limiting (Finding 1)', () => {
     expect(row).toBeUndefined();
   });
 
+  it('refuses a look-alike ATS host with no expected_platform before any bootstrap, browser launch or learned-platform write', async () => {
+    saveJob(db, {
+      id: 'job-ext-lookalike',
+      source: 'other',
+      title: 'Full Stack Developer',
+      company: 'Acme Corp',
+      url: 'https://evil-greenhouse.io/acme/jobs/1',
+      apply_url: 'https://evil-greenhouse.io/acme/jobs/1',
+      description: 'React role',
+    });
+    saveOutreach(db, {
+      job_id: 'job-ext-lookalike',
+      contact_email: 'hiring@acme.com',
+      subject: 'Application',
+      body: 'Cover letter body',
+      resume_path: '/tmp/fake-resume.pdf',
+    });
+    const launch = vi.fn();
+    const runClaude = vi.fn();
+    const learnedPlatformsPath = path.join(mkdtempSync(path.join(tmpdir(), 'lookalike-')), 'learned-ats-platforms.json');
+
+    const result = await applyExternal(
+      { job_id: 'job-ext-lookalike' },
+      { db, maxAppliesPerDay: 5, chromium: { launch }, bootstrap: { runClaude }, learnedPlatformsPath }
+    );
+
+    expect(result.status).toBe('manual_review');
+    expect(result.reason).toMatch(/look-alike/);
+    expect(launch).not.toHaveBeenCalled();
+    expect(runClaude).not.toHaveBeenCalled();
+    expect(existsSync(learnedPlatformsPath)).toBe(false);
+    const row = db
+      .prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?")
+      .get('easy_apply') as { count: number } | undefined;
+    expect(row).toBeUndefined();
+  });
+
   it('attempts to bootstrap a new field map (no expected_platform) for an unrecognized domain, falling to manual_review when the bootstrap cannot resolve any required field', async () => {
     saveJob(db, {
       id: 'job-ext-unsupported-bootstrap',

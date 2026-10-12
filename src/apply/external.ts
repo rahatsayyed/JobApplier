@@ -13,6 +13,7 @@ import * as ashby from '../ats/ashby.js';
 import { detectLearned, saveLearnedPlatform } from '../ats/learned.js';
 import { snapshotFormControls } from '../lib/domSnapshot.js';
 import { bootstrapFieldMap } from '../lib/atsBootstrap.js';
+import { lookAlikeAtsHost } from '../lib/hostClass.js';
 
 // Best-effort, NOT live-verified selectors (unlike linkedin.ts's
 // SELECTORS.submissionConfirmation, which was confirmed live against a real posting).
@@ -223,6 +224,12 @@ export async function applyExternal(
   const hardStop = getFirstHardStop(database, job_id);
   if (hardStop) {
     return recordAndReturn(database, job_id, null, 'manual_review', `hard stop: ${hardStop}`);
+  }
+
+  if (lookAlikeAtsHost(job.apply_url)) {
+    // A host that imitates greenhouse/lever/workday/ashby/linkedin but is not one must never reach the
+    // ATS bootstrap (it would learn a field map for it and submit personal data). Fail closed.
+    return recordAndReturn(database, job_id, null, 'manual_review', 'apply_url host is a look-alike of a known ATS/LinkedIn domain; refusing to apply or bootstrap');
   }
 
   const prepared = findPreparedApplicationMaterials(database, job_id);

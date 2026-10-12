@@ -1,14 +1,10 @@
 import type { FieldMap } from './types.js';
+import { hostMatches } from '../lib/hostClass.js';
 
 const PLATFORM = 'lever';
 
 export function detect(url: string): string | null {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host.endsWith('lever.co') ? PLATFORM : null;
-  } catch {
-    return null;
-  }
+  return hostMatches(url, 'lever.co') ? PLATFORM : null;
 }
 
 export const fieldMap: FieldMap = {
