@@ -23,6 +23,33 @@ const CONTACTED = `
 const rate = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 1000 : null);
 const count = (db: BetterSqlite3.Database, sql: string, ...p: unknown[]) => (db.prepare(sql).get(...p) as { n: number }).n;
 
+const esc = (s: unknown) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const pct = (x: number | null) => (x == null ? 'n/a' : `${(x * 100).toFixed(1)}%`);
+const p100 = (x: number) => Math.round(x * 100); // 0.13 * 100 is 13.000000000000002 in floating point
+
+export function renderFunnelHtml(f: Funnel, generatedAt: string): string {
+  const stages: Array<[string, number, string]> = [
+    ['Discovered', f.discovered, ''],
+    ['Matched', f.matched, ` (score >= ${f.threshold}; ${pct(f.rates.match)} of discovered)`],
+    ['Contacted', f.contacted, ''],
+    ['Replied', f.replied, ` (${pct(f.rates.reply)} of contacted; typical ${p100(f.benchmarks.response_rate.typical)}%, range ${p100(f.benchmarks.response_rate.low)}-${p100(f.benchmarks.response_rate.high)}%)`],
+    ['Interview', f.interview, ` (${pct(f.rates.interview)} of contacted; typical ${p100(f.benchmarks.interview_rate.typical)}%)`],
+    ['Offer', f.offer, ''],
+  ];
+  const max = Math.max(1, ...stages.map((s) => s[1]));
+  const bars = stages.map(([label, n, note], i) => {
+    const w = Math.round((n / max) * 560);
+    return `<g transform="translate(0,${i * 44})"><rect x="0" y="0" width="${Math.max(w, 2)}" height="28" rx="4" fill="#4c6ef5"></rect>` +
+      `<text x="${Math.max(w, 2) + 8}" y="19" font-size="14">${esc(`${label}: ${n}${note}`)}</text></g>`;
+  }).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>JobApplier funnel</title>
+<style>body{font-family:system-ui,sans-serif;margin:24px;color:#222;background:#fff}svg{max-width:100%;height:auto}p{color:#555}</style></head><body>
+<h1>JobApplier funnel</h1><p>Generated ${esc(generatedAt)}. Counts are per job; a stage counts if the job ever reached it.</p>
+<svg viewBox="0 0 1100 ${stages.length * 44}" role="img" aria-label="funnel">${bars}</svg>
+<p>Rejection rate (rejected + no response, of finished jobs): ${esc(pct(f.rates.rejection))}. Median days to first response: ${esc(f.first_response_days_median ?? 'n/a')} (typical ${f.benchmarks.first_response_days.typical}).</p>
+<p>Benchmarks: ${esc(f.benchmarks.source)}.</p></body></html>`;
+}
+
 export function funnelStats(db: BetterSqlite3.Database, threshold = 60): Funnel {
   const discovered = count(db, 'SELECT COUNT(*) AS n FROM jobs');
   // Plan 2: an excluded job (veto, deadline, hard stop) never proceeded, so it is not "matched", unless we already contacted it
