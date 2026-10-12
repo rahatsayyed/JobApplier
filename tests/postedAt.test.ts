@@ -21,6 +21,20 @@ describe('toIsoDay', () => {
   ])('%s -> %s', (input, out) => { expect(toIsoDay(input)).toBe(out); });
 });
 
+describe('toIsoDay range and extremes', () => {
+  const nextYear = new Date().getUTCFullYear() + 1;
+  it.each([
+    ['1999-12-31', undefined],
+    ['2000-01-01', '2000-01-01'],
+    [`${nextYear}-06-01`, `${nextYear}-06-01`],
+    [`${nextYear + 1}-01-01`, undefined],
+    [8.64e15, undefined],
+    [-1e12, undefined],
+    [-5, undefined],
+    [Number.MAX_SAFE_INTEGER, undefined],
+  ])('%s -> %s', (input, out) => { expect(toIsoDay(input)).toBe(out); });
+});
+
 describe('sources emit posted_at', () => {
   it('remotive publication_date', () => {
     expect(normalizeRemotive({ jobs: [{ id: 1, title: 't', company_name: 'c', url: 'u', description: 'd', publication_date: '2026-09-30T10:11:12' }] })[0].posted_at).toBe('2026-09-30');

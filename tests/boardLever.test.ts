@@ -32,6 +32,22 @@ describe('normalizeLever', () => {
   });
 });
 
+describe('normalizeLever limits', () => {
+  it('caps jobs, clips text, skips long ids, falls back on long url', () => {
+    expect(normalizeLever(Array.from({ length: 100000 }, (_, i) => ({ id: `i${i}`, text: 't' })), company)).toHaveLength(2000);
+    const [j] = normalizeLever([{ id: 'ok', text: 'x'.repeat(1_000_000), categories: { location: 'l'.repeat(9999) }, hostedUrl: 'https://jobs.lever.co/' + 'z'.repeat(3000) }], company);
+    expect(j.title).toHaveLength(300);
+    expect(j.locations[0]).toHaveLength(300);
+    expect(j.url).toBe('https://jobs.lever.co/meesho/ok');
+    expect(normalizeLever([{ id: 'a'.repeat(150), text: 't' }], company)).toEqual([]);
+  });
+  it('strips query and fragment before appending the apply suffix', () => {
+    const [j] = normalizeLever([{ id: 'q', text: 't', hostedUrl: 'https://jobs.lever.co/meesho/q?lever-source=x#top', categories: {} }], company);
+    expect(j.url).toBe('https://jobs.lever.co/meesho/q?lever-source=x#top');
+    expect(j.apply_url).toBe('https://jobs.lever.co/meesho/q/apply');
+  });
+});
+
 describe('fetchLever', () => {
   it('uses the global or EU host', async () => {
     const f = vi.fn().mockImplementation(async () => new Response(JSON.stringify(raw), { status: 200 }));

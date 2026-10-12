@@ -280,7 +280,11 @@ export function toIsoDay(v: unknown): string | undefined {
     const hasZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(s.slice(10));
     d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? day : new Date(hasZone ? s : `${s.replace(' ', 'T')}Z`);
   } else return undefined;
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const iso = d.toISOString().slice(0, 10);
+  const year = Number(iso.slice(0, 4));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || year < 2000 || year > new Date().getUTCFullYear() + 1) return undefined;
+  return iso;
 }
 
 export function saveJob(db: BetterSqlite3.Database, job: Job): void {

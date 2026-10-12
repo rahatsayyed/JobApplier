@@ -35,6 +35,21 @@ describe('normalizeAshby', () => {
   });
 });
 
+describe('normalizeAshby limits', () => {
+  it('caps jobs, clips text, skips long ids, falls back on long url', () => {
+    expect(normalizeAshby({ jobs: Array.from({ length: 100000 }, (_, i) => ({ id: `i${i}`, title: 't' })) }, company)).toHaveLength(2000);
+    const [j] = normalizeAshby({ jobs: [{ id: 'ok', title: 'x'.repeat(1_000_000), location: 'l'.repeat(9999), jobUrl: 'https://jobs.ashbyhq.com/' + 'z'.repeat(3000) }] }, company);
+    expect(j.title).toHaveLength(300);
+    expect(j.locations[0]).toHaveLength(300);
+    expect(j.url).toBe('https://jobs.ashbyhq.com/linear/ok');
+    expect(normalizeAshby({ jobs: [{ id: 'a'.repeat(150), title: 't' }] }, company)).toEqual([]);
+  });
+  it('strips query and fragment before appending the application suffix', () => {
+    const [j] = normalizeAshby({ jobs: [{ id: 'q', title: 't', jobUrl: 'https://jobs.ashbyhq.com/linear/q?utm=1#x' }] }, company);
+    expect(j.apply_url).toBe('https://jobs.ashbyhq.com/linear/q/application');
+  });
+});
+
 describe('fetchAshby', () => {
   it('calls the posting API with compensation', async () => {
     const f = vi.fn().mockResolvedValue(new Response(JSON.stringify(raw), { status: 200 }));

@@ -11,7 +11,7 @@ const raw = { jobs: [
 describe('normalizeGreenhouse', () => {
   it('maps jobs with canonical apply URLs, readable descriptions and dates', () => {
     expect(normalizeGreenhouse(raw, company)).toEqual([
-      { id: 'gh:acme:101', source: 'greenhouse', title: 'Frontend Engineer', company: 'Acme', url: 'https://about.acme.com/careers?gh_jid=101', apply_url: 'https://boards.greenhouse.io/acme/jobs/101', description: 'Build React apps', posted_at: '2026-10-01', locations: ['Remote, India'], remote: true },
+      { id: 'gh:acme:101', source: 'greenhouse', title: 'Frontend Engineer', company: 'Acme', url: 'https://boards.greenhouse.io/acme/jobs/101', apply_url: 'https://boards.greenhouse.io/acme/jobs/101', description: 'Build React apps', posted_at: '2026-10-01', locations: ['Remote, India'], remote: true },
       { id: 'gh:acme:102', source: 'greenhouse', title: 'Backend Engineer', company: 'Acme', url: 'https://boards.greenhouse.io/acme/jobs/102', apply_url: 'https://boards.greenhouse.io/acme/jobs/102', description: '', posted_at: '2026-09-20', locations: ['Bengaluru'], remote: false },
     ]);
   });
@@ -36,6 +36,30 @@ describe('normalizeGreenhouse', () => {
     const out = normalizeGreenhouse({ jobs: [{ id: 9, title: 'Dev', apply_url: 'https://evil.example.com', location: { name: 'India' }, content: 'x'.repeat(50000) }] }, company);
     expect(out[0].description.length).toBe(8000);
     expect(out[0].apply_url).toBe('https://boards.greenhouse.io/acme/jobs/9');
+  });
+});
+
+describe('normalizeGreenhouse limits', () => {
+  it('a custom-domain absolute_url falls back to canonical; vendor https URLs are kept', () => {
+    const out = normalizeGreenhouse({ jobs: [
+      { id: 1, title: 'a', absolute_url: 'https://job-boards.greenhouse.io/acme/jobs/1' },
+      { id: 2, title: 'b', absolute_url: 'http://boards.greenhouse.io/acme/jobs/2' },
+      { id: 3, title: 'c', absolute_url: 'https://greenhouse.io.evil.io/x' },
+    ] }, company);
+    expect(out.map((j) => j.url)).toEqual(['https://job-boards.greenhouse.io/acme/jobs/1', 'https://boards.greenhouse.io/acme/jobs/2', 'https://boards.greenhouse.io/acme/jobs/3']);
+  });
+  it('keeps at most 2000 jobs, clips title and location, falls back on long url, skips long ids', () => {
+    const many = { jobs: Array.from({ length: 100000 }, (_, i) => ({ id: i + 1, title: 't' })) };
+    expect(normalizeGreenhouse(many, company)).toHaveLength(2000);
+    const [j] = normalizeGreenhouse({ jobs: [{ id: 5, title: 'x'.repeat(1_000_000), location: { name: 'y'.repeat(5000) }, absolute_url: 'https://boards.greenhouse.io/' + 'z'.repeat(3000) }] }, company);
+    expect(j.title).toHaveLength(300);
+    expect(j.locations[0]).toHaveLength(300);
+    expect(j.url).toBe('https://boards.greenhouse.io/acme/jobs/5');
+    expect(normalizeGreenhouse({ jobs: [{ id: '1'.repeat(150), title: 't' }] }, company)).toEqual([]);
+  });
+  it('validates the slug itself and settleBoard reports it', async () => {
+    expect(() => normalizeGreenhouse(raw, { ...company, slug: '..' })).toThrow('invalid board slug');
+    expect((await settleBoard(async (c) => normalizeGreenhouse(raw, c), { ...company, slug: 'a-b/c' })).error).toContain('invalid board slug');
   });
 });
 
