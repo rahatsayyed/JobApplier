@@ -16,6 +16,21 @@ Produce ONE final, ready-to-send cold outreach email (subject + body) for a spec
 3. `contact` — the chosen contact object, at minimum `{email, type, verified, source, confidence}`. Only proceed if `contact.verified` is true; if not verified, do not draft — report back that no verified contact exists (this should normally be filtered out before this skill is invoked).
 4. `do_not_claim` (optional) — posting requirements the candidate does NOT have (the `gaps` from `tailor-resume`). Never state or imply experience with any of them. If the posting stresses one, you may name it once, honestly, as something the candidate would ramp up on (e.g. "I haven't used Go professionally yet; most of my backend work is TypeScript"), or leave it out. Keep the negation in the same sentence as the term ("haven't", "not yet", "new to"): the email fact gate treats a technology named without a nearby negation as a claim.
 
+## Follow-up mode (when the caller passes `followup`)
+
+In follow-up mode SKIP Steps A, B and D (no 180-word draft, no critique round, no footer or attachment line) and run ONLY Step C (the humanizer pass) on the text below.
+
+Inputs: `followup = {n: 1|2, original_subject, original_body, days_quiet, company, title}`. Produce ONE follow-up email in the same thread.
+
+- Subject: `Re: <original_subject>` exactly, on a single line.
+- Body 60-120 words for n=1; 40-80 words and a different angle for n=2 (`db.save_followup_draft` enforces 40-120 for both, counted on the body).
+- Structure: greeting with the contact's name if the original had one, else the team; ONE sentence restating interest in the specific role; ONE value reminder taken from `original_body` (a fact or number already in it, phrased differently); ONE simple question about timeline or next step.
+- Truthful, no new claims: do not add any number, tool, employer, title or achievement that is not already in `original_body`. The code-side fact gate accepts anything supported by the base resume OR the original email and blocks everything else, so staying inside `original_body` is the rule you follow, and the gate is the backstop, not a licence to add resume facts.
+- Never use any of these (code rejects a draft containing them, case-insensitive): "just checking in", "checking in", "following up" or "follow up" in any form, "touching base", "circling back", "bumping this" or "bump my", "any update" or "any updates", "gentle reminder", "per my last email". No guilt, no pressure, no apology for writing.
+- No em dashes; no footer (the original already had one).
+
+Output: `{"subject": "...", "body": "..."}` as in the normal mode.
+
 ## Step A — DRAFT
 
 1. Write a subject line: short (under 60 characters), specific to the role and company (e.g. mentions the job title or a specific detail from the posting). No generic subjects like "Job Application" or "Following up".
