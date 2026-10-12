@@ -112,9 +112,9 @@ describe('resolveReplyProposals', () => {
       { message_id: 'b', from: 'lead@globex.io', subject: 'Re: x', body: 'We decided not to proceed.' },
       { message_id: 'c', thread_id: 't-j1', from: 'hr@acme.dev', subject: 'Offer', body: 'We are pleased to offer you the role.' },
     ], { config: OFF });
-    expect(resolveReplyProposals(db, [{ message_id: 'b', approve: true }, { message_id: 'c', approve: false }, { message_id: 'zz', approve: true }])).toEqual({ recorded: 1, skipped: 1, unknown: ['zz'] });
+    expect(resolveReplyProposals(db, [{ message_id: 'b', approve: true }, { message_id: 'c', approve: false }, { message_id: 'zz', approve: true }])).toEqual({ recorded: 1, skipped: 1, unknown: ['zz'], refused: [] });
     expect(outcomes(db)).toEqual([{ job_id: 'j2', outcome: 'rejected' }]);
-    expect(resolveReplyProposals(db, [{ message_id: 'b', approve: true }])).toEqual({ recorded: 0, skipped: 0, unknown: ['b'] });
+    expect(resolveReplyProposals(db, [{ message_id: 'b', approve: true }])).toEqual({ recorded: 0, skipped: 0, unknown: ['b'], refused: [] });
   });
 });
 
@@ -122,7 +122,90 @@ describe('resolveReplyProposals safety', () => {
   it('only records proposals that exist; an auto-recorded message id is unknown', () => {
     const db = setup();
     triageReplies(db, [{ message_id: 'a', thread_id: 't-j1', from: 'hr@acme.dev', subject: 'Re: x', body: 'Could we schedule a call this week?' }], { config: ON });
-    expect(resolveReplyProposals(db, [{ message_id: 'a', approve: true }])).toEqual({ recorded: 0, skipped: 0, unknown: ['a'] });
+    expect(resolveReplyProposals(db, [{ message_id: 'a', approve: true }])).toEqual({ recorded: 0, skipped: 0, unknown: ['a'], refused: [] });
     expect(outcomes(db)).toHaveLength(1);
+  });
+});
+
+describe('resolveReplyProposals ladder (fix round 1)', () => {
+  const prop = (db: any, id: string, thread: string, body: string) => triageReplies(db, [{ message_id: id, thread_id: thread, from: 'hr@acme.dev', subject: 'Re: x', body }], { config: OFF });
+  it('a stale replied proposal is refused and superseded once an interview is recorded', () => {
+    const db = setup();
+    prop(db, 'p1', 't-j1', 'Thanks, will review.');
+    recordOutcome(db, 'j1', 'interview');
+    const r = resolveReplyProposals(db, [{ message_id: 'p1', approve: true }]);
+    expect(r.recorded).toBe(0);
+    expect(r.refused).toEqual([{ message_id: 'p1', status: 'refused', reason: 'would not raise the recorded outcome (interview)' }]);
+    expect(outcomes(db)).toEqual([{ job_id: 'j1', outcome: 'interview' }]);
+    expect(db.prepare("SELECT action FROM processed_messages WHERE message_id = 'p1'").get()).toEqual({ action: 'superseded' });
+  });
+  it('a rejected proposal after an offer is refused', () => {
+    const db = setup();
+    prop(db, 'p2', 't-j1', 'We decided not to proceed.');
+    recordOutcome(db, 'j1', 'offer');
+    expect(resolveReplyProposals(db, [{ message_id: 'p2', approve: true }]).refused).toHaveLength(1);
+    expect(outcomes(db)).toEqual([{ job_id: 'j1', outcome: 'offer' }]);
+  });
+  it('a normal approve records, and approving again is idempotent (unknown, one outcome)', () => {
+    const db = setup();
+    prop(db, 'p3', 't-j1', 'Thanks, will review.');
+    expect(resolveReplyProposals(db, [{ message_id: 'p3', approve: true }]).recorded).toBe(1);
+    expect(resolveReplyProposals(db, [{ message_id: 'p3', approve: true }]).unknown).toEqual(['p3']);
+    expect(outcomes(db)).toEqual([{ job_id: 'j1', outcome: 'replied' }]);
+  });
+  it('rejecting a stale proposal is always allowed', () => {
+    const db = setup();
+    prop(db, 'p4', 't-j1', 'Thanks, will review.');
+    recordOutcome(db, 'j1', 'interview');
+    expect(resolveReplyProposals(db, [{ message_id: 'p4', approve: false }])).toMatchObject({ skipped: 1, refused: [] });
+  });
+});
+
+describe('triage hardening (fix round 1)', () => {
+  it('clamps From and message id before storing or echoing', () => {
+    const db = setup();
+    const big = 'x'.repeat(50000);
+    const r = triageReplies(db, [{ message_id: 'm'.repeat(2000), thread_id: 't-j1', from: `${big} <hr@acme.dev>`, subject: 'Re: x', body: 'Thanks, will review.' }], { config: OFF });
+    expect(r.proposals[0].from.length).toBe(320);
+    expect(r.proposals[0].message_id.length).toBe(500);
+    const row = db.prepare('SELECT message_id, from_addr FROM processed_messages').get() as any;
+    expect(row.message_id.length).toBe(500);
+    expect(row.from_addr.length).toBeLessThanOrEqual(320);
+  });
+  it('the auto-record note never carries an unbounded From', () => {
+    const db = setup();
+    triageReplies(db, [{ message_id: 'n1', thread_id: 't-j1', from: `${'y'.repeat(50000)}`, subject: 'Re: x', body: 'Could we schedule a call this week?' }], { config: ON });
+    const n = (db.prepare('SELECT note FROM job_outcomes').get() as any)?.note ?? '';
+    expect(n.length).toBeLessThan(1000);
+  });
+  it('lists ambiguous matches separately, with the candidate jobs; an ambiguous bounce also stays in bounced with a null job', () => {
+    const db = setup();
+    db.prepare("UPDATE outreach_queue SET email_to = 'shared@corp.io'").run();
+    const r = triageReplies(db, [
+      { message_id: 'am1', from: 'shared@corp.io', subject: 'Re: x', body: 'We decided not to proceed.' },
+      { message_id: 'am2', from: 'mailer-daemon@googlemail.com', subject: 'Delivery Status Notification (Failure)', body: "Your message wasn't delivered to shared@corp.io (Acme and Globex roles) because the address couldn't be found." },
+    ], { config: ON });
+    expect(r.ambiguous.find((a) => a.message_id === 'am1')).toEqual({ message_id: 'am1', class: 'rejected', candidates: ['j1', 'j2'] });
+    expect(r.unmatched).toEqual([]);
+    expect(r.ambiguous.map((a) => a.message_id)).toContain('am2');
+    expect(r.bounced.find((b) => b.message_id === 'am2')?.job_id).toBeNull();
+    expect(outcomes(db)).toEqual([]);
+  });
+  it('a dry run dedupes duplicate message ids in one batch like a real run', () => {
+    const db = setup();
+    const m = { message_id: 'dup', thread_id: 't-j1', from: 'hr@acme.dev', subject: 'Re: x', body: 'Thanks, will review.' };
+    const dry = triageReplies(db, [m, m], { dry_run: true, config: OFF });
+    const real = triageReplies(db, [m, m], { config: OFF });
+    expect(dry.proposals).toHaveLength(1);
+    expect(dry.already_processed).toBe(1);
+    expect({ ...real, dry_run: true }).toEqual(dry);
+  });
+  it('a message that throws rolls the whole batch back (no outcomes, no ledger rows)', () => {
+    const db = setup();
+    const bad = { message_id: 'bad', thread_id: 't-j1', from: 'hr@acme.dev', body: 'x', get subject(): string { throw new Error('boom'); } };
+    const good = { message_id: 'good', thread_id: 't-j1', from: 'hr@acme.dev', subject: 'Re: x', date: 'Tue, 2 Sep 2026 10:00:00 +0000', body: 'Could we schedule a call this week?' };
+    expect(() => triageReplies(db, [good, bad as any], { config: ON })).toThrow('boom');
+    expect(outcomes(db)).toEqual([]);
+    expect(db.prepare('SELECT count(*) AS n FROM processed_messages').get()).toEqual({ n: 0 });
   });
 });

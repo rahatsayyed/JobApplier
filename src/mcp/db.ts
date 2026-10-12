@@ -381,9 +381,9 @@ server.registerTool(
     description: 'Classify and match Gmail messages (already read with gmail.read_email) to sent cold emails. Auto-record is OFF by default (config/replies.json auto_record_enabled): by default every outcome is only PROPOSED and this tool never writes an outcome. When the user has enabled it, auto-records ONLY a high-confidence thread/sender match classified interview or rejected on a strong phrase from no/replied outcome (never over an existing interview/rejected/offer); proposes replied, offers, weaker matches and anything that would not raise the outcome for Telegram approval; reports bounces (never an outcome) and unmatched replies; ignores noise and out-of-office/auto-acknowledgements; records every message id (with the reply date) so none is triaged twice. dry_run: true classifies and matches but writes NOTHING (use it for checks against the real database).',
     inputSchema: {
       messages: z.array(z.object({
-        message_id: z.string(), thread_id: z.string().nullable().optional(), from: z.string(),
-        subject: z.string(), date: z.string().nullable().optional(), body: z.string(),
-      })),
+        message_id: z.string().max(500), thread_id: z.string().max(200).nullable().optional(), from: z.string().max(320),
+        subject: z.string().max(1000), date: z.string().max(100).nullable().optional(), body: z.string().max(200000),
+      })).max(200),
       dry_run: z.boolean().optional(),
     },
   },
@@ -394,7 +394,7 @@ server.registerTool(
   'resolve_reply_proposals',
   {
     description: 'The explicit call that records an outcome: apply the user\'s Telegram decision on proposed reply outcomes (approve -> db outcome recorded; reject -> marked skipped). Never call it without the user\'s decision.',
-    inputSchema: { decisions: z.array(z.object({ message_id: z.string(), approve: z.boolean() })) },
+    inputSchema: { decisions: z.array(z.object({ message_id: z.string().max(500), approve: z.boolean() })).max(200) },
   },
   async ({ decisions }) => ({ content: [{ type: 'text', text: JSON.stringify(resolveReplyProposals(db, decisions)) }] })
 );

@@ -10,7 +10,7 @@ import type { Outcome, SentEmail } from './db.js';
 
 export type ReplyClass = 'bounce' | 'noise' | 'auto_ack' | 'rejected' | 'offer' | 'interview' | 'replied' | 'unknown';
 export interface IncomingMessage { message_id: string; thread_id?: string | null; from: string; subject: string; date?: string | null; body: string }
-export interface ReplyMatch { job_id: string | null; confidence: 'high' | 'medium' | 'low' | 'none'; via: 'thread' | 'sender' | 'domain' | 'company' | 'ambiguous' | 'none' }
+export interface ReplyMatch { job_id: string | null; confidence: 'high' | 'medium' | 'low' | 'none'; via: 'thread' | 'sender' | 'domain' | 'company' | 'ambiguous' | 'none'; /** set only when via is 'ambiguous': the competing job ids */ candidates?: string[] }
 export interface ReplyDecision { action: 'auto_record' | 'propose' | 'ignore' | 'report'; outcome: Outcome | null; reason: string }
 export interface RepliesConfig { auto_record_enabled: boolean }
 export interface ReplyClassification { cls: ReplyClass; /** true only for a strong, unambiguous signal from a non-automated sender: the only mails that may ever be auto-recorded */ eligible: boolean }
@@ -269,7 +269,7 @@ function companyMentioned(text: string, company: string | null): boolean {
 function pick(level: ReplyMatch['confidence'], via: ReplyMatch['via'], hits: SentEmail[]): ReplyMatch | null {
   const ids = [...new Set(hits.map((h) => h.job_id))];
   if (ids.length === 1) return { job_id: ids[0], confidence: level, via };
-  if (ids.length > 1) return { job_id: null, confidence: 'none', via: 'ambiguous' };
+  if (ids.length > 1) return { job_id: null, confidence: 'none', via: 'ambiguous', candidates: ids };
   return null;
 }
 
