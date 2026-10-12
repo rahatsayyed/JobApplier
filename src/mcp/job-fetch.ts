@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { openDb, isSeen, saveJob } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { fetchAllJobs } from '../sources/index.js';
-import { boardStatusPayload, dropBoardDuplicates, type SeenRow } from '../sources/boards/index.js';
+import { boardStatusPayload, dropBoardDuplicatesDetailed, recordDroppedDuplicates, type SeenRow } from '../sources/boards/index.js';
 
 const db = openDb(dbPath());
 
@@ -43,7 +43,8 @@ server.registerTool(
     const recent = db
       .prepare("SELECT id, source, company_key, title_key FROM jobs WHERE created_at >= datetime('now', '-30 days') AND company_key IS NOT NULL AND title_key IS NOT NULL")
       .all() as SeenRow[];
-    const newJobs = dropBoardDuplicates(fresh, recent);
+    const { kept: newJobs, dropped } = dropBoardDuplicatesDetailed(fresh, recent);
+    recordDroppedDuplicates(dropped);
     if (newJobs.length < fresh.length) console.error(`[boards] dropped ${fresh.length - newJobs.length} board job(s) duplicating a recently seen posting`);
     for (const job of newJobs) {
       saveJob(db, job);

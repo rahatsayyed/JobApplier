@@ -30,8 +30,9 @@ three discovery tools and return the combined, unmodified list of Job objects.
    board_status>`; omit the line when both `stats` and `errors` are empty. Board jobs that
    duplicate a recent posting from another source are already dropped inside `list_new_jobs`;
    do not reconcile anything yourself.
-5. If any single tool call errors, log it and continue with the other two — return
-   `{"error": "<message>"}` only if ALL THREE calls fail. A failure in one discovery source
+5. If any single tool call errors, log it and continue with the others — return
+   `{"error": "<message>"}` only if all three required calls (`list_new_jobs`, `linkedin_jobs`,
+   `linkedin_posts`) fail; `board_status` is optional and never counts toward that. A failure in one discovery source
    should not block the others.
 
 Do not call any other tool. Do not attempt to match, score, contact, or draft anything — that is

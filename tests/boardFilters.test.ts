@@ -164,6 +164,21 @@ describe('loadPortals', () => {
     const f = path.join(dir, 'ok.json');
     writeFileSync(f, JSON.stringify({ tracked_companies: [{ name: 'A', ats: 'greenhouse', slug: 'a', enabled: true }, { name: 'B', ats: 'taleo', slug: 'b', enabled: true }], title_filter: { positive: ['react'], negative: [] }, location_filter: { allow: ['india'], global: [] } }));
     expect(loadPortals(f).config!.tracked_companies).toEqual([{ name: 'A', ats: 'greenhouse', slug: 'a', enabled: true }]);
+    expect(loadPortals(f).warnings).toEqual(['config/portals.json: tracked_companies[1] (B) skipped: unknown ats "taleo"']);
+  });
+  it('reports each dropped invalid slug as a warning', () => {
+    const f = path.join(dir, 'warn.json');
+    writeFileSync(f, JSON.stringify({ ...VALID, tracked_companies: [{ name: 'X', ats: 'lever', slug: '..', enabled: true }, { name: 'Y', ats: 'lever', slug: 'y', enabled: true }] }));
+    const r = loadPortals(f);
+    expect(r.warnings).toEqual(['config/portals.json: tracked_companies[0] (X) skipped: invalid slug']);
+    expect(r.config!.tracked_companies.map((c) => c.slug)).toEqual(['y']);
+  });
+  it('a run of unmatched "<" is linear', () => {
+    for (const s of ['<'.repeat(200000), '<!'.repeat(90000), '<a'.repeat(90000)]) {
+      const t0 = Date.now();
+      htmlToPlain(s);
+      expect(Date.now() - t0).toBeLessThan(1000);
+    }
   });
   it('drops entries with invalid slugs (path traversal, separators, overlong)', () => {
     const f = path.join(dir, 'slugs.json');

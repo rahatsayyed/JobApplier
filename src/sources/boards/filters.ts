@@ -120,14 +120,16 @@ function stripTags(h: string): string {
   const low = lowerAscii(h);
   let out = '';
   let gt = -2;
+  let noGt = false; // once no ">" exists after some position, none exists after any later one: cache that so unmatched "<" runs stay linear
   let i = 0;
   while (i < h.length) {
     const c = h[i];
     if (c !== '<') { out += c; i++; continue; }
     const n = h[i + 1] ?? '';
     if (!(isLetter(n) || n === '/' || n === '!' || n === '?')) { out += c; i++; continue; }
-    if (gt < i) { gt = h.indexOf('>', i); }
-    if (gt === -1 || gt - i > MAX_TAG_CHARS) { out += c; i++; continue; }
+    if (noGt) { out += c; i++; continue; }
+    if (gt < i) { gt = h.indexOf('>', i); if (gt === -1) { noGt = true; out += c; i++; continue; } }
+    if (gt - i > MAX_TAG_CHARS) { out += c; i++; continue; }
     const m = /^<(script|style)(?![a-z0-9])/.exec(low.slice(i, i + 10));
     if (m) {
       const close = low.indexOf(`</${m[1]}`, gt + 1);
@@ -155,7 +157,8 @@ const defaultPath = path.join(path.resolve(path.dirname(fileURLToPath(import.met
 const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 const DEFAULT_GLOBAL = ['remote', 'anywhere', 'worldwide', 'global'];
 
-export function loadPortals(file: string = defaultPath): { config: PortalsConfig | null; error: string | null } {
+/** `warnings` has one string per dropped invalid tracked_companies entry (present only when a config was parsed). */
+export function loadPortals(file: string = defaultPath): { config: PortalsConfig | null; error: string | null; warnings?: string[] } {
   if (!existsSync(file)) return { config: null, error: null };
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8'));
@@ -168,8 +171,15 @@ export function loadPortals(file: string = defaultPath): { config: PortalsConfig
     if (!isObj(raw.location_filter) || !Array.isArray(raw.location_filter.allow)) return bad('location_filter.allow must be an array');
     if (!strs(raw.location_filter.allow).some((x) => x.trim())) return bad('location_filter.allow must not be empty');
     if (raw.location_filter.global !== undefined && !Array.isArray(raw.location_filter.global)) return bad('location_filter.global must be an array');
+    const warnings: string[] = [];
     const tracked = (Array.isArray(raw?.tracked_companies) ? raw.tracked_companies : [])
-      .filter((c: any) => c && typeof c.name === 'string' && typeof c.slug === 'string' && isValidSlug(c.slug.trim()) && ['greenhouse', 'lever', 'ashby'].includes(c.ats))
+      .filter((c: any, i: number) => {
+        const label = `config/portals.json: tracked_companies[${i}]${c && typeof c.name === 'string' ? ` (${c.name.slice(0, 60)})` : ''} skipped`;
+        if (!c || typeof c.name !== 'string') { warnings.push(`${label}: missing name`); return false; }
+        if (!['greenhouse', 'lever', 'ashby'].includes(c.ats)) { warnings.push(`${label}: unknown ats ${JSON.stringify(c.ats)}`); return false; }
+        if (typeof c.slug !== 'string' || !isValidSlug(c.slug.trim())) { warnings.push(`${label}: invalid slug`); return false; }
+        return true;
+      })
       .map((c: any) => ({ name: c.name, ats: c.ats as Ats, slug: c.slug.trim(), enabled: c.enabled === true, ...(c.region === 'eu' ? { region: 'eu' as const } : {}) }));
     return {
       config: {
@@ -181,6 +191,7 @@ export function loadPortals(file: string = defaultPath): { config: PortalsConfig
         },
       },
       error: null,
+      warnings,
     };
   } catch (e: any) {
     return { config: null, error: `config/portals.json: ${e?.message ?? e}` };

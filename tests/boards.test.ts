@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { boardStatusPayload, dropBoardDuplicates, fetchBoards, getLastBoardsResult } from '../src/sources/boards/index.js';
+import { boardStatusPayload, dropBoardDuplicates, dropBoardDuplicatesDetailed, recordDroppedDuplicates, fetchBoards, getLastBoardsResult } from '../src/sources/boards/index.js';
 import { companyKey, titleIdentityKey } from '../src/reposts.js';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -158,6 +158,26 @@ describe('boardStatusPayload', () => {
   });
 });
 
+describe('board_status extras', () => {
+  it('missing config gives a note, invalid entries become errors, dropped duplicates are reported', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ jobs: [] }), { status: 200 })));
+    await fetchBoards({ configPath: path.join(tmpdir(), 'definitely-missing-portals.json') });
+    expect(boardStatusPayload()).toMatchObject({ ran: true, errors: [], note: 'config/portals.json not found' });
+    await fetchBoards({ configPath: config([
+      { name: 'Bad', ats: 'taleo', slug: 'x', enabled: true },
+      { name: 'Slug', ats: 'greenhouse', slug: '..', enabled: true },
+      { name: 'A', ats: 'greenhouse', slug: 'a', enabled: true },
+    ]) });
+    const p = boardStatusPayload();
+    expect(p.errors).toHaveLength(2);
+    expect(p.errors[0]).toMatch(/unknown ats/);
+    expect(p.errors[1]).toMatch(/invalid slug/);
+    expect(p.stats.map((s) => s.company)).toEqual(['A']);
+    recordDroppedDuplicates([{ id: 'gh:a:1', source: 'greenhouse', title: 't', company: 'c', url: 'u', apply_url: 'u', description: '' }]);
+    expect(boardStatusPayload()).toMatchObject({ dropped_duplicates: { count: 1, ids: ['gh:a:1'] } });
+  });
+});
+
 describe('dropBoardDuplicates', () => {
   const job = (id: string, source: string, company: string, title: string) => ({ id, source, company, title, url: `https://x.test/${id}`, apply_url: `https://x.test/${id}`, description: '' });
   const recent = [{ id: 'li:1', source: 'linkedin', company_key: companyKey('Acme'), title_key: titleIdentityKey('Frontend Engineer') }];
@@ -167,10 +187,23 @@ describe('dropBoardDuplicates', () => {
       job('gh:acme:2', 'greenhouse', 'Acme', 'Backend Engineer'),        // an adzuna job in this batch has the same key -> dropped
       job('adzuna:9', 'adzuna', 'Acme Inc.', 'Backend Engineer'),        // non-board, kept
       job('gh:acme:3', 'greenhouse', 'Acme', 'Data Engineer'),           // first of its key -> kept
-      job('gh:acme:4', 'greenhouse', 'Acme', 'Engineer, Data'),          // same key as gh:acme:3 -> dropped
+      job('gh:acme:4', 'greenhouse', 'Acme', 'Engineer, Data'),          // same board, same key, different id (another city) -> kept
       job('li:2', 'linkedin', 'Acme', 'Frontend Engineer'),              // non-board duplicate of a recent row, kept (not our job to drop)
     ];
-    expect(dropBoardDuplicates(jobs, recent).map((j) => j.id)).toEqual(['adzuna:9', 'gh:acme:3', 'li:2']);
+    expect(dropBoardDuplicates(jobs, recent).map((j) => j.id)).toEqual(['adzuna:9', 'gh:acme:3', 'gh:acme:4', 'li:2']);
+  });
+  it('keeps same-board same-title postings with different ids, but drops a different board or a recent row from another source', () => {
+    const same = [job('gh:acme:1', 'greenhouse', 'Acme', 'Data Engineer'), job('gh:acme:2', 'greenhouse', 'Acme', 'Data Engineer')];
+    expect(dropBoardDuplicates(same, []).map((j) => j.id)).toEqual(['gh:acme:1', 'gh:acme:2']);
+    // same board already in the db recently: still fine
+    expect(dropBoardDuplicates(same, [{ id: 'gh:acme:0', source: 'greenhouse', company_key: companyKey('Acme'), title_key: titleIdentityKey('Data Engineer') }]).map((j) => j.id)).toEqual(['gh:acme:1', 'gh:acme:2']);
+    // different slug, same key: the later one drops
+    const diff = [job('gh:acme:1', 'greenhouse', 'Acme', 'Data Engineer'), job('lever:acme-eu:9', 'lever', 'Acme', 'Data Engineer')];
+    const r = dropBoardDuplicatesDetailed(diff, []);
+    expect(r.kept.map((j) => j.id)).toEqual(['gh:acme:1']);
+    expect(r.dropped.map((j) => j.id)).toEqual(['lever:acme-eu:9']);
+    // a linkedin row with the same key drops the board job
+    expect(dropBoardDuplicates(same, [{ id: 'li:5', source: 'linkedin', company_key: companyKey('Acme'), title_key: titleIdentityKey('Data Engineer') }])).toEqual([]);
   });
   it('keeps board jobs when the keys are empty or nothing matches', () => {
     expect(dropBoardDuplicates([job('gh:z:1', 'greenhouse', '', 'Frontend Engineer')], recent).map((j) => j.id)).toEqual(['gh:z:1']);

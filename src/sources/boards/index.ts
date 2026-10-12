@@ -33,21 +33,29 @@ export interface FetchBoardsOptions {
 }
 
 let last: (BoardsResult & { at: string }) | null = null;
+let lastNote: string | undefined;
+let droppedDuplicates: { count: number; ids: string[] } | undefined;
 /** The most recent fetchBoards() result in this process (read by the job-fetch `board_status` tool). */
 export function getLastBoardsResult(): (BoardsResult & { at: string }) | null { return last; }
 
 /** Payload of the read-only job-fetch `board_status` tool: the last result, or ran:false. Never triggers a fetch. */
 export function boardStatusPayload(r: (BoardsResult & { at: string }) | null = last) {
   if (!r) return { ran: false as const, errors: [] as string[], stats: [] as BoardsResult['stats'], note: 'no board fetch has run in this session' };
-  return { ran: true as const, at: r.at, errors: r.errors, stats: r.stats };
+  return {
+    ran: true as const, at: r.at, errors: r.errors, stats: r.stats,
+    ...(lastNote ? { note: lastNote } : {}),
+    ...(droppedDuplicates ? { dropped_duplicates: droppedDuplicates } : {}),
+  };
 }
 
 type Slot = { c: TrackedCompany; jobs?: BoardJob[]; error?: string };
 
 async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
-  const { config, error } = loadPortals(opts.configPath);
+  lastNote = undefined;
+  droppedDuplicates = undefined;
+  const { config, error, warnings } = loadPortals(opts.configPath);
   if (error) return { jobs: [], errors: [error], stats: [] };
-  if (!config) return { jobs: [], errors: [], stats: [] };
+  if (!config) { lastNote = 'config/portals.json not found'; return { jobs: [], errors: [], stats: [] }; }
   const companies = config.tracked_companies.filter((c) => c.enabled);
   const max = opts.maxPerCompany ?? DEFAULT_MAX_PER_COMPANY;
   const boardTimeout = opts.boardTimeoutMs ?? DEFAULT_BOARD_TIMEOUT_MS;
@@ -78,7 +86,7 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
   const n = Math.max(1, Math.min(Math.floor(opts.concurrency ?? MAX_CONCURRENCY) || 1, MAX_CONCURRENCY, companies.length));
   await Promise.all(Array.from({ length: companies.length ? n : 0 }, worker));
 
-  const out: BoardsResult = { jobs: [], errors: [], stats: [] };
+  const out: BoardsResult = { jobs: [], errors: [...(warnings ?? [])], stats: [] };
   const seen = new Set<string>();
   for (const s of slots) {
     if (s.error) { out.errors.push(s.error); continue; }
@@ -106,23 +114,43 @@ export async function fetchBoards(opts: FetchBoardsOptions = {}): Promise<Boards
 
 export interface SeenRow { id: string; source: string | null; company_key: string | null; title_key: string | null }
 
+// "gh:acme:123" -> "gh:acme" (vendor + slug, one company board); any non-board source is its own "*" group.
+const boardGroup = (id: string, source: string | null | undefined): string =>
+  source && BOARD_SOURCES.has(source) ? id.slice(0, Math.max(0, id.lastIndexOf(':'))) || source : '*';
+
 /**
- * Cross-source dedupe: the same posting often arrives via LinkedIn/Adzuna AND a company board under different ids.
- * Drop a board-source job whose normalized company+title (Plan 2's companyKey/titleIdentityKey) already appears in
- * `recent` (rows saved lately, any source) or in a non-board job of this batch, and collapse duplicates among board jobs.
+ * Cross-source dedupe: the same posting often arrives via LinkedIn or Adzuna AND a company board under different ids.
+ * A board job is dropped when its normalized company+title (Plan 2's companyKey/titleIdentityKey) already exists from a
+ * DIFFERENT source or a different board (vendor+slug): in `recent` (rows saved lately) or elsewhere in this batch.
+ * Two postings from the SAME board with the same title and different ids (one role in two cities) are both kept.
  * Non-board jobs are never dropped.
  */
-export function dropBoardDuplicates(jobs: Job[], recent: SeenRow[]): Job[] {
+export function dropBoardDuplicatesDetailed(jobs: Job[], recent: SeenRow[]): { kept: Job[]; dropped: Job[] } {
   const keyOf = (j: Job) => { const c = companyKey(j.company); const t = titleIdentityKey(j.title); return c && t ? `${c}|${t}` : ''; };
-  const seen = new Set<string>();
-  for (const r of recent) if (r.company_key && r.title_key) seen.add(`${r.company_key}|${r.title_key}`);
-  for (const j of jobs) if (!BOARD_SOURCES.has(j.source)) { const k = keyOf(j); if (k) seen.add(k); }
-  return jobs.filter((j) => {
-    if (!BOARD_SOURCES.has(j.source)) return true;
+  const groups = new Map<string, Set<string>>();
+  const note = (k: string, g: string) => { let set = groups.get(k); if (!set) groups.set(k, (set = new Set())); set.add(g); };
+  for (const r of recent) if (r.company_key && r.title_key) note(`${r.company_key}|${r.title_key}`, boardGroup(r.id, r.source));
+  for (const j of jobs) if (!BOARD_SOURCES.has(j.source)) { const k = keyOf(j); if (k) note(k, '*'); }
+  const kept: Job[] = [];
+  const dropped: Job[] = [];
+  for (const j of jobs) {
+    if (!BOARD_SOURCES.has(j.source)) { kept.push(j); continue; }
     const k = keyOf(j);
-    if (!k) return true;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+    if (!k) { kept.push(j); continue; }
+    const g = boardGroup(j.id, j.source);
+    const others = [...(groups.get(k) ?? [])].some((x) => x !== g);
+    if (others) { dropped.push(j); continue; }
+    note(k, g);
+    kept.push(j);
+  }
+  return { kept, dropped };
+}
+
+export function dropBoardDuplicates(jobs: Job[], recent: SeenRow[]): Job[] {
+  return dropBoardDuplicatesDetailed(jobs, recent).kept;
+}
+
+/** Called by list_new_jobs after the dedupe so board_status can report what was dropped (count and the first 20 ids). */
+export function recordDroppedDuplicates(dropped: Job[]): void {
+  droppedDuplicates = { count: dropped.length, ids: dropped.slice(0, 20).map((j) => j.id) };
 }
