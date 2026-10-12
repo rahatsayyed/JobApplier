@@ -139,6 +139,17 @@ export function openDb(path: string = dbPath()): BetterSqlite3.Database {
 
     CREATE INDEX IF NOT EXISTS idx_job_outcomes_job ON job_outcomes(job_id);
 
+    CREATE TABLE IF NOT EXISTS processed_messages (
+      message_id TEXT PRIMARY KEY,
+      job_id TEXT,
+      classification TEXT,
+      action TEXT,
+      proposed_outcome TEXT,
+      from_addr TEXT,
+      subject TEXT,
+      reply_date TEXT,
+      processed_at TEXT DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS job_exclusion_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id TEXT NOT NULL,
@@ -195,7 +206,7 @@ export function openDb(path: string = dbPath()): BetterSqlite3.Database {
 export function recordEmailSent(db: BetterSqlite3.Database, queueId: number, messageId: string | null): number {
   const r = db.prepare('SELECT job_id, email_to FROM outreach_queue WHERE id = ?').get(queueId) as { job_id: string; email_to: string | null } | undefined;
   if (!r) return 0;
-  return db.prepare(`UPDATE outreach_queue SET email_status = 'sent', email_sent_at = datetime('now'), email_message_id = ?, updated_at = datetime('now')
+  return db.prepare(`UPDATE outreach_queue SET email_status = 'sent', email_sent_at = coalesce(email_sent_at, datetime('now')), email_message_id = ?, updated_at = datetime('now')
     WHERE id = ? OR (job_id = ? AND email_to IS ? AND coalesce(email_status, '') != 'sent')`).run(messageId, queueId, r.job_id, r.email_to).changes;
 }
 

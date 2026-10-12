@@ -39,7 +39,34 @@ describe('sent email bookkeeping', () => {
   });
 });
 
+describe('recordEmailSent is idempotent on the send time', () => {
+  it('re-recording an already-sent row keeps the original email_sent_at (a follow-up clock must never be pushed later)', () => {
+    const db = openDb(':memory:');
+    const a = enqueueOutreach(db, row('j9', null));
+    recordEmailSent(db, a, 'm9');
+    db.prepare("UPDATE outreach_queue SET email_sent_at = '2026-09-02 08:30:00' WHERE id = ?").run(a);
+    recordEmailSent(db, a, 'm9');
+    expect((db.prepare('SELECT email_sent_at FROM outreach_queue WHERE id = ?').get(a) as any).email_sent_at).toBe('2026-09-02 08:30:00');
+  });
+});
+
 describe('email_sent_at migration and backfill', () => {
+  it('the backfill never overwrites an existing email_sent_at', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ja-nooverwrite-'));
+    const file = path.join(dir, 'old.sqlite');
+    const old = new BetterSqlite3(file);
+    old.exec(`CREATE TABLE outreach_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, email_to TEXT, email_status TEXT, email_sent_at TEXT,
+      status TEXT DEFAULT 'queued', created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));
+      INSERT INTO outreach_queue (job_id, email_to, email_status, email_sent_at, updated_at) VALUES ('j1', 'hr@acme.dev', 'sent', '2026-09-01 07:00:00', '2026-09-05 09:00:00');`);
+    old.close();
+    try {
+      const db = openDb(file);
+      expect(db.prepare("SELECT email_sent_at FROM outreach_queue WHERE job_id = 'j1'").get()).toEqual({ email_sent_at: '2026-09-01 07:00:00' });
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('a legacy outreach_queue with neither email_status nor updated_at still opens (the backfill is guarded; same shape as tests/queueQuality.test.ts)', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'ja-legacy-'));
     const file = path.join(dir, 'legacy.sqlite');

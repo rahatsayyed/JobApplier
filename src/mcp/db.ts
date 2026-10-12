@@ -1,9 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordEmailSent, recordOutcomeChecked, setEmailThread, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listSentEmails, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordEmailSent, recordOutcomeChecked, setEmailThread, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
+import { buildReplyQuery } from '../replies.js';
+import { resolveReplyProposals, triageReplies } from '../replyTriage.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 
@@ -357,6 +359,44 @@ server.registerTool(
     inputSchema: { message_id: z.string(), thread_id: z.string() },
   },
   async ({ message_id, thread_id }) => ({ content: [{ type: 'text', text: JSON.stringify({ updated: setEmailThread(db, message_id, thread_id) }) }] })
+);
+
+server.registerTool(
+  'list_sent_emails',
+  {
+    description: 'For reply detection: one row per job whose cold email was sent (no bodies), the message ids that still lack a Gmail thread id (call gmail.read_email on each, then db.set_email_thread), and the Gmail search query to find replies.',
+    inputSchema: { since_days: z.number().int().min(1).max(365).optional() },
+  },
+  async ({ since_days }) => {
+    const sent = listSentEmails(db, since_days ?? 120);
+    const missing_thread = sent.filter((s) => s.message_id && !s.thread_id).map((s) => s.message_id as string);
+    const slim = sent.map(({ body: _body, ...rest }) => rest);
+    return { content: [{ type: 'text', text: JSON.stringify({ sent: slim, missing_thread, query: buildReplyQuery(sent, 60) }) }] };
+  }
+);
+
+server.registerTool(
+  'triage_replies',
+  {
+    description: 'Classify and match Gmail messages (already read with gmail.read_email) to sent cold emails. Auto-record is OFF by default (config/replies.json auto_record_enabled): by default every outcome is only PROPOSED and this tool never writes an outcome. When the user has enabled it, auto-records ONLY a high-confidence thread/sender match classified interview or rejected on a strong phrase from no/replied outcome (never over an existing interview/rejected/offer); proposes replied, offers, weaker matches and anything that would not raise the outcome for Telegram approval; reports bounces (never an outcome) and unmatched replies; ignores noise and out-of-office/auto-acknowledgements; records every message id (with the reply date) so none is triaged twice. dry_run: true classifies and matches but writes NOTHING (use it for checks against the real database).',
+    inputSchema: {
+      messages: z.array(z.object({
+        message_id: z.string(), thread_id: z.string().nullable().optional(), from: z.string(),
+        subject: z.string(), date: z.string().nullable().optional(), body: z.string(),
+      })),
+      dry_run: z.boolean().optional(),
+    },
+  },
+  async ({ messages, dry_run }) => ({ content: [{ type: 'text', text: JSON.stringify(triageReplies(db, messages, { dry_run: dry_run === true })) }] })
+);
+
+server.registerTool(
+  'resolve_reply_proposals',
+  {
+    description: 'The explicit call that records an outcome: apply the user\'s Telegram decision on proposed reply outcomes (approve -> db outcome recorded; reject -> marked skipped). Never call it without the user\'s decision.',
+    inputSchema: { decisions: z.array(z.object({ message_id: z.string(), approve: z.boolean() })) },
+  },
+  async ({ decisions }) => ({ content: [{ type: 'text', text: JSON.stringify(resolveReplyProposals(db, decisions)) }] })
 );
 
 async function main() {
