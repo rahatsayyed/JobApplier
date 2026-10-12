@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { buildReplyQuery, classifyReply, decideReply, domainOf, emailAddress, matchReply, stripQuoted, type ReplyClass } from '../src/replies.js';
 import type { SentEmail } from '../src/db.js';
 
+const ON = { auto_record_enabled: true };
+const OFF = { auto_record_enabled: false };
+
 const sent = (over: Partial<SentEmail>): SentEmail => ({ job_id: 'j1', company: 'Acme Labs Pvt Ltd', title: 'Frontend Developer', email_to: 'hr@acme.dev', subject: 'Frontend role', body: 'Hi', message_id: 'm1', thread_id: 't1', sent_at: '2026-09-01 10:00:00', ...over });
 const S = [sent({}), sent({ job_id: 'j2', company: 'Globex', email_to: 'jobs@globex.io', message_id: 'm2', thread_id: 't2', sent_at: '2026-09-02 10:00:00' })];
 
@@ -141,28 +144,40 @@ describe('matchReply', () => {
 
 describe('decideReply', () => {
   const high = { job_id: 'j1', confidence: 'high' as const, via: 'thread' as const };
-  it('auto-records only interview/rejected on a high-confidence match', () => {
-    expect(decideReply('interview', high)).toEqual({ action: 'auto_record', outcome: 'interview', reason: 'interview reply via thread' });
-    expect(decideReply('rejected', high).action).toBe('auto_record');
+  it('with auto-record ENABLED auto-records only interview/rejected on a high-confidence match', () => {
+    expect(decideReply('interview', high, null, ON)).toEqual({ action: 'auto_record', outcome: 'interview', reason: 'interview reply via thread' });
+    expect(decideReply('rejected', high, null, ON).action).toBe('auto_record');
+    expect(decideReply('rejected', high, 'no_response', ON).action).toBe('auto_record');
   });
-  it('proposes replied and offers (never auto-records them), and weaker matches', () => {
-    expect(decideReply('replied', high)).toEqual({ action: 'propose', outcome: 'replied', reason: 'a plain reply is proposed, never auto-recorded' });
-    expect(decideReply('offer', high)).toEqual({ action: 'propose', outcome: 'offer', reason: 'offers always need approval' });
-    expect(decideReply('rejected', { job_id: 'j1', confidence: 'medium', via: 'domain' })).toEqual({ action: 'propose', outcome: 'rejected', reason: 'medium-confidence match via domain' });
+  it('auto-record is OFF by default: the same decisions become proposals, bounce stays report, ignore classes stay ignore', () => {
+    expect(decideReply('interview', high, null, OFF)).toEqual({ action: 'propose', outcome: 'interview', reason: 'auto-record is off (config/replies.json auto_record_enabled)' });
+    expect(decideReply('rejected', high, null, OFF).action).toBe('propose');
+    expect(decideReply('bounce', high, null, OFF).action).toBe('report');
+    for (const c of ['noise', 'auto_ack', 'unknown'] as const) expect(decideReply(c, high, null, OFF).action).toBe('ignore');
+    expect(decideReply('interview', high).action).toBe('propose'); // no config argument: the repository config ships disabled
   });
-  it('never downgrades: auto-records only if the class outranks the latest outcome', () => {
-    expect(decideReply('interview', high, 'interview').action).toBe('propose');
-    expect(decideReply('interview', high, 'rejected').action).toBe('propose');
-    expect(decideReply('interview', high, 'replied').action).toBe('auto_record');
-    expect(decideReply('rejected', high, 'interview').action).toBe('auto_record');
-    expect(decideReply('rejected', high, 'offer').action).toBe('propose');
+  it('proposes replied and offers (never auto-records them), weaker matches and non-eligible (weak-phrase) signals', () => {
+    expect(decideReply('replied', high, null, ON)).toEqual({ action: 'propose', outcome: 'replied', reason: 'a plain reply is proposed, never auto-recorded' });
+    expect(decideReply('offer', high, null, ON)).toEqual({ action: 'propose', outcome: 'offer', reason: 'offers always need approval' });
+    expect(decideReply('rejected', { job_id: 'j1', confidence: 'medium', via: 'domain' }, null, ON)).toEqual({ action: 'propose', outcome: 'rejected', reason: 'medium-confidence match via domain' });
+    expect(decideReply('rejected', high, null, ON, false)).toEqual({ action: 'propose', outcome: 'rejected', reason: 'signal is not strong enough to auto-record' });
+  });
+  it('ladder: auto-records only from nothing/no_response/replied, never rejected over interview or interview over rejected', () => {
+    expect(decideReply('interview', high, 'interview', ON).action).toBe('propose');
+    expect(decideReply('interview', high, 'rejected', ON).action).toBe('propose');
+    expect(decideReply('interview', high, 'replied', ON).action).toBe('auto_record');
+    expect(decideReply('rejected', high, 'replied', ON).action).toBe('auto_record');
+    expect(decideReply('rejected', high, 'interview', ON).action).toBe('propose');
+    expect(decideReply('rejected', high, 'rejected', ON).action).toBe('propose');
+    expect(decideReply('rejected', high, 'offer', ON).action).toBe('propose');
+    expect(decideReply('interview', high, 'hired', ON).action).toBe('propose');
   });
   it('reports bounces, ignores noise/auto-acks and unmatched mail', () => {
-    expect(decideReply('bounce', high)).toEqual({ action: 'report', outcome: null, reason: 'bounce for job j1 via thread' });
-    expect(decideReply('bounce', { job_id: null, confidence: 'none', via: 'none' }).action).toBe('report');
-    expect(decideReply('auto_ack', high).action).toBe('ignore');
-    expect(decideReply('noise', high).action).toBe('ignore');
-    expect(decideReply('replied', { job_id: null, confidence: 'none', via: 'ambiguous' })).toEqual({ action: 'ignore', outcome: null, reason: 'unmatched (ambiguous)' });
+    expect(decideReply('bounce', high, null, ON)).toEqual({ action: 'report', outcome: null, reason: 'bounce for job j1 via thread' });
+    expect(decideReply('bounce', { job_id: null, confidence: 'none', via: 'none' }, null, ON).action).toBe('report');
+    expect(decideReply('auto_ack', high, null, ON).action).toBe('ignore');
+    expect(decideReply('noise', high, null, ON).action).toBe('ignore');
+    expect(decideReply('replied', { job_id: null, confidence: 'none', via: 'ambiguous' }, null, ON)).toEqual({ action: 'ignore', outcome: null, reason: 'unmatched (ambiguous)' });
   });
 });
 
