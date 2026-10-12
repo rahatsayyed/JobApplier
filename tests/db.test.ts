@@ -88,6 +88,8 @@ describe('db', () => {
 });
 
 describe('outreach_queue', () => {
+  // Changed deliberately (final review M6): listQueuedOutreach now skips queued rows whose job has no jobs row, so tests seed the jobs.
+  const seedJobs = (db: ReturnType<typeof openDb>, ...ids: string[]) => ids.forEach((id) => saveJob(db, { id, source: 'remotive', title: 'Dev', company: 'Co', url: `https://example.test/${id}`, apply_url: null, description: 'd', posted_at: null } as any));
   it('enqueues an item and returns its new row id', () => {
     const db = openDb(':memory:');
     const id = enqueueOutreach(db, {
@@ -109,6 +111,7 @@ describe('outreach_queue', () => {
 
   it('lists only queued rows, ordered by created_at', () => {
     const db = openDb(':memory:');
+    seedJobs(db, 'job-a', 'job-b');
     const id1 = enqueueOutreach(db, {
       job_id: 'job-a', resume_pdf_path: null, email_subject: null, email_body: null,
       email_to: null, connect_note: 'note a', connect_profile_url: 'https://linkedin.com/in/a',
@@ -131,6 +134,7 @@ describe('outreach_queue', () => {
 
   it('updates a single field without touching others', () => {
     const db = openDb(':memory:');
+    seedJobs(db, 'job-c');
     const id = enqueueOutreach(db, {
       job_id: 'job-c', resume_pdf_path: null, email_subject: 'Subj', email_body: 'Body',
       email_to: 'x@y.com', connect_note: null, connect_profile_url: null,
@@ -147,6 +151,7 @@ describe('outreach_queue', () => {
 
   it('a row with both a recruiter and peer connect target is two separate rows sharing job_id', () => {
     const db = openDb(':memory:');
+    seedJobs(db, 'job-d');
     enqueueOutreach(db, {
       job_id: 'job-d', resume_pdf_path: '/tmp/r.pdf', email_subject: 'S', email_body: 'B',
       email_to: 'z@y.com', connect_note: 'recruiter note', connect_profile_url: 'https://linkedin.com/in/recruiter',
@@ -176,15 +181,19 @@ describe('outreach_queue', () => {
     });
     const exId = row('ex-1');
     row('ok-1');
-    row('no-job-row'); // no jobs row at all: still listed (legacy behaviour)
+    const orphanId = row('no-job-row'); // no jobs row at all: skipped and reported as "unknown job" (final review M6; was listed before)
     db.prepare("UPDATE jobs SET excluded_reason = 'deadline passed: 2026-01-01' WHERE id = 'ex-1'").run();
 
-    expect(listQueuedOutreach(db).map((r) => r.job_id).sort()).toEqual(['no-job-row', 'ok-1']);
-    expect(listExcludedQueuedOutreach(db)).toEqual([{ id: exId, job_id: 'ex-1', reason: 'deadline passed: 2026-01-01' }]);
+    expect(listQueuedOutreach(db).map((r) => r.job_id).sort()).toEqual(['ok-1']);
+    expect(listExcludedQueuedOutreach(db)).toEqual([
+      { id: exId, job_id: 'ex-1', reason: 'deadline passed: 2026-01-01' },
+      { id: orphanId, job_id: 'no-job-row', reason: 'unknown job' },
+    ]);
   });
 
   it('listQueuedOutreach omits resume_json but keeps every other column', () => {
     const db = openDb(':memory:');
+    seedJobs(db, 'job-e');
     enqueueOutreach(db, {
       job_id: 'job-e', resume_pdf_path: '/tmp/e.pdf', email_subject: 'S', email_body: 'B',
       email_to: 'e@y.com', connect_note: 'note', connect_profile_url: 'https://linkedin.com/in/e',
