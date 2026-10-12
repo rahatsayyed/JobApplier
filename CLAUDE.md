@@ -111,6 +111,7 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
 | `/apply #N` or "apply to job #N" | Apply to one matched job (see "Applying" below). Vetoed jobs (non-null `excluded_reason`, visible via `db.list_jobs`) are skipped; the apply tools enforce this by refusing with `manual_review`. |
 | `/applyall` | Apply to all of today's matched jobs (see "Applying" below). Vetoed jobs (non-null `excluded_reason`, visible via `db.list_jobs`; pass `exclude_vetoed: true` to hide them) are skipped; the apply tools enforce this by refusing with `manual_review`. |
 | `/connect` | Draft and send a LinkedIn connection request for a matched job (see "Connecting" below). |
+| `/include #N` | Manual override of a veto: call `db.unexclude({job_id})`, then confirm to Telegram with the previous exclusion reason (or the error row for an unknown or not-excluded job). An un-excluded job is a manual override: the hunt only scores unseen jobs, so it will not be re-vetoed automatically; the previous reason is kept in `job_exclusion_log`. |
 | `/outcome <job_id> <outcome> [note]` | Record what happened to a job (`replied`, `interview`, `offer`, `hired`, `rejected`, `no_response`) via `db.record_outcome`. Confirm to Telegram. |
 | `/calibrate` | Call `db.calibration`; format the score bands + verdict concisely for Telegram (do match scores predict interviews?). |
 | `/checkreplies` | Phase 3 — not built yet. Reply with link to Phase 3 plan. |
@@ -125,6 +126,7 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
    followups - Send follow-up nudges (Phase 1.5)
    apply - Apply to a job (Easy Apply or external ATS)
    connect - Draft + send a LinkedIn connect request
+   include - Un-exclude a vetoed job (manual override)
    outcome - Record a job outcome (replied/interview/offer/rejected...)
    calibrate - Check whether match scores predict interviews
    checkreplies - Check replies (Phase 3 — not yet)

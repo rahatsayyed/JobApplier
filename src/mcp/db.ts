@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, updateOutreachStatus } from '../db.js';
+import { atsCoverageSchema, enqueueOutreach, getCalibrationRows, listJobs, listQueuedOutreach, listExcludedQueuedOutreach, markExcluded, openDb, recordOutcomeChecked, sweepDeadlines, unexcludeJob, updateOutreachStatus } from '../db.js';
 import { handleSaveMatchResults, matchResultsInputShape } from '../matchTool.js';
 import { calibrate } from '../calibrate.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
@@ -238,6 +238,17 @@ server.registerTool(
   },
   async ({ exclusions }) => {
     return { content: [{ type: 'text', text: JSON.stringify(markExcluded(db, exclusions)) }] };
+  }
+);
+
+server.registerTool(
+  'unexclude',
+  {
+    description: 'Manual override (/include #N): clear jobs.excluded_reason for one job so /apply and the sender no longer skip it. The previous reason is recorded in job_exclusion_log and returned as `previous_reason`. Returns an error row ({ok: false, error}) for an unknown job or a job that is not excluded. An un-excluded job is not re-vetoed automatically: the hunt only scores unseen jobs.',
+    inputSchema: { job_id: z.string() },
+  },
+  async ({ job_id }) => {
+    return { content: [{ type: 'text', text: JSON.stringify(unexcludeJob(db, job_id)) }] };
   }
 );
 

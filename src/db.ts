@@ -134,6 +134,13 @@ export function openDb(path: string = 'data.sqlite'): BetterSqlite3.Database {
     );
 
     CREATE INDEX IF NOT EXISTS idx_job_outcomes_job ON job_outcomes(job_id);
+
+    CREATE TABLE IF NOT EXISTS job_exclusion_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      previous_reason TEXT,
+      cleared_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration: older databases created before `method`/`account` existed on
@@ -271,6 +278,22 @@ export function saveMatchResult(db: BetterSqlite3.Database, r: MatchResultInput)
 // Returns false when the job_id does not exist.
 export function setJobExcluded(db: BetterSqlite3.Database, jobId: string, reason: string): boolean {
   return db.prepare('UPDATE jobs SET excluded_reason = ? WHERE id = ?').run(reason, jobId).changes > 0;
+}
+
+/** Manual override (/include #N): clears excluded_reason and logs the previous reason in job_exclusion_log.
+ *  An un-excluded job is not re-vetoed automatically (the hunt only scores unseen jobs). */
+export function unexcludeJob(
+  db: BetterSqlite3.Database,
+  jobId: string,
+): { ok: true; job_id: string; previous_reason: string } | { ok: false; job_id: string; error: string } {
+  return db.transaction(() => {
+    const row = db.prepare('SELECT excluded_reason FROM jobs WHERE id = ?').get(jobId) as { excluded_reason: string | null } | undefined;
+    if (!row) return { ok: false as const, job_id: jobId, error: 'unknown job_id' };
+    if (row.excluded_reason == null) return { ok: false as const, job_id: jobId, error: 'job is not excluded' };
+    db.prepare('INSERT INTO job_exclusion_log (job_id, previous_reason) VALUES (?, ?)').run(jobId, row.excluded_reason);
+    db.prepare('UPDATE jobs SET excluded_reason = NULL WHERE id = ?').run(jobId);
+    return { ok: true as const, job_id: jobId, previous_reason: row.excluded_reason };
+  })();
 }
 
 // Returns the veto reason for a job, or null when the job is unknown or not vetoed.
