@@ -120,10 +120,27 @@ function classify(clauses: Clause[], c: number, pos: number): 'requirement' | 'p
   return cue.hasPref && !cue.hasReq ? 'preferred' : 'requirement';
 }
 
-/** HTML is stripped first; only language names with language-context wording next to them count. */
+// A line that is only one of these marks the lines after it as preferred ("Added bonus" followed by a list).
+const PREF_HEADING_RE = /^(?:added\s+)?(?:bonus(?:\s+points)?|nice[\s-]to[\s-]haves?|preferred|plus(?:es)?)\s*:?$/i;
+// Where a bonus block stops: a blank line, a line ending in ":" or "?" (short), or a plain known section name.
+const SECTION_HEADING_RE = /^(?:requirements?|responsibilities|qualifications|benefits|perks|skills|experience|the role|about\b.*|what (?:you|we)\b.*|who (?:you|we)\b.*|must[\s-]haves?|key (?:skills|responsibilities)|how to apply|compensation|salary|why\b.*)\s*:?$/i;
+const isSectionHeading = (line: string) => SECTION_HEADING_RE.test(line) || (/[:?]$/.test(line) && line.split(/\s+/).length <= 8);
+
+/** HTML is stripped first; only language names with language-context wording next to them count.
+ *  Everything under a bare "Added bonus" / "Bonus" / "Nice to have" / "Preferred" / "Plus" heading is preferred,
+ *  until the next heading or blank line. */
 export function detectLanguageRequirements(jd: string): LanguageRequirement[] {
   const out: LanguageRequirement[] = [];
-  for (const raw of sentences(htmlToLines(jd))) {
+  let bonusBlock = false;
+  const items: { raw: string; bonus: boolean }[] = [];
+  for (const line of String(htmlToLines(jd)).split('\n')) {
+    const t = line.replace(/\s+/g, ' ').trim();
+    if (!t) { bonusBlock = false; continue; }
+    if (PREF_HEADING_RE.test(t)) { bonusBlock = true; continue; }
+    if (isSectionHeading(t)) bonusBlock = false;
+    for (const raw of sentences(t)) items.push({ raw, bonus: bonusBlock });
+  }
+  for (const { raw, bonus } of items) {
     const s = fold(raw).replace(/n['’]t\b/gi, ' not');
     const clauses = splitClauses(s);
     const flat: { tok: string; c: number; pos: number }[] = [];
@@ -140,7 +157,7 @@ export function detectLanguageRequirements(jd: string): LanguageRequirement[] {
     if (!found.size) continue;
     const quote = raw.length > MAX_QUOTE ? `${raw.slice(0, MAX_QUOTE - 3)}...` : raw;
     const level = levelOf(s);
-    for (const [language, preferred] of found) out.push({ language, level, preferred, quote });
+    for (const [language, preferred] of found) out.push({ language, level, preferred: preferred || bonus, quote });
   }
   return out;
 }
