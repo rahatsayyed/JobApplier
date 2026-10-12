@@ -68,8 +68,8 @@ function isBareGlobal(seg: string, globals: string[]): boolean {
   return rest.replace(/[^a-z0-9]+/g, '') === '';
 }
 
-export function locationAllowed(locations: string[], remote: boolean, f: { allow: string[]; global: string[] }): boolean {
-  let segs = (locations.length ? locations : ['']).flatMap((l) => fold(l).split(';')).map((s) => s.trim()).filter(Boolean);
+export function locationAllowed(locations: string[] | null | undefined, remote: boolean, f: { allow: string[]; global: string[] }): boolean {
+  let segs = (Array.isArray(locations) && locations.length ? locations : ['']).flatMap((l) => fold(l).split(';')).map((s) => s.trim()).filter(Boolean);
   if (!segs.length) segs = [''];
   for (const seg of segs) {
     if (EXCLUDER.test(seg)) continue;
@@ -95,13 +95,59 @@ function decodeOnce(s: string): string {
     return v === undefined ? m : v;
   });
 }
-const ESCAPED_TAG = /&lt;\/?[a-z](?:(?!&gt;)[\s\S])*&gt;/i;
+const MAX_HTML_CHARS = 200000;
+const MAX_TAG_CHARS = 2000;
+const lowerAscii = (x: string) => x.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+const isLetter = (c: string) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 
-/** Greenhouse `content` is escaped HTML: remove that escaping layer once, strip tags, then decode the text's entities once. */
+/** Linear check: is there an escaped tag ("&lt;" + letter or "/" ... "&gt;" within MAX_TAG_CHARS)? */
+function hasEscapedTag(h: string): boolean {
+  let gt = -2; // cached position of the next "&gt;" at or after the scan point
+  let i = h.indexOf('&lt;');
+  while (i !== -1) {
+    const c = h[i + 4] ?? '';
+    if (isLetter(c) || c === '/') {
+      if (gt < i) { gt = h.indexOf('&gt;', i); if (gt === -1) return false; }
+      if (gt - i <= MAX_TAG_CHARS) return true;
+    }
+    i = h.indexOf('&lt;', i + 4);
+  }
+  return false;
+}
+
+/** Single-pass tag stripper. A "<" opens a tag only before a letter, "/", "!" or "?" and a ">" within MAX_TAG_CHARS; script/style content is dropped. */
+function stripTags(h: string): string {
+  const low = lowerAscii(h);
+  let out = '';
+  let gt = -2;
+  let i = 0;
+  while (i < h.length) {
+    const c = h[i];
+    if (c !== '<') { out += c; i++; continue; }
+    const n = h[i + 1] ?? '';
+    if (!(isLetter(n) || n === '/' || n === '!' || n === '?')) { out += c; i++; continue; }
+    if (gt < i) { gt = h.indexOf('>', i); }
+    if (gt === -1 || gt - i > MAX_TAG_CHARS) { out += c; i++; continue; }
+    const m = /^<(script|style)(?![a-z0-9])/.exec(low.slice(i, i + 10));
+    if (m) {
+      const close = low.indexOf(`</${m[1]}`, gt + 1);
+      if (close === -1) { out += ' '; break; }
+      const end = low.indexOf('>', close);
+      out += ' ';
+      i = end === -1 ? h.length : end + 1;
+      continue;
+    }
+    out += ' ';
+    i = gt + 1;
+  }
+  return out;
+}
+
+/** Greenhouse `content` is escaped HTML: remove that escaping layer once, strip tags, then decode the text's entities once. Linear time. */
 export function htmlToPlain(s: string): string {
-  let html = String(s ?? '');
-  if (ESCAPED_TAG.test(html)) html = decodeOnce(html);
-  return decodeOnce(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  let html = String(s ?? '').slice(0, MAX_HTML_CHARS);
+  if (hasEscapedTag(html)) html = decodeOnce(html);
+  return decodeOnce(stripTags(html)).replace(/\s+/g, ' ').trim();
 }
 
 // ---- config ----
@@ -113,6 +159,15 @@ export function loadPortals(file: string = defaultPath): { config: PortalsConfig
   if (!existsSync(file)) return { config: null, error: null };
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8'));
+    const bad = (why: string) => ({ config: null, error: `config/portals.json: ${why}` });
+    const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+    if (!isObj(raw)) return bad('top level must be an object');
+    if (!Array.isArray(raw.tracked_companies)) return bad('tracked_companies must be an array');
+    if (!isObj(raw.title_filter) || !Array.isArray(raw.title_filter.positive) || !Array.isArray(raw.title_filter.negative)) return bad('title_filter.positive and title_filter.negative must be arrays');
+    if (!strs(raw.title_filter.positive).some((x) => x.trim())) return bad('title_filter.positive must not be empty');
+    if (!isObj(raw.location_filter) || !Array.isArray(raw.location_filter.allow)) return bad('location_filter.allow must be an array');
+    if (!strs(raw.location_filter.allow).some((x) => x.trim())) return bad('location_filter.allow must not be empty');
+    if (raw.location_filter.global !== undefined && !Array.isArray(raw.location_filter.global)) return bad('location_filter.global must be an array');
     const tracked = (Array.isArray(raw?.tracked_companies) ? raw.tracked_companies : [])
       .filter((c: any) => c && typeof c.name === 'string' && typeof c.slug === 'string' && isValidSlug(c.slug.trim()) && ['greenhouse', 'lever', 'ashby'].includes(c.ats))
       .map((c: any) => ({ name: c.name, ats: c.ats as Ats, slug: c.slug.trim(), enabled: c.enabled === true, ...(c.region === 'eu' ? { region: 'eu' as const } : {}) }));

@@ -154,6 +154,7 @@ describe('safeVendorUrl', () => {
 
 describe('loadPortals', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'portals-'));
+  const VALID = { tracked_companies: [], title_filter: { positive: ['react'], negative: [] }, location_filter: { allow: ['india'] } };
   it('missing file = no boards, no error', () => { expect(loadPortals(path.join(dir, 'none.json'))).toEqual({ config: null, error: null }); });
   it('malformed file = error', () => {
     const f = path.join(dir, 'bad.json'); writeFileSync(f, '{');
@@ -161,21 +162,74 @@ describe('loadPortals', () => {
   });
   it('rejects unknown ATS values and keeps valid entries', () => {
     const f = path.join(dir, 'ok.json');
-    writeFileSync(f, JSON.stringify({ tracked_companies: [{ name: 'A', ats: 'greenhouse', slug: 'a', enabled: true }, { name: 'B', ats: 'taleo', slug: 'b', enabled: true }], title_filter: { positive: [], negative: [] }, location_filter: { allow: [], global: [] } }));
+    writeFileSync(f, JSON.stringify({ tracked_companies: [{ name: 'A', ats: 'greenhouse', slug: 'a', enabled: true }, { name: 'B', ats: 'taleo', slug: 'b', enabled: true }], title_filter: { positive: ['react'], negative: [] }, location_filter: { allow: ['india'], global: [] } }));
     expect(loadPortals(f).config!.tracked_companies).toEqual([{ name: 'A', ats: 'greenhouse', slug: 'a', enabled: true }]);
   });
   it('drops entries with invalid slugs (path traversal, separators, overlong)', () => {
     const f = path.join(dir, 'slugs.json');
     const slugs = ['gitlab', '..', '.', 'a/b', '-x', 'a b', 'x'.repeat(101), 'a.b_c-d'];
-    writeFileSync(f, JSON.stringify({ tracked_companies: slugs.map((slug, i) => ({ name: `c${i}`, ats: 'greenhouse', slug, enabled: true })) }));
+    writeFileSync(f, JSON.stringify({ ...VALID, tracked_companies: slugs.map((slug, i) => ({ name: `c${i}`, ats: 'greenhouse', slug, enabled: true })) }));
     expect(loadPortals(f).config!.tracked_companies.map((c) => c.slug)).toEqual(['gitlab', 'a.b_c-d']);
   });
   it('defaults location_filter.global when absent', () => {
     const f = path.join(dir, 'noglobal.json');
-    writeFileSync(f, JSON.stringify({ tracked_companies: [], location_filter: { allow: ['india'] } }));
+    writeFileSync(f, JSON.stringify({ ...VALID, tracked_companies: [], location_filter: { allow: ['india'] } }));
     expect(loadPortals(f).config!.location_filter.global).toEqual(['remote', 'anywhere', 'worldwide', 'global']);
   });
   it('the shipped config parses', () => {
     expect(loadPortals().config!.tracked_companies.length).toBeGreaterThan(0);
+  });
+});
+
+describe('loadPortals hollow config fails closed', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'portals-hollow-'));
+  const V = { tracked_companies: [], title_filter: { positive: ['react'], negative: [] }, location_filter: { allow: ['india'] } };
+  it.each([
+    ['null', 'null'],
+    ['array', '[]'],
+    ['string', '"x"'],
+    ['empty object', '{}'],
+    ['tracked wrong type', JSON.stringify({ ...V, tracked_companies: {} })],
+    ['missing title_filter', JSON.stringify({ ...V, title_filter: undefined })],
+    ['title_filter wrong type', JSON.stringify({ ...V, title_filter: [] })],
+    ['empty positives', JSON.stringify({ ...V, title_filter: { positive: [], negative: [] } })],
+    ['blank positives', JSON.stringify({ ...V, title_filter: { positive: [' '], negative: [] } })],
+    ['negative wrong type', JSON.stringify({ ...V, title_filter: { positive: ['a'], negative: 'x' } })],
+    ['missing location_filter', JSON.stringify({ ...V, location_filter: undefined })],
+    ['empty allow', JSON.stringify({ ...V, location_filter: { allow: [] } })],
+    ['global wrong type', JSON.stringify({ ...V, location_filter: { allow: ['india'], global: 'remote' } })],
+  ])('%s -> config null with a reason', (name, body) => {
+    const f = path.join(dir, `${name.replace(/ /g, '_')}.json`); writeFileSync(f, body);
+    const r = loadPortals(f);
+    expect(r.config).toBeNull();
+    expect(r.error).toMatch(/portals\.json: /);
+  });
+});
+
+describe('locationAllowed tolerates missing lists', () => {
+  const lf = { allow: ['india'], global: ['remote'] };
+  it('treats null/undefined as an empty location', () => {
+    expect(locationAllowed(null, true, lf)).toBe(true);
+    expect(locationAllowed(undefined, false, lf)).toBe(false);
+  });
+});
+
+describe('htmlToPlain is linear and safe', () => {
+  const fast = (s: string) => { const t = Date.now(); const out = htmlToPlain(s); expect(Date.now() - t).toBeLessThan(1000); return out; };
+  it('survives pathological input quickly', () => {
+    fast('<'.repeat(200000));
+    fast('&lt;a '.repeat(20000));
+    fast('&#'.repeat(100000));
+    fast('&a'.repeat(100000));
+    fast('<a '.repeat(60000));
+    fast('<script>'.repeat(20000));
+    fast('<p>x'.repeat(40000));
+  });
+  it('removes script and style content, not just tags', () => {
+    expect(htmlToPlain('<p>Hi</p><script>var x = 1 < 2;</script><style>p{color:red}</style><p>there</p>')).toBe('Hi there');
+    expect(htmlToPlain('&lt;p&gt;Hi&lt;/p&gt;&lt;script&gt;evil()&lt;/script&gt;&lt;p&gt;there&lt;/p&gt;')).toBe('Hi there');
+  });
+  it('keeps text around a lone < or >', () => {
+    expect(htmlToPlain('a < b and c > d')).toBe('a < b and c > d');
   });
 });
