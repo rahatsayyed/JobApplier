@@ -209,7 +209,9 @@ export function toIsoDay(v: unknown): string | undefined {
     // Validate the calendar date in BOTH branches (no rollover such as 02-30 -> 03-02).
     const day = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
     if (day.getUTCFullYear() !== +m[1] || day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3]) return undefined;
-    d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? day : new Date(s);
+    // A datetime without a zone is read as UTC so the day never depends on the process timezone.
+    const hasZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(s.slice(10));
+    d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? day : new Date(hasZone ? s : `${s.replace(' ', 'T')}Z`);
   } else return undefined;
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
 }
