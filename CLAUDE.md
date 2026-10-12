@@ -24,7 +24,8 @@ Apply, burner account) and `src/apply/external.ts` (the other four, auto-detecte
 
 The orchestrating session does not call the `job-fetch`/`contacts`/`resume`/`gmail` tools
 directly for the hunt pipeline — it dispatches one subagent per pipeline stage (defined in
-`.claude/agents/`: `discoverer`, `matcher`, `contact-finder`, `outreach-preparer`, `sender`) via
+`.claude/agents/`: `discoverer`, `matcher`, `contact-finder`, `outreach-preparer`, `sender`,
+`reply-watcher`, `followup-drafter`) via
 the Task tool, and only ever sees each stage's compact JSON result. See "Running the hunt"
 below.
 
@@ -106,15 +107,24 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
 | Trigger | Action |
 |---------|--------|
 | `/runhunt` or "run hunt", "find jobs" | Run the full hunt pipeline (below). |
-| `/status` or "status", "summary" | Query the `db` MCP: count of jobs (total/matched/by-source), outreach (sent/queued/failed), etc. No side effects, instant response. |
-| `/followups` | Phase 1.5 — send follow-up nudges to old sent emails (if implemented). |
+| `/status` or "status", "summary" | Call `db.get_job_stats`, `db.get_outreach_stats` and `db.get_funnel`. Show the funnel line `discovered N -> matched N -> contacted N -> replied N -> interview N -> offer N`, reply rate and interview rate with the benchmark in brackets (`reply 15% (typical 3%, 2-13%)`), median days to first response, and the rejection rate. Benchmarks are context, not targets. |
+| `/followups` | 0) Dispatch `reply-watcher` FIRST for a fresh reply check and handle its results exactly like `/checkreplies` before going on. 1) `db.list_stale` -> if any, post the table and ask 'all / ids / skip'; call `db.resolve_stale` with the approved ids. 2) Dispatch `followup-drafter`; post each draft it returns (numbered, the STORED subject and body, plus any `warnings`); wait for 'send all' / 'send 1,3' / 'skip'; call `db.set_followup_approval` (approve the listed ids, skip the rest). 3) Dispatch `reply-watcher` AGAIN right before sending (approval can take hours), then dispatch `sender` with 'followups only' and `SEND_LIMIT_PER_RUN`: follow-ups count under the same daily `send_email` counter as cold emails, so the cap leaves the rest approved. 4) Report sent/failed/capped, and any `late_block` entries from the sender ("sent, but a reply/outcome arrived meanwhile"). Never send a follow-up the user did not approve. |
 | `/apply #N` or "apply to job #N" | Apply to one matched job (see "Applying" below). Vetoed jobs (non-null `excluded_reason`, visible via `db.list_jobs`) are skipped; the apply tools enforce this by refusing with `manual_review`. |
 | `/applyall` | Apply to all of today's matched jobs (see "Applying" below). Vetoed jobs (non-null `excluded_reason`, visible via `db.list_jobs`; pass `exclude_vetoed: true` to hide them) are skipped; the apply tools enforce this by refusing with `manual_review`. |
 | `/connect` | Draft and send a LinkedIn connection request for a matched job (see "Connecting" below). |
 | `/include #N` | Manual override of a veto: call `db.unexclude({job_id})`, then confirm to Telegram with the previous exclusion reason (or the error row for an unknown or not-excluded job). The previous reason is kept in `job_exclusion_log`, and that row is a durable override: the deadline sweep (step 0) and `apply_vetoes`' deadline rule skip the job from then on (the hunt only scores unseen jobs, so nothing else re-vetoes it). `/include` does NOT resume outreach rows already marked `skipped`: re-enqueue them or ask. |
-| `/outcome <job_id> <outcome> [note]` | Record what happened to a job (`replied`, `interview`, `offer`, `hired`, `rejected`, `no_response`) via `db.record_outcome`. Confirm to Telegram. |
+| `/outcome <job_id> <outcome> [note]` | Record what happened to a job (`replied`, `interview`, `offer`, `hired`, `rejected`, `no_response`) via `db.record_outcome`. Confirm to Telegram. Recording any outcome also marks the job's drafted and approved follow-ups skipped, so no follow-up is sent after it. |
 | `/calibrate` | Call `db.calibration`; format the score bands + verdict concisely for Telegram (do match scores predict interviews?). |
-| `/checkreplies` | Phase 3 — not built yet. Reply with link to Phase 3 plan. |
+| `/checkreplies` | Dispatch `reply-watcher` (`dry_run: false`). Post: auto-recorded outcomes (job title, company, outcome; this list is empty unless auto-record is enabled in `config/replies.json`, which ships OFF: with it off, triage only stores processed messages and proposals, and EVERY detected interview/rejection is a proposal until you approve it; turn it on only after reviewing proposals for a while), then numbered proposals (`1. Globex - rejected? (from lead@globex.io, 'Re: ...', <reason>)`; plain replies and offers are always proposals), then **bounced addresses** (`address bounced for <company> (<to>)`: never recorded as an outcome; tell the user to find another contact), then **ambiguous** replies (one reply matching more than one job: list the candidate jobs so the user can pick; never auto-recorded), then unmatched replies. Wait for 'approve all' / 'approve 1,3' / 'skip'; call `db.resolve_reply_proposals` with every proposal's decision (unlisted = skip). Approval applies the same ladder as auto-record: an approval that would not raise the recorded outcome is refused and the proposal marked `superseded`; report every refused one to Telegram. |
+| `/patterns` | Call `db.get_patterns`; if `insufficient`, post its message; else post up to 3 lines per dimension (bucket, n, conversion, `avoid?`/`strong` notes, `(small sample)` when not sufficient). |
+| `/report` | Run `npm run report` (writes a self-contained HTML file under `reports/`, which is git-ignored), then SEND THE FILE as an attachment with the Telegram reply tool's file parameter (a local path is useless on Telegram). If an attachment is not possible, post the `db.get_funnel` funnel line instead. |
+
+Reply-handling known limits: reply matching uses thread id, exact sender address, non-shared
+domain, then company mention. The classifier is a proposal generator, not an oracle: measured on
+an independent unseen set at roughly 80 percent agreement before tuning, with no independent
+measurement after tuning, so approving proposals is the real safeguard. An unmatched bounce (no
+job found) blocks nothing. Follow-ups thread by `threadId` plus a `Re:` subject only (no RFC
+Message-ID is exposed, so recipient-side threading is not guaranteed).
 
 **Setting up Telegram slash commands** (one-time, via BotFather):
 1. Message @BotFather on Telegram.
@@ -122,14 +132,16 @@ When a message arrives (Telegram or CLI), match it against this table first. **T
 3. Paste this list (one per line):
    ```
    runhunt - Discover jobs, match, find contacts, send cold emails
-   status - Show job/outreach/thread stats
-   followups - Send follow-up nudges (Phase 1.5)
+   status - Funnel, rates and benchmarks
+   followups - Draft follow-ups for approval, resolve stale
    apply - Apply to a job (Easy Apply or external ATS)
    connect - Draft + send a LinkedIn connect request
    include - Un-exclude a vetoed job (manual override)
    outcome - Record a job outcome (replied/interview/offer/rejected...)
    calibrate - Check whether match scores predict interviews
-   checkreplies - Check replies (Phase 3 — not yet)
+   checkreplies - Detect replies in Gmail and record outcomes
+   patterns - What kind of jobs reply
+   report - Offline HTML funnel
    ```
 
 As Phase 2/3 get implemented, update BotFather's command list and this table — do not leave
@@ -141,7 +153,8 @@ When told `/status` or "show status", query the `db` MCP for stats (no tool side
 
 1. Call `db.get_job_stats()` → returns total, by_status, by_source.
 2. Call `db.get_outreach_stats()` → returns total, by_status, by_month.
-3. Format a concise summary:
+3. Call `db.get_funnel()`.
+4. Format a concise summary:
    ```
    📊 Job Stats
    • Total discovered: N
@@ -153,8 +166,13 @@ When told `/status` or "show status", query the `db` MCP for stats (no tool side
    • Queued (limit reached): M
    • Failed: K
    • Last sent: [date]
+
+   📈 Funnel
+   • discovered N -> matched N -> contacted N -> replied N -> interview N -> offer N
+   • Reply rate 15% (typical 3%, 2-13%), interview rate N% (benchmark in brackets)
+   • Median days to first response: N
    ```
-4. Post to Telegram. No other action.
+5. Post to Telegram. No other action.
 
 ---
 
@@ -163,7 +181,10 @@ When told `/status` or "show status", query the `db` MCP for stats (no tool side
 When told "run hunt" (see Commands above), run the pipeline below. **You (the orchestrating
 session) do not call `job-fetch`, `contacts`, `resume`, or `gmail` tools yourself; within the
 hunt pipeline, the only tools you call directly are `db.sweep_deadlines` (step 0),
-`db.save_match_result`, `gates.apply_vetoes`, and `db.mark_excluded` (the last three in step 2).**
+`db.save_match_result`, `gates.apply_vetoes`, and `db.mark_excluded` (the last three in step 2),
+the read-only counts `db.list_followup_candidates` and `db.list_stale` (step 6), and the approval
+tools `db.resolve_reply_proposals`, `db.set_followup_approval` and `db.resolve_stale` after a
+Telegram decision.**
 Instead, dispatch a fresh subagent
 per stage using the Task tool, so each stage's tool output and reasoning stay out of your own
 context — you only see the compact JSON each stage returns. Do not skip stages. Do not exceed
@@ -175,6 +196,11 @@ context — you only see the compact JSON each stage returns. Do not skip stages
    sweep never excludes a job already emailed, connected or applied to. If the sweep call fails,
    do NOT stop the hunt: continue to step 1 and report `deadline sweep failed: <error>` in the
    final report.
+
+0b. **Check replies** — dispatch `reply-watcher` (`dry_run: false`) first (replies change who
+   gets follow-ups); include its counts, and any bounced addresses, in the report. If it fails,
+   report `reply check failed: <error>` and continue with step 1 (it never stops the hunt, like
+   the deadline sweep).
 
 1. **Discover** — dispatch `subagent_type: discoverer` with the Role and Location from
    Preferences. It calls `job-fetch.list_new_jobs` (Adzuna/Remotive/RemoteOK) plus
@@ -282,6 +308,8 @@ context — you only see the compact JSON each stage returns. Do not skip stages
      as raw HTML or markdown).
    - Emails sent/failed/queued, connects sent/failed/queued, applies
      submitted/manual_review/needs_answer/failed/queued (step 5).
+   - Follow-up candidates: N (run /followups), using the `db.list_followup_candidates` count, and
+     "stale: N" from `db.list_stale`.
    - Total jobs with no usable contact or profile at all (step 3), with titles/companies/urls.
    - One line per prepared job from step 4: ATS coverage %, gap count, review applied/rejected,
      and any `flags` (dropped email/notes, gate fallbacks).
@@ -594,6 +622,9 @@ is not measured by it.
    run is the first-ever LLM execution of review-application -> apply_review_edits -> re-render
    -> check_text: none of it has run end to end with a real model before, so watch it closely.
 5. Decide whether to add a real Node.js work fact to `input/resume.json`.
+6. Plan 3 (replies and follow-ups): back up `data.sqlite` first; the same full restart loads
+   `reply-watcher`, `followup-drafter`, the changed `sender` and the new `db` tools; then run the
+   dry runs in docs/superpowers/plans/2026-10-08-3-post-send-replies-followups-funnel.md (U3-U7).
 
 ## Safety
 
@@ -602,7 +633,9 @@ is not measured by it.
 2. Never exceed `SEND_LIMIT_PER_RUN` — enforced as a daily counter (`db.check_and_increment`), so
    it can already be partially consumed by an earlier run today. Items beyond the cap stay
    `queued` in `outreach_queue` (see "Running the hunt" step 5) rather than being sent, and
-   `sender` prompts Telegram with an option to raise it for the current run.
+   `sender` prompts Telegram with an option to raise it for the current run. Follow-up emails
+   count under the same `send_email` daily counter and `SEND_LIMIT_PER_RUN` (there is no separate
+   follow-up cap).
 3. The "Running the hunt" pipeline sends both cold email and LinkedIn connection requests
    automatically as part of every run, per the "Connecting" section below — this is an
    explicit, informed design decision, not an oversight. Do not attempt any OTHER outreach
@@ -627,3 +660,11 @@ is not measured by it.
    allow-lists only for facts the user confirmed, after adding the fact to `input/resume.json`.
    The gate is a lexical floor and cannot catch paraphrased inflation, so human review of the
    first runs matters.
+10. Follow-ups are never sent without explicit Telegram approval of that exact draft; max 2 per
+    job; none for a job with any recorded outcome, any reply on file, a bounce, or whose address
+    replied, bounced or rejected another job; every follow-up passes the fact gate in code
+    (`db.save_followup_draft`).
+11. Reply outcomes are auto-recorded only when auto-record is enabled in `config/replies.json`
+    (otherwise proposed), and then only for a thread/sender-matched `interview` or `rejected` on a
+    strong phrase; they never downgrade the latest outcome, and `replied` and `offer` always need
+    approval; a bounce is never an outcome.
