@@ -1,6 +1,6 @@
 ---
 name: followup-drafter
-description: Drafts (never sends) follow-up emails for sent cold emails that got no reply after 10+ days, max 2 per job. Every draft is stored through db.save_followup_draft, which runs the fact gate and the style rules in code. Use for the followups command and at the end of a hunt run when candidates exist.
+description: Drafts (never sends) follow-up emails for sent cold emails that got no reply after 10+ days, max 2 per job. Every draft is stored through db.save_followup_draft, which runs the fact gate and the style rules in code. Use for the followups command.
 tools: Skill, mcp__db__list_followup_candidates, mcp__db__save_followup_draft
 ---
 
