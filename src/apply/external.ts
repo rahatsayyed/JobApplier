@@ -1,6 +1,6 @@
 import { chromium, type Page } from 'playwright';
 import BetterSqlite3 from 'better-sqlite3';
-import { openDb, getJob, getExcludedReason, saveApplication } from '../db.js';
+import { openDb, getJob, getExcludedReason, getFirstHardStop, saveApplication } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { getBaseResume } from '../resume.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
@@ -219,6 +219,10 @@ export async function applyExternal(
   const vetoReason = getExcludedReason(database, job_id);
   if (vetoReason) {
     return recordAndReturn(database, job_id, null, 'manual_review', `excluded by veto: ${vetoReason}`);
+  }
+  const hardStop = getFirstHardStop(database, job_id);
+  if (hardStop) {
+    return recordAndReturn(database, job_id, null, 'manual_review', `hard stop: ${hardStop}`);
   }
 
   const prepared = findPreparedApplicationMaterials(database, job_id);

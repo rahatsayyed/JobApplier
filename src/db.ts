@@ -305,6 +305,22 @@ export function getExcludedReason(db: BetterSqlite3.Database, jobId: string): st
   return row?.excluded_reason ?? null;
 }
 
+/** The first stored hard stop for a job (apply tools refuse on it), or null when there is none.
+ *  Corrupt or non-array JSON fails closed with a fixed marker. */
+export function getFirstHardStop(db: BetterSqlite3.Database, jobId: string): string | null {
+  const row = db.prepare('SELECT hard_stops FROM jobs WHERE id = ?').get(jobId) as { hard_stops: string | null } | undefined;
+  const raw = row?.hard_stops;
+  if (raw == null || raw.trim() === '') return null;
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return 'unreadable hard_stops data';
+    const first = v.find((x): x is string => typeof x === 'string' && x.trim() !== '');
+    return first ?? null;
+  } catch {
+    return 'unreadable hard_stops data';
+  }
+}
+
 export interface JobListRow {
   id: string; source: string; title: string; company: string; score: number | null;
   status: string; created_at: string; excluded_reason: string | null;

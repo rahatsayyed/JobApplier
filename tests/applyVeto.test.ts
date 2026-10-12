@@ -48,3 +48,42 @@ describe('apply tools refuse vetoed jobs (fail closed, never throw)', () => {
     expect(r.reason ?? '').not.toContain('excluded by veto');
   });
 });
+
+// Final review M2: a non-empty hard_stops list also blocks the apply tools (next to the excluded_reason guard).
+describe('apply tools refuse jobs with stored hard stops', () => {
+  const withStops = (id: string, url: string, stops: string | null) => {
+    const db = openDb(':memory:');
+    saveJob(db, job(id, url));
+    if (stops !== null) db.prepare('UPDATE jobs SET hard_stops = ? WHERE id = ?').run(stops, id);
+    return db;
+  };
+  it('applyEasyApply refuses with "hard stop: <first>" and never launches a browser', async () => {
+    const db = withStops('h1', 'https://linkedin.com/jobs/view/1', JSON.stringify(['Go (5+ years)', 'Rust']));
+    const launch = vi.fn();
+    const r = await applyEasyApply({ job_id: 'h1' }, { db, chromium: { launch } });
+    expect(r.status).toBe('manual_review');
+    expect(r.reason).toBe('hard stop: Go (5+ years)');
+    expect(launch).not.toHaveBeenCalled();
+  });
+  it('applyExternal refuses with "hard stop: <first>" and never launches a browser', async () => {
+    const db = withStops('h2', 'https://boards.greenhouse.io/x/jobs/1', JSON.stringify(['Go (5+ years)']));
+    const launch = vi.fn();
+    const r = await applyExternal({ job_id: 'h2' }, { db, chromium: { launch } });
+    expect(r.status).toBe('manual_review');
+    expect(r.reason).toBe('hard stop: Go (5+ years)');
+    expect(launch).not.toHaveBeenCalled();
+  });
+  it('an empty list, null and an empty string do not block', async () => {
+    for (const stops of ['[]', null, '']) {
+      const db = withStops('h3', 'https://boards.greenhouse.io/x/jobs/3', stops);
+      const r = await applyExternal({ job_id: 'h3' }, { db, chromium: { launch: vi.fn() } });
+      expect(r.reason ?? '').not.toContain('hard stop');
+    }
+  });
+  it('corrupt hard_stops data fails closed', async () => {
+    const db = withStops('h4', 'https://boards.greenhouse.io/x/jobs/4', '{not json');
+    const r = await applyExternal({ job_id: 'h4' }, { db, chromium: { launch: vi.fn() } });
+    expect(r.status).toBe('manual_review');
+    expect(r.reason).toBe('hard stop: unreadable hard_stops data');
+  });
+});
