@@ -4,12 +4,17 @@ import { fileURLToPath } from 'node:url';
 import { languageGate, type LanguageConfig } from './languageGate.js';
 import { ageDays, deadlinePassed, staleFlag } from './freshness.js';
 import { assessLegitimacy, type Legitimacy } from './legitimacy.js';
+import { mentionedTargetRegion, type TargetRegions } from './targetRegions.js';
 
 export type Verdict = 'PASS' | 'FAIL' | 'FLAG';
 
 export interface JobFacts { source?: string | null; url?: string | null; apply_url?: string | null; posted_at?: string | null; deadline?: string | null; acted?: boolean; overridden?: boolean; hard_stops?: string[]; repost_count?: number; snapshot_chars?: number; hard_stops_unreadable?: boolean }
 /** `languagesInvalid` (with `languages: null`) = config file present but an entry is invalid; null alone = file missing. */
-export interface VetoExtras { facts?: JobFacts; now?: Date; languages?: LanguageConfig | null; languagesInvalid?: string }
+export interface VetoExtras {
+  facts?: JobFacts; now?: Date; languages?: LanguageConfig | null; languagesInvalid?: string;
+  // Target regions (config/target-regions.json). undefined = caller does not use them; null (+ targetRegionsInvalid) = the file is invalid: no downgrade, a flag.
+  targetRegions?: TargetRegions | null; targetRegionsInvalid?: string;
+}
 /** `gate_flags` (excluded jobs only): the soft flags computed anyway, persisted by saveGateResults while `flags` stays empty. */
 export interface VetoResult { excluded: boolean; reason?: string; flags: string[]; gate_flags?: string[]; legitimacy?: Legitimacy; language_note?: string | null }
 
@@ -32,7 +37,14 @@ export function applyVetoes(
   const more = extras ? { legitimacy: legit, language_note: ts?.note ?? null } : {};
   // Soft flags are computed up front so an exclusion keeps them in gate_flags (the returned `flags` stay empty on exclusion).
   const soft: string[] = [];
-  if (m.location_verdict === 'FLAG') soft.push('location FLAG');
+  // Backstop for the model's location verdict: a FAIL on a posting that names a target region (Gulf by default) is shown as a FLAG, never passed silently.
+  let locationVerdict = m.location_verdict;
+  const regionHit = locationVerdict === 'FAIL' && extras?.targetRegions ? mentionedTargetRegion(`${job.title}\n${job.description}`, extras.targetRegions.targets) : null;
+  if (regionHit) {
+    locationVerdict = 'FLAG';
+    soft.push(`location FLAG: the matcher said FAIL but the posting names target region "${regionHit}" (relocation, visa or residency may be needed: check the posting)`);
+  } else if (locationVerdict === 'FLAG') soft.push('location FLAG');
+  if (extras?.targetRegions === null) soft.push(`target regions config invalid: ${extras.targetRegionsInvalid ?? 'unreadable'}`);
   if (m.language_gate === 'FLAG' || ts?.verdict === 'FLAG') soft.push(ts?.verdict === 'FLAG' ? `language FLAG: ${ts.note}` : 'language FLAG');
   if (extras?.languages === null) soft.push(extras.languagesInvalid ? `language gate config invalid: ${extras.languagesInvalid}` : 'language gate config missing');
   const stale = extras ? staleFlag(extras.facts?.posted_at, now) : null;
@@ -41,7 +53,7 @@ export function applyVetoes(
   const out = (r: Omit<VetoResult, 'legitimacy' | 'language_note'>): VetoResult =>
     ({ ...r, ...more, ...(extras && r.excluded ? { gate_flags: soft } : {}) });
 
-  if (m.location_verdict === 'FAIL') return out({ excluded: true, reason: 'location FAIL', flags });
+  if (locationVerdict === 'FAIL') return out({ excluded: true, reason: 'location FAIL', flags });
   if (m.language_gate === 'FAIL') return out({ excluded: true, reason: 'language FAIL', flags });
   if (ts?.verdict === 'FAIL') return out({ excluded: true, reason: `language FAIL: ${ts.note}`, flags });
   const hay = `${job.title}\n${job.description}`.toLowerCase();
@@ -80,13 +92,13 @@ export function vetoResults(
   results: { job_id: string; score: number; location_verdict?: Verdict; language_gate?: Verdict }[],
   jobs: { id: string; title: string; description?: string | null }[],
   keywords?: string[],
-  ctx?: { facts?: Map<string, JobFacts>; now?: Date; languages?: LanguageConfig | null; languagesInvalid?: string },
+  ctx?: { facts?: Map<string, JobFacts>; now?: Date; languages?: LanguageConfig | null; languagesInvalid?: string; targetRegions?: TargetRegions | null; targetRegionsInvalid?: string },
 ): Array<{ job_id: string } & VetoResult> {
   const dealBreakers = (keywords ?? loadDealBreakers()).map((k) => k.trim()).filter(Boolean);
   const byId = new Map(jobs.map((j) => [j.id, { title: j.title, description: j.description ?? '' }]));
   return results.map((r) => {
     const job = byId.get(r.job_id) ?? { title: '', description: '' };
-    const extras = ctx ? { facts: ctx.facts?.get(r.job_id), now: ctx.now, languages: ctx.languages, languagesInvalid: ctx.languagesInvalid } : undefined;
+    const extras = ctx ? { facts: ctx.facts?.get(r.job_id), now: ctx.now, languages: ctx.languages, languagesInvalid: ctx.languagesInvalid, targetRegions: ctx.targetRegions, targetRegionsInvalid: ctx.targetRegionsInvalid } : undefined;
     return { job_id: r.job_id, ...applyVetoes(r, job, dealBreakers, extras) };
   });
 }

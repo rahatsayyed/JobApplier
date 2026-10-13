@@ -8,6 +8,7 @@ import { openDb, saveGateResults, saveJdSnapshot } from '../db.js';
 import { dbPath } from '../dbPath.js';
 import { jobFactsFromDb } from '../gateFacts.js';
 import { loadLanguageConfigStatus } from '../languageGate.js';
+import { loadTargetRegionsStatus } from '../targetRegions.js';
 
 let db: BetterSqlite3.Database | null = null;
 const getDb = () => (db ??= openDb(dbPath()));
@@ -33,7 +34,7 @@ server.registerTool(
   'apply_vetoes',
   {
     description:
-      'Apply veto gates to match results (pass each result\'s STORED score from save_match_result.scores): location/language FAIL (model + deterministic language gate vs config/languages.json; FAIL only once that file has "confirmed": true), deal-breaker keywords, hard stops from the requirement table, "deadline passed: <date>" (stored ISO-day deadline before today, UTC; not applied to a job already emailed, connected or applied to), suspicious legitimacy, and "gate data unreadable: hard_stops" (corrupt stored hard_stops: fail closed). Flags (never exclude): location/language FLAG, "language gate config missing" or "language gate config invalid: <entry>", stale postings (>30 days), legitimacy caution (reposts, age, thin JD, personal channels). Reads per-job facts from the db and persists legitimacy + flags on jobs.',
+      'Apply veto gates to match results (pass each result\'s STORED score from save_match_result.scores): location/language FAIL (model + deterministic language gate vs config/languages.json; FAIL only once that file has "confirmed": true), deal-breaker keywords, hard stops from the requirement table, "deadline passed: <date>" (stored ISO-day deadline before today, UTC; not applied to a job already emailed, connected or applied to), suspicious legitimacy, and "gate data unreadable: hard_stops" (corrupt stored hard_stops: fail closed). Location FAIL from the model is shown as a FLAG when the posting names a target region from config/target-regions.json (Gulf by default; "target regions config invalid: <why>" is flagged and no downgrade happens). Flags (never exclude): location/language FLAG, "language gate config missing" or "language gate config invalid: <entry>", stale postings (>30 days), legitimacy caution (reposts, age, thin JD, personal channels). Reads per-job facts from the db and persists legitimacy + flags on jobs.',
     inputSchema: {
       results: z.array(
         z.object({
@@ -50,7 +51,8 @@ server.registerTool(
     const d = getDb();
     const facts = new Map(results.map((r) => [r.job_id, jobFactsFromDb(d, r.job_id)]));
     const lc = loadLanguageConfigStatus();
-    const out = vetoResults(results, jobs, undefined, { facts, now: new Date(), languages: lc.config, languagesInvalid: lc.invalid });
+    const tr = loadTargetRegionsStatus();
+    const out = vetoResults(results, jobs, undefined, { facts, now: new Date(), languages: lc.config, languagesInvalid: lc.invalid, targetRegions: tr.config, targetRegionsInvalid: tr.invalid });
     saveGateResults(d, out);
     return { content: [{ type: 'text', text: JSON.stringify(out) }] };
   }

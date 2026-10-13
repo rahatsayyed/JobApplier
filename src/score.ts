@@ -122,7 +122,7 @@ function normalizeRequirementsWith(reqs: unknown, jd: string | null): Requiremen
 // Location and language conditions belong to the dedicated gates (location_verdict, the language gate), never to hard stops.
 // The matcher sets `category`; the wording check is the backstop when it forgets.
 const LOCATION_OR_LANGUAGE_RE = new RegExp(
-  `\\b(?:on-?site|onsite|hybrid|remote|relocat\\w*|locat(?:ion|ed)|based in|reside\\w*|time ?zone|visa|work (?:permit|authori[sz]ation)|right to work|fluent|fluency|bilingual|native speaker|language|${LANGUAGES.join('|')})\\b`, 'i');
+  `\\b(?:on-?site|onsite|hybrid|remote|relocat\\w*|locat(?:ion|ed)|based in|reside\\w*|time ?zone|visa|work (?:permit|authori[sz]ation)|right to work|iqama|emirates id|currently in|already in|fluent|fluency|bilingual|native speaker|language|${LANGUAGES.join('|')})\\b`, 'i');
 const isLocationOrLanguage = (r: Requirement) => r.category === 'location' || r.category === 'language' || LOCATION_OR_LANGUAGE_RE.test(r.req);
 
 /** Hard stop = an explicit non-negotiable the candidate does not meet: critical + missing, `stated` evidence (callers pass
