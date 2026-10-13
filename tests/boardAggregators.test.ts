@@ -29,7 +29,7 @@ describe('normalizeHimalayas', () => {
       url: 'https://himalayas.app/companies/co-1/jobs/react-engineer-1', apply_url: 'https://himalayas.app/companies/co-1/jobs/react-engineer-1',
       description: 'Build React apps', posted_at: '2025-10-02', locations: [''], remote: true,
     });
-    expect(jobs[1].locations).toEqual(['India', 'United Arab Emirates']);
+    expect(jobs[1].locations).toEqual(['India only', 'United Arab Emirates only']);
     expect(locationAllowed(jobs[0].locations, jobs[0].remote, LOC)).toBe(true);
     expect(locationAllowed(['United States'], true, LOC)).toBe(false);
   });

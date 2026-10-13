@@ -67,11 +67,15 @@ export function parseHnHeader(firstLine: string): HnHeader | null {
   const rest = parts.slice(1).filter((p) => !/^https?:\/\//i.test(p));
   if (!rest.length) return null;
   const restricted = rest.some((p) => RESTRICT_CASE_RE.test(p) || RESTRICT_RE.test(p));
+  // Any segment that says on-site or hybrid means the posting is not remote ("Eng | ONSITE Berlin | REMOTE"). "REMOTE (US)" / "REMOTE - EU"
+  // is a remote role limited to that region: it is written as "<segment> only" so the shared restriction marker refuses it.
+  const onsite = rest.some((p) => /(?<![a-z0-9])(?:on-?site|on site|hybrid|in-?office|in person)(?![a-z0-9])/i.test(p));
+  const remoteRegion = (p: string) => /^remote\s*[(\-–—:]\s*\S/i.test(p) && !/^remote\s*[(\-–—:]\s*(?:worldwide|anywhere|global)/i.test(p);
   return {
     company: parts[0],
     title: clip(rest.join(' | ')),
-    locations: rest.map(clip),
-    remote: !restricted && rest.some((p) => /\b(?:remote|worldwide|anywhere)\b/i.test(p)),
+    locations: rest.map((p) => clip(remoteRegion(p) ? `${p} only` : p)),
+    remote: !restricted && !onsite && rest.some((p) => /\b(?:remote|worldwide|anywhere)\b/i.test(p)),
   };
 }
 

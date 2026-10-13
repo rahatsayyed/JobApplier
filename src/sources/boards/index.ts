@@ -18,7 +18,18 @@ export const DEFAULT_BUDGET_MS = 120_000;
 export const BOARD_SOURCES = new Set<string>(COMPANY_ATS);
 // Board-wide feeds (Hacker News, Himalayas, We Work Remotely). Their jobs are droppable duplicates too, but with LOWER priority than a company board.
 export const AGGREGATOR_SOURCES = new Set<string>(AGGREGATOR_ATS);
-const capText = (s: string, n = DESCRIPTION_CAP) => (s.length > n ? s.slice(0, n).trimEnd() : s);
+// The location is the only structured place information a board job has, and the matcher and the veto backstop (src/vetoes.ts) only see
+// title and description, so it goes in as the first description line: "Location: <locations joined by '; '>[ (remote)]" and a blank line.
+// The line is at most 300 characters; the 8000-character cap is applied after it. Nothing else passes a board job's location on.
+export function locationLine(locations: string[] | undefined, remote: boolean | undefined): string {
+  const locs = (locations ?? []).map((l) => String(l ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean).join('; ');
+  const tail = remote ? ' (remote)' : '';
+  if (!locs && !remote) return '';
+  const room = 300 - 'Location: '.length - tail.length;
+  const shown = locs.slice(0, Math.max(0, room)).trimEnd();
+  return `Location:${shown ? ` ${shown}` : ''}${tail}\n\n`;
+}
+const capText =(s: string, n = DESCRIPTION_CAP) => (s.length > n ? s.slice(0, n).trimEnd() : s);
 
 export interface FetchBoardsOptions {
   configPath?: string;
@@ -108,10 +119,10 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
     const kept = fetched
       .filter((j) => titlePasses(j.title, config.title_filter) && locationAllowed(j.locations, j.remote, config.location_filter))
       .slice(0, max);
-    for (const { locations: _l, remote: _r, ...job } of kept) {
+    for (const { locations, remote, ...job } of kept) {
       if (seen.has(job.id)) continue;
       seen.add(job.id);
-      out.jobs.push({ ...job, description: capText(job.description) });
+      out.jobs.push({ ...job, description: capText(`${locationLine(locations, remote)}${job.description}`) });
     }
     out.stats.push({ company: s.c.name, ats: s.c.ats, fetched: fetched.length, kept: kept.length });
   }

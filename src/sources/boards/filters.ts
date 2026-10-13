@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostMatches } from '../../lib/hostClass.js';
-import { findRestriction, REMOTE_WORD } from '../../remotePolicy.js';
+import { findRestriction, LOCATION_ONSITE, REGION_WORD, REMOTE_WORD } from '../../remotePolicy.js';
 
 // Company-board vendors: one board per tracked company. Each vendor has a provider in src/sources/boards/ and an entry in registry.ts.
 export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable', 'recruitee', 'personio', 'workday', 'smartrecruiters'] as const;
@@ -131,7 +131,7 @@ function isBareGlobal(seg: string, globals: string[]): boolean {
 }
 
 // With remote_anywhere on, "not open to India" and "other than India" also exclude a segment even though it names an allowed place.
-const INDIA_EXCLUDER = /(?:other than|not (?:open|available) (?:to|in))\s+(?:[a-z]+\s+){0,3}?india/;
+const INDIA_EXCLUDER = /(?<![a-z])(?:(?:other than|no|not|excluding)\s+india|not (?:open|available) (?:to|in)\s+(?:[a-z]+\s+){0,3}?india)/;
 
 /**
  * `f.remote_anywhere` (default false): a remote posting (the `remote` flag or a remote word in the segment) based in any other place passes
@@ -140,15 +140,24 @@ const INDIA_EXCLUDER = /(?:other than|not (?:open|available) (?:to|in))\s+(?:[a-
 export function locationAllowed(locations: string[] | null | undefined, remote: boolean, f: { allow: string[]; global: string[]; remote_anywhere?: boolean }): boolean {
   let segs = (Array.isArray(locations) && locations.length ? locations : ['']).flatMap((l) => fold(l).split(';')).map((s) => s.trim()).filter(Boolean);
   if (!segs.length) segs = [''];
-  const anywhere = f.remote_anywhere === true;
-  for (const seg of segs) {
-    if (EXCLUDER.test(seg)) continue;
-    if (anywhere && INDIA_EXCLUDER.test(seg)) continue;
-    if (f.allow.some((a) => a.trim() && wordIn(seg, a))) return true;
-    if (remote && isBareGlobal(seg, f.global)) return true;
-    if (anywhere && (remote || REMOTE_WORD.test(seg)) && !findRestriction(seg, { scope: 'location' })) return true;
+  if (f.remote_anywhere !== true) {
+    for (const seg of segs) {
+      if (EXCLUDER.test(seg)) continue;
+      if (f.allow.some((a) => a.trim() && wordIn(seg, a))) return true;
+      if (remote && isBareGlobal(seg, f.global)) return true;
+    }
+    return false;
   }
-  return false;
+  // remote_anywhere on. 1) an allow-listed segment that is not an exclusion passes. 2) An exclusion segment ("excl. India", "not India")
+  // or an on-site/office/HQ/hybrid word in ANY segment vetoes everything else ("Remote; Berlin; Onsite", "Remote-first, Berlin HQ").
+  // 3) otherwise a bare remote segment passes, and so does a remote segment naming another place unless it carries a restriction
+  // marker (shared with the veto backstop; allow-listed places cancel a marker) or is a bare continent/region ("Remote, Europe").
+  const bad = (s: string) => EXCLUDER.test(s) || INDIA_EXCLUDER.test(s);
+  for (const seg of segs) if (!bad(seg) && f.allow.some((a) => a.trim() && wordIn(seg, a))) return true;
+  if (segs.some((s) => bad(s) || LOCATION_ONSITE.test(s))) return false;
+  for (const seg of segs) if (remote && isBareGlobal(seg, f.global)) return true;
+  const open = (s: string) => !/(?<![a-z])(?:worldwide|global|anywhere in the world)(?![a-z])/.test(s);
+  return segs.some((seg) => (remote || REMOTE_WORD.test(seg)) && !findRestriction(seg, { scope: 'location', targets: f.allow }) && !(REGION_WORD.test(seg) && open(seg)));
 }
 
 // ---- HTML to text ----

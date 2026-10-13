@@ -35,6 +35,22 @@ export const RESTRICTION_MARKERS: Marker[] = [
   { name: 'excluding', re: new RegExp(`${W}(?:excl|excluding|except)(?![a-z])`, 'g'), scope: 'any', dir: 'none' },
   { name: 'not open to', re: new RegExp(`${W}not\\s+(?:open|available)\\s+(?:to|in)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
   { name: 'outside india', re: new RegExp(`${W}(?:outside|other\\s+than)\\s+india(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  // Added in the final review: hiring-scope wording that names who is refused or who is wanted.
+  { name: 'does not hire', re: new RegExp(`${W}(?:do|does|will)\\s+not\\s+(?:hire|consider|accept)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'will not be considered', re: new RegExp(`${W}will\\s+not\\s+be\\s+(?:considered|accepted)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'no candidates', re: new RegExp(`${W}no\\s+(?:candidates|applicants)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'not supported', re: new RegExp(`${W}not\\s+supported(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'candidates in', re: new RegExp(`${W}(?:candidates|applicants|contractors|employees)\\s+(?:(?:located|based|residing|living)\\s+)?(?:in|from)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'after' },
+  { name: 'open to candidates in', re: new RegExp(`${W}open\\s+to\\s+(?:candidates|applicants|residents|people)\\s+(?:(?:located|based|residing|living)\\s+)?(?:in|from)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'after' },
+  { name: 'within region', re: new RegExp(`${W}within\\s+(?:the\\s+)?(?:${REGION})(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'residency', re: new RegExp(`${W}residen(?:cy|t|ts)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'around' },
+  { name: 'work permit', re: new RegExp(`${W}work\\s+permit(?![a-z0-9])`, 'g'), scope: 'any', dir: 'around' },
+  { name: 'no india', re: new RegExp(`${W}(?:no|not)\\s+india(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'us person', re: new RegExp(`${W}u\\.?s\\.?\\s+person(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'eea', re: new RegExp(`${W}eea(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'nationals', re: new RegExp(`${W}(?:eu|uk|us|european|british|american)\\s+(?:nationals?|citizens?)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'must time zone', re: new RegExp(`${W}must[^.\\n]{0,40}?time\\s?zones?(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
+  { name: 'can only hire', re: new RegExp(`${W}(?:can|will|may)\\s+only\\s+(?:hire|consider|accept)(?![a-z0-9])`, 'g'), scope: 'any', dir: 'none' },
 ];
 
 const fold = (s: string) => String(s ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
@@ -52,6 +68,8 @@ export function findRestriction(text: string, opts: { scope: 'location' | 'posti
   // ("must be located in London (Dubai office closed)") does not cancel the marker.
   const startsWithTarget = (s: string) => {
     const rest = s.replace(/^[\s,:;-]*(?:(?:in|within|of|at|to|the)\s+)*/, '');
+    // an open-ended object ("candidates from all backgrounds", "candidates from anywhere") is not a restriction either
+    if (/^(?:any|all|anywhere|around|across|worldwide|the world|many|multiple|diverse|different|various)(?![a-z0-9])/.test(rest)) return true;
     return terms.some((t) => new RegExp(`^${t}(?![a-z0-9])`).test(rest));
   };
   const endsWithTarget = (s: string) => terms.some((t) => new RegExp(`(?<![a-z0-9])${t}[\\s-]*(?:residents?|citizens?|nationals?|candidates|applicants|based)?[\\s-]*$`).test(s));
@@ -70,16 +88,22 @@ export function findRestriction(text: string, opts: { scope: 'location' | 'posti
 
 // A clear remote word in a location string ("Remote - Brazil", "Work from home", "Distributed", "Anywhere in Europe").
 export const REMOTE_WORD = /(?<![a-z0-9])(?:remote(?:ly)?|work from home|wfh|distributed|anywhere)(?![a-z0-9])/;
-const ONSITE_WORD = /(?<![a-z0-9])(?:on-?site|in-?office|in office|office[- ]based|hybrid|relocat\w*|no remote|not remote|remote (?:work )?(?:is )?not)(?![a-z0-9])/;
+const ONSITE_WORD = /(?<![a-z0-9])(?:on-?site|on site|in-?person|in person|on-?premises?|in-?office|in office|in the office|office[- ]based|hybrid|relocat\w*|no remote|not remote|remote (?:work )?(?:is )?not)(?![a-z0-9])/;
 const DESC_HEAD = 2000;
+// In a location string any office, HQ or on-site/hybrid word means the job is not purely remote ("Remote-first, Berlin HQ", "Berlin (Hybrid/Remote)").
+export const LOCATION_ONSITE = /(?<![a-z0-9])(?:on-?site|on site|hybrid|in-?office|in office|in person|in-?person|on-?premises?|office|hq|headquarters?)(?![a-z0-9])/;
+// Region words that are not a country: a remote role "in Europe" or "in the Americas" is restricted to that region.
+export const REGION_WORD = /(?<![a-z0-9])(?:europe|european union|eu|emea|americas|north america|south america|latin america|latam|africa|oceania|asia)(?![a-z0-9])/;
 
 // Is this posting remote? Yes when the job's remote flag is set or a remote word is in the location, title or the first 2000 characters
-// of the description, AND nothing in the location, title or that head says on-site, hybrid, in-office, relocation or "no remote"
-// (an on-site mention always wins: fail safe). Linear and capped; the text is untrusted.
+// of the description, AND nothing in the location, title or the whole capped description (MAX_POLICY_TEXT) says on-site, hybrid, in-person,
+// in-office, relocation or "no remote" (an on-site mention anywhere wins: fail safe, so a remote posting that mentions "in-person
+// interviews" is not downgraded and keeps its FAIL). Linear and capped; the text is untrusted.
 export function isRemotePosting(job: { title: string; description: string; location?: string | null; remote?: boolean | null }): boolean {
   const loc = fold(String(job.location ?? '').slice(0, 500));
   const title = fold(String(job.title ?? '').slice(0, 500));
-  const head = fold(String(job.description ?? '').slice(0, DESC_HEAD));
-  if (ONSITE_WORD.test(loc) || ONSITE_WORD.test(title) || ONSITE_WORD.test(head)) return false;
+  const all = fold(String(job.description ?? '').slice(0, MAX_POLICY_TEXT));
+  if (LOCATION_ONSITE.test(loc) || ONSITE_WORD.test(loc) || ONSITE_WORD.test(title) || ONSITE_WORD.test(all)) return false;
+  const head = all.slice(0, DESC_HEAD);
   return job.remote === true || REMOTE_WORD.test(loc) || REMOTE_WORD.test(title) || REMOTE_WORD.test(head);
 }

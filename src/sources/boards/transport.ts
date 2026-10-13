@@ -64,11 +64,11 @@ async function requestText(url: string, label: string, method: 'GET' | 'POST', b
   try { hostOk = !host.endsWith('.') && (typeof policy === 'function' ? policy(host) === true : policy.has(host)); } catch { hostOk = false; }
   if (u.protocol !== 'https:' || u.username || u.password || u.port || !hostOk || !isSafeFetchUrl(url)) throw new Error(`${label}: host not allowed`);
   if (body !== undefined && body.length > MAX_REQUEST_BODY_CHARS) throw new Error(`${label}: request body too large`);
-  const headers: Record<string, string> = { ...BOARD_HEADERS, Accept: opts.accept ?? defaultAccept, ...(opts.headers ?? {}), 'User-Agent': BOARD_USER_AGENT };
-  if (method === 'POST') {
-    for (const k of Object.keys(headers)) if (k.toLowerCase() === 'content-type') delete headers[k];
-    headers['Content-Type'] = 'application/json';
-  }
+  // Callers cannot set these in any letter case (a lower-case duplicate would be merged into the real header value).
+  const fixed = new Set(['user-agent', 'accept', 'content-type']);
+  const extra = Object.fromEntries(Object.entries(opts.headers ?? {}).filter(([k]) => !fixed.has(k.toLowerCase())));
+  const headers: Record<string, string> = { ...BOARD_HEADERS, Accept: opts.accept ?? defaultAccept, ...extra, 'User-Agent': BOARD_USER_AGENT };
+  if (method === 'POST') headers['Content-Type'] = 'application/json';
   const signal = AbortSignal.timeout(BOARD_TIMEOUT_MS);
   let res: Response;
   try {

@@ -50,7 +50,8 @@ export function normalizeHimalayas(raw: any, c: TrackedCompany): { jobs: BoardJo
       apply_url: url,
       description,
       ...(posted ? { posted_at: posted } : {}),
-      locations: restrictions.length ? restrictions : [''],
+      // every entry is a place the work is restricted to: "<region> only" so the shared "only" marker refuses it unless it is allow-listed (India passes first)
+      locations: restrictions.length ? restrictions.map((r: string) => (/^(?:worldwide|anywhere|global)$/i.test(r) ? r : clip(`${r} only`))) : [''],
       remote: true,
     });
   }

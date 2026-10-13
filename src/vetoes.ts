@@ -4,17 +4,25 @@ import { fileURLToPath } from 'node:url';
 import { languageGate, type LanguageConfig } from './languageGate.js';
 import { ageDays, deadlinePassed, staleFlag } from './freshness.js';
 import { assessLegitimacy, type Legitimacy } from './legitimacy.js';
-import { specificTargets, targetRegionEvidence, type TargetRegions } from './targetRegions.js';
-import { findRestriction, isRemotePosting } from './remotePolicy.js';
+import { mentionedTargetRegion, specificTargets, targetRegionEvidence, type TargetRegions } from './targetRegions.js';
+import { findRestriction, isRemotePosting, REGION_WORD } from './remotePolicy.js';
 
 // Why a model location FAIL may be shown as a FLAG, or null (FAIL stays). Never when a restriction marker (src/remotePolicy.ts) is in the
 // location, title or the first 20000 characters of the description. Otherwise: real target-region evidence (targetRegionEvidence), or, with
 // remote_anywhere on, a remote posting (isRemotePosting; on-site mentions win, so on-site elsewhere stays FAIL).
-function locationDowngrade(job: { title: string; description: string; location?: string | null; remote?: boolean }, tr: TargetRegions): { flag: string } | null {
+function locationDowngrade(rawJob: { title: string; description: string; location?: string | null; remote?: boolean }, tr: TargetRegions): { flag: string } | null {
+  // Board jobs carry their location in the first description line ("Location: Remote, US only (remote)"): it is the location string here,
+  // so the location-scope markers ("only", "based in", "-based") run on it. A job.location parameter, when given, is added to it.
+  const line = /^Location: ([^\n]{0,300})/.exec(String(rawJob.description ?? ''))?.[1] ?? '';
+  const job = { ...rawJob, location: [rawJob.location, line].filter((x) => x && String(x).trim()).join('; ') };
   const specific = specificTargets(tr.targets);
-  const restricted = findRestriction(String(job.location ?? ''), { scope: 'location', targets: specific })
-    ?? findRestriction(`${job.title}\n${job.description}`, { scope: 'posting', targets: specific });
+  const exempt = [...specific, ...tr.home]; // a marker whose subject is a target or home place ("must be located in the UAE", "within India") is no restriction
+  const restricted = findRestriction(job.location, { scope: 'location', targets: exempt })
+    ?? findRestriction(`${job.title}\n${job.description}`, { scope: 'posting', targets: exempt });
   if (restricted) return null;
+  // a bare continent or region in the location ("Remote, Europe") means the role is restricted to it, unless it is also worldwide
+  const lowLoc = job.location.toLowerCase();
+  if (REGION_WORD.test(lowLoc) && !/(?<![a-z])(?:worldwide|global|anywhere in the world)(?![a-z])/.test(lowLoc) && !mentionedTargetRegion(job.location, tr.home)) return null;
   const hit = targetRegionEvidence(job, tr.targets);
   if (hit) return { flag: `location FLAG: the matcher said FAIL but the posting names target region "${hit}" (relocation, visa or residency may be needed: check the posting)` };
   if (tr.remote_anywhere === true && isRemotePosting(job)) return { flag: 'location FLAG: remote role based elsewhere: verify eligibility' };
