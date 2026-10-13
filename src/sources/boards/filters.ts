@@ -85,7 +85,7 @@ const NAMED: Record<string, string> = {
   mdash: '—', ndash: '–', hellip: '…', bull: '•', middot: '·', copy: '©', reg: '®', trade: '™',
 };
 /** One regex pass: decodes numeric and the named entities above; unknown or invalid ones are left as written. */
-function decodeOnce(s: string): string {
+export function decodeOnce(s: string): string {
   return s.replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z][a-z0-9]{1,15}));/gi, (m, d, h, n) => {
     if (d !== undefined || h !== undefined) {
       const cp = d !== undefined ? parseInt(d, 10) : parseInt(h, 16);
