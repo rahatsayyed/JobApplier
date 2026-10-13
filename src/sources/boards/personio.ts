@@ -8,18 +8,19 @@
 // Discover-only (see src/lib/discoverOnly.ts).
 import { toIsoDay } from '../../db.js';
 import { assertVendorSlug, htmlToPlain, type TrackedCompany } from './filters.js';
-import { capDescription, clip, MAX_ID_CHARS, MAX_JOBS_PER_BOARD, type BoardJob } from './greenhouse.js';
+import { capDescription, clip, MAX_ID_CHARS, MAX_JOBS_PER_BOARD, type BoardJob, type FetchCtx } from './greenhouse.js';
 import { exactHosts, getText } from './transport.js';
 import { childOf, childrenOf, descendantsOf, parseXml, textOf } from './xml.js';
 
 const hostOf = (c: TrackedCompany): string => `${c.slug}.jobs.personio.${c.domain === 'com' ? 'com' : 'de'}`;
 
-export function normalizePersonioXml(xml: string, c: TrackedCompany): BoardJob[] {
+export function normalizePersonioXml(xml: string, c: TrackedCompany, ctx: FetchCtx = {}): BoardJob[] {
   assertVendorSlug(c);
   const jobsNode = childOf(parseXml(xml), 'workzag-jobs');
   if (!jobsNode) throw new Error(`personio ${c.slug}: unexpected response shape (no workzag-jobs element)`);
   const host = hostOf(c);
   const out: BoardJob[] = [];
+  let noDescription = 0;
   for (const pos of childrenOf(jobsNode, 'position').slice(0, MAX_JOBS_PER_BOARD)) {
     const id = textOf(pos, 'id');
     const title = textOf(pos, 'name');
@@ -30,6 +31,8 @@ export function normalizePersonioXml(xml: string, c: TrackedCompany): BoardJob[]
     const posted = toIsoDay(textOf(pos, 'createdAt'));
     const body = descendantsOf(childOf(pos, 'jobDescriptions'), 'value').map((v) => v.text).join('\n');
     const url = `https://${host}/job/${id}`;
+    const plain = capDescription(htmlToPlain(body));
+    if (!plain) noDescription++;
     out.push({
       id: fullId,
       source: 'personio',
@@ -37,21 +40,22 @@ export function normalizePersonioXml(xml: string, c: TrackedCompany): BoardJob[]
       company: c.name,
       url,
       apply_url: url,
-      description: capDescription(htmlToPlain(body)),
+      description: plain,
       ...(posted ? { posted_at: posted } : {}),
-      locations: offices.length ? offices : [''],
+      locations: offices,
       remote: /remote/i.test(title) || offices.some((o) => /remote/i.test(o)),
     });
   }
+  if (noDescription) ctx.warn?.(`${noDescription} of ${out.length} postings had no description (jobDescriptions changed?)`);
   return out;
 }
 
-export async function fetchPersonio(c: TrackedCompany): Promise<BoardJob[]> {
+export async function fetchPersonio(c: TrackedCompany, ctx: FetchCtx = {}): Promise<BoardJob[]> {
   assertVendorSlug(c);
   const host = hostOf(c);
   const xml = await getText(`https://${host}/xml`, `personio ${c.slug}`, { hosts: exactHosts(host) });
   try {
-    return normalizePersonioXml(xml, c);
+    return normalizePersonioXml(xml, c, ctx);
   } catch (e: any) {
     const m = String(e?.message ?? e);
     throw new Error(m.startsWith('personio ') ? m : `personio ${c.slug}: ${m}`);

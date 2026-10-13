@@ -9,7 +9,7 @@
 // left, inside the board's own deadline. A posting without a detail document is NOT returned (it would be saved description-less and never
 // re-fetched); it is retried on the next run. Returned jobs are discover-only (src/lib/discoverOnly.ts): Workday applications are account-gated.
 import { toIsoDay } from '../../db.js';
-import { assertVendorSlug, htmlToPlain, type TrackedCompany } from './filters.js';
+import { assertVendorSlug, htmlToPlain, SITE_RE, WD_RE, type TrackedCompany } from './filters.js';
 import { boardUrl, capDescription, clip, MAX_ID_CHARS, MAX_JOBS_PER_BOARD, type BoardJob, type FetchCtx } from './greenhouse.js';
 import { exactHosts, getJson, postJson } from './transport.js';
 import { pastDeadline, shortHash } from './util.js';
@@ -19,12 +19,14 @@ export const DEFAULT_MAX_PAGES = 10;
 export const DEFAULT_MAX_DETAIL = 40;
 const DETAIL_BATCH = 3;
 const PATH_RE = /^\/job\/[A-Za-z0-9_.~%()+,/-]{1,300}$/;
+// Percent-encoded dot or slash (%2e, %2f in any case) could smuggle a traversal past the plain ".." and "//" checks.
+const ENCODED_DOT_SLASH_RE = /%2[ef]/i;
 const PLACEHOLDER_RE = /^\d+\s+locations?$/i;
 const DAY = 86_400_000;
 
 /** externalPath comes from the response and is appended to our own host: only a plain "/job/..." path is accepted. */
 export function validExternalPath(p: unknown): p is string {
-  return typeof p === 'string' && PATH_RE.test(p) && !p.includes('..') && !p.includes('//');
+  return typeof p === 'string' && PATH_RE.test(p) && !ENCODED_DOT_SLASH_RE.test(p) && !p.includes('..') && !p.includes('//');
 }
 
 /** "Posted Today", "Posted Yesterday", "Posted 5 Days Ago" -> YYYY-MM-DD; "Posted 30+ Days Ago" and anything else -> undefined. */
@@ -43,6 +45,7 @@ export async function fetchWorkday(c: TrackedCompany, ctx: FetchCtx = {}): Promi
   assertVendorSlug(c);
   const label = `workday ${c.slug}`;
   if (!c.wd || !c.site) throw new Error(`${label}: config needs wd and site`);
+  if (!WD_RE.test(c.wd) || !SITE_RE.test(c.site)) throw new Error(`${label}: invalid wd or site`);
   const base = `https://${c.slug}.${c.wd}.myworkdayjobs.com`;
   const jobBase = `${base}/${c.site}`;
   const api = `${base}/wday/cxs/${c.slug}/${c.site}`;
@@ -117,7 +120,7 @@ export async function fetchWorkday(c: TrackedCompany, ctx: FetchCtx = {}): Promi
       const { k, info } = r;
       const places = [info.location, ...(Array.isArray(info.additionalLocations) ? info.additionalLocations : [])]
         .filter((x: unknown): x is string => typeof x === 'string' && !!x.trim()).map((x: string) => clip(x.trim())).slice(0, 20);
-      const locations = places.length ? [...new Set(places)] : [k.listLocation];
+      const locations = places.length ? [...new Set(places)] : (k.listLocation ? [k.listLocation] : []);
       const posted = toIsoDay(info.startDate) ?? parsePostedOn(k.postedOn);
       const url = boardUrl(`${jobBase}${k.externalPath}`, 'myworkdayjobs.com', jobBase);
       out.push({

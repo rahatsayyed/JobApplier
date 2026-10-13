@@ -15,9 +15,9 @@ const LOC = { allow: ['india', 'bengaluru'], global: ['remote', 'anywhere', 'wor
 
 // Shapes read from career-ops providers/hackernews.mjs (Algolia search_by_date and items).
 const search = { hits: [
-  { objectID: '45000001', title: 'Ask HN: Who wants to be hired? (October 2026)' },
-  { objectID: '45000000', title: 'Ask HN: Who is hiring? (October 2026)' },
-  { objectID: '44000000', title: 'Ask HN: Who is hiring? (September 2026)' },
+  { objectID: '45000001', author: 'whoishiring', title: 'Ask HN: Who wants to be hired? (October 2026)' },
+  { objectID: '45000000', author: 'whoishiring', title: 'Ask HN: Who is hiring? (October 2026)' },
+  { objectID: '44000000', author: 'whoishiring', title: 'Ask HN: Who is hiring? (September 2026)' },
 ] };
 const comment = (id: number, text: string, extra: Record<string, unknown> = {}) => ({ id, text, author: 'x', created_at: '2026-10-02T10:00:00.000Z', children: [{ id: id + 1, text: 'reply' }], ...extra });
 const item = { id: 45000000, title: 'Ask HN: Who is hiring? (October 2026)', children: [
@@ -35,7 +35,7 @@ const item = { id: 45000000, title: 'Ask HN: Who is hiring? (October 2026)', chi
 describe('resolveLatestThreadId', () => {
   it('picks the newest "Who is hiring" by title, never the "Who wants to be hired" thread, and only all-digit ids', () => {
     expect(resolveLatestThreadId(search)).toBe('45000000');
-    expect(resolveLatestThreadId({ hits: [{ objectID: '45000001', title: 'Ask HN: Freelancer? Seeking freelancer? (October 2026)' }] })).toBeNull();
+    expect(resolveLatestThreadId({ hits: [{ objectID: '45000001', author: 'whoishiring', title: 'Ask HN: Freelancer? Seeking freelancer? (October 2026)' }] })).toBeNull();
     expect(resolveLatestThreadId({ hits: [{ objectID: '45000000/../x', title: 'Ask HN: Who is hiring?' }] })).toBeNull();
     expect(resolveLatestThreadId(null)).toBeNull();
   });

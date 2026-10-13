@@ -8,6 +8,7 @@ import { toIsoDay } from '../../db.js';
 import { assertVendorSlug, htmlToPlain, type TrackedCompany } from './filters.js';
 import { boardUrl, capDescription, clip, MAX_ID_CHARS, MAX_JOBS_PER_BOARD, type BoardJob } from './greenhouse.js';
 import { exactHosts, getJson } from './transport.js';
+import { hasPlainAuthority } from './util.js';
 
 const HOSTS = exactHosts('apply.workable.com');
 const SHORTCODE_RE = /^[A-Za-z0-9]{1,40}$/;
@@ -19,6 +20,9 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
+// Same "2026-10-02 08:00:00 UTC" style as Recruitee: read the UTC suffix as Z so toIsoDay accepts it.
+const isoInput = (v: unknown): unknown => (typeof v === 'string' ? v.replace(/\s+UTC$/i, 'Z') : v);
+
 export function normalizeWorkable(raw: any, c: TrackedCompany): BoardJob[] {
   assertVendorSlug(c);
   const list = (Array.isArray(raw?.jobs) ? raw.jobs : []).slice(0, MAX_JOBS_PER_BOARD);
@@ -29,11 +33,11 @@ export function normalizeWorkable(raw: any, c: TrackedCompany): BoardJob[] {
     if (id.length > MAX_ID_CHARS) continue;
     const canonical = `https://apply.workable.com/${c.slug}/j/${j.shortcode}/`;
     // shortlink first, then url; each must be https on apply.workable.com, otherwise the canonical URL built from the shortcode.
-    let url = boardUrl(j.shortlink, 'apply.workable.com', canonical);
-    if (url === canonical) url = boardUrl(j.url, 'apply.workable.com', canonical);
+    let url = boardUrl(hasPlainAuthority(j.shortlink) ? j.shortlink : undefined, 'apply.workable.com', canonical);
+    if (url === canonical) url = boardUrl(hasPlainAuthority(j.url) ? j.url : undefined, 'apply.workable.com', canonical);
     const place = [j.city, j.country].filter((x: unknown): x is string => typeof x === 'string' && !!x.trim()).map((x: string) => x.trim()).join(', ');
     const remote = j.telecommuting === true;
-    const posted = toIsoDay(j.published_on ?? j.created_at);
+    const posted = toIsoDay(isoInput(j.published_on ?? j.created_at));
     out.push({
       id,
       source: 'workable',
@@ -43,7 +47,7 @@ export function normalizeWorkable(raw: any, c: TrackedCompany): BoardJob[] {
       apply_url: url,
       description: capDescription(htmlToPlain(typeof j.description === 'string' ? j.description : '')),
       ...(posted ? { posted_at: posted } : {}),
-      locations: [clip(place || (remote ? 'Remote' : ''))],
+      locations: (place || remote) ? [clip(place || 'Remote')] : [],
       remote,
     });
   }
