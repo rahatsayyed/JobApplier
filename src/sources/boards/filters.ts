@@ -7,7 +7,14 @@ import { hostMatches } from '../../lib/hostClass.js';
 // Company-board vendors: one board per tracked company. Each vendor has a provider in src/sources/boards/ and an entry in registry.ts.
 export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable', 'recruitee', 'personio', 'workday'] as const;
 export type CompanyAts = (typeof COMPANY_ATS)[number];
-export type Ats = CompanyAts;
+// Aggregators: one board-wide feed with many employers. They are configured in the "aggregators" object of portals.json (not in
+// tracked_companies), run through the same fetch loop, caps, filters and board_status, but are never part of BOARD_SOURCES (index.ts).
+export const AGGREGATOR_ATS = ['hackernews'] as const;
+export type AggregatorAts = (typeof AGGREGATOR_ATS)[number];
+export type Ats = CompanyAts | AggregatorAts;
+export const AGGREGATOR_DEFAULTS: Record<AggregatorAts, { name: string; slug: string }> = {
+  hackernews: { name: 'Hacker News Who is hiring', slug: 'whoishiring' },
+};
 export interface TrackedCompany {
   name: string; ats: Ats; slug: string; enabled: boolean; region?: 'eu';
   // personio: tenant host TLD (default "de")
@@ -245,9 +252,24 @@ export function loadPortals(file: string = defaultPath): { config: PortalsConfig
         ...(Number.isInteger(c.max_detail) ? { max_detail: c.max_detail as number } : {}),
         ...(Number.isInteger(c.max_pages) ? { max_pages: c.max_pages as number } : {}),
       }));
+    // "aggregators": { "<name>": { "enabled": true, "max_pages"?: n } } becomes one pseudo company per known aggregator.
+    const aggs: TrackedCompany[] = [];
+    if (raw.aggregators !== undefined) {
+      if (!isObj(raw.aggregators)) warnings.push('config/portals.json: aggregators must be an object, ignored');
+      else {
+        for (const [key, v] of Object.entries(raw.aggregators)) {
+          const label = `config/portals.json: aggregators.${key.slice(0, 40)} skipped`;
+          if (!(AGGREGATOR_ATS as readonly string[]).includes(key)) { warnings.push(`${label}: unknown aggregator`); continue; }
+          if (!isObj(v)) { warnings.push(`${label}: must be an object`); continue; }
+          const xp = extraConfigProblem({ ...v, ats: key });
+          if (xp) { warnings.push(`${label}: ${xp}`); continue; }
+          aggs.push({ ...AGGREGATOR_DEFAULTS[key as AggregatorAts], ats: key as Ats, enabled: v.enabled === true, ...(Number.isInteger(v.max_pages) ? { max_pages: v.max_pages as number } : {}) });
+        }
+      }
+    }
     return {
       config: {
-        tracked_companies: tracked,
+        tracked_companies: [...tracked, ...aggs],
         title_filter: { positive: strs(raw?.title_filter?.positive), negative: strs(raw?.title_filter?.negative) },
         location_filter: {
           allow: strs(raw?.location_filter?.allow),
