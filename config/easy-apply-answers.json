@@ -1,7 +1,8 @@
 {
   "years_experience": 3.7,
   "authorized_to_work": true,
-  "requires_sponsorship": true,
+  "requires_sponsorship_non_India": true,
+  "requires_sponsorship_for_India": false,
   "willing_to_relocate": true,
   "notice_period_days": 45,
   "expected_salary": "25 LPA",
