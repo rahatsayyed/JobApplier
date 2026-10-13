@@ -4,8 +4,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostMatches } from '../../lib/hostClass.js';
 
-export type Ats = 'greenhouse' | 'lever' | 'ashby';
-export interface TrackedCompany { name: string; ats: Ats; slug: string; enabled: boolean; region?: 'eu' }
+// Company-board vendors: one board per tracked company. Each vendor has a provider in src/sources/boards/ and an entry in registry.ts.
+export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby'] as const;
+export type CompanyAts = (typeof COMPANY_ATS)[number];
+export type Ats = CompanyAts;
+export interface TrackedCompany {
+  name: string; ats: Ats; slug: string; enabled: boolean; region?: 'eu';
+  // personio: tenant host TLD (default "de")
+  domain?: 'de' | 'com';
+  // workday: instance label (for example "wd5"), career site name, optional server-side search text
+  wd?: string; site?: string; search?: string;
+  // smartrecruiters and workday: most posting detail requests per fetch; workday and himalayas: most list pages per fetch
+  max_detail?: number; max_pages?: number;
+}
 export interface PortalsConfig {
   tracked_companies: TrackedCompany[];
   title_filter: { positive: string[]; negative: string[] };
@@ -25,6 +36,45 @@ export function isValidSlug(s: unknown): s is string {
 }
 export function assertSlug(s: string): void {
   if (!isValidSlug(s)) throw new Error(`invalid board slug ${JSON.stringify(s)}`);
+}
+
+// Vendor-specific slug rules on top of SLUG_RE. Vendors that put the slug in a hostname (recruitee, personio, workday) accept
+// only lowercase letters, digits and "-" so the slug can never smuggle a dot, a path or a second host into the URL.
+const HOST_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const TOKEN_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
+const VENDOR_SLUG_RULES: Record<string, { re: RegExp; hint: string; max?: number }> = {
+  workable: { re: TOKEN_SLUG_RE, hint: 'letters, digits, "_" and "-"' },
+  smartrecruiters: { re: TOKEN_SLUG_RE, hint: 'letters, digits, "_" and "-"' },
+  recruitee: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and "-" (the tenant subdomain)' },
+  personio: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and "-" (the tenant subdomain)' },
+  workday: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and "-" (the tenant), at most 40 characters', max: 40 },
+};
+/** null when the slug is fine for this vendor, else a short reason. */
+export function slugProblem(ats: string, slug: unknown): string | null {
+  if (!isValidSlug(slug)) return 'invalid slug';
+  const rule = VENDOR_SLUG_RULES[ats];
+  if (rule && (!rule.re.test(slug) || (rule.max !== undefined && slug.length > rule.max))) return `invalid slug (${rule.hint})`;
+  return null;
+}
+/** Providers call this first: throws "invalid board slug ..." which settleBoard reports as a labelled error. */
+export function assertVendorSlug(c: { ats: string; slug: string }): void {
+  if (slugProblem(c.ats, c.slug)) throw new Error(`invalid board slug ${JSON.stringify(c.slug)}`);
+}
+
+const WD_RE = /^wd\d{1,3}$/;
+const SITE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+/** Validates the optional vendor fields of one tracked_companies entry; null when fine. */
+export function extraConfigProblem(c: any): string | null {
+  if (c.ats === 'workday') {
+    if (typeof c.wd !== 'string' || !WD_RE.test(c.wd)) return 'workday needs wd like "wd5"';
+    if (typeof c.site !== 'string' || !SITE_RE.test(c.site)) return 'workday needs site (letters, digits, "_" and "-", at most 40)';
+  }
+  if (c.domain !== undefined && c.domain !== 'de' && c.domain !== 'com') return 'domain must be "de" or "com"';
+  if (c.search !== undefined && (typeof c.search !== 'string' || c.search.length > 100 || /[\u0000-\u001f]/.test(c.search))) return 'search must be a string of at most 100 characters';
+  for (const [k, max] of [['max_detail', 100], ['max_pages', 50]] as const) {
+    if (c[k] !== undefined && (!Number.isInteger(c[k]) || c[k] < 1 || c[k] > max)) return `${k} must be an integer from 1 to ${max}`;
+  }
+  return null;
 }
 /** Keep a response-supplied URL only if it is https and on the vendor's own domain; otherwise use the canonical one. */
 export function safeVendorUrl(candidate: unknown, apex: string, fallback: string): string {
@@ -176,11 +226,23 @@ export function loadPortals(file: string = defaultPath): { config: PortalsConfig
       .filter((c: any, i: number) => {
         const label = `config/portals.json: tracked_companies[${i}]${c && typeof c.name === 'string' ? ` (${c.name.slice(0, 60)})` : ''} skipped`;
         if (!c || typeof c.name !== 'string') { warnings.push(`${label}: missing name`); return false; }
-        if (!['greenhouse', 'lever', 'ashby'].includes(c.ats)) { warnings.push(`${label}: unknown ats ${JSON.stringify(c.ats)}`); return false; }
-        if (typeof c.slug !== 'string' || !isValidSlug(c.slug.trim())) { warnings.push(`${label}: invalid slug`); return false; }
+        if (!(COMPANY_ATS as readonly string[]).includes(c.ats)) { warnings.push(`${label}: unknown ats ${JSON.stringify(c.ats)}`); return false; }
+        const sp = typeof c.slug === 'string' ? slugProblem(c.ats, c.slug.trim()) : 'invalid slug';
+        if (sp) { warnings.push(`${label}: ${sp}`); return false; }
+        const xp = extraConfigProblem(c);
+        if (xp) { warnings.push(`${label}: ${xp}`); return false; }
         return true;
       })
-      .map((c: any) => ({ name: c.name, ats: c.ats as Ats, slug: c.slug.trim(), enabled: c.enabled === true, ...(c.region === 'eu' ? { region: 'eu' as const } : {}) }));
+      .map((c: any): TrackedCompany => ({
+        name: c.name, ats: c.ats as Ats, slug: c.slug.trim(), enabled: c.enabled === true,
+        ...(c.region === 'eu' ? { region: 'eu' as const } : {}),
+        ...(c.domain === 'de' || c.domain === 'com' ? { domain: c.domain as 'de' | 'com' } : {}),
+        ...(typeof c.wd === 'string' ? { wd: c.wd } : {}),
+        ...(typeof c.site === 'string' ? { site: c.site } : {}),
+        ...(typeof c.search === 'string' && c.search.trim() ? { search: c.search.trim() } : {}),
+        ...(Number.isInteger(c.max_detail) ? { max_detail: c.max_detail as number } : {}),
+        ...(Number.isInteger(c.max_pages) ? { max_pages: c.max_pages as number } : {}),
+      }));
     return {
       config: {
         tracked_companies: tracked,

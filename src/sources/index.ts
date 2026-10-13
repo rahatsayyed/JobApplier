@@ -15,7 +15,7 @@ async function safely(name: string, fn: () => Promise<Job[]>): Promise<Job[]> {
   }
 }
 
-export async function fetchAllJobs(params: { role: string; location?: string }): Promise<Job[]> {
+export async function fetchAllJobs(params: { role: string; location?: string; isKnown?: (id: string) => boolean }): Promise<Job[]> {
   const [adzuna, remotive, remoteok, naukri, boards] = await Promise.all([
     safely('adzuna', () => fetchAdzuna({ role: params.role, location: params.location })),
     safely('remotive', () => fetchRemotive({ role: params.role })),
@@ -23,7 +23,7 @@ export async function fetchAllJobs(params: { role: string; location?: string }):
     safely('naukri', () => fetchNaukri({ role: params.role, location: params.location })),
     // Boards ignore role/location on purpose: only the filters in config/portals.json apply to them.
     // A board failure (or a missing/invalid portals.json) never loses the other sources.
-    safely('boards', async () => (await fetchBoards()).jobs),
+    safely('boards', async () => (await fetchBoards({ isKnown: params.isKnown })).jobs),
   ]);
   return [...adzuna, ...remotive, ...remoteok, ...naukri, ...boards];
 }

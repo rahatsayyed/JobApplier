@@ -3,10 +3,9 @@
 // This module never opens the database (src/mcp/job-fetch.ts does the db-side dedupe).
 import type { Job } from '../../db.js';
 import { companyKey, titleIdentityKey } from '../../reposts.js';
-import { loadPortals, locationAllowed, titlePasses, type Ats, type TrackedCompany } from './filters.js';
-import { fetchGreenhouse, settleBoard, type BoardJob } from './greenhouse.js';
-import { fetchLever } from './lever.js';
-import { fetchAshby } from './ashby.js';
+import { COMPANY_ATS, loadPortals, locationAllowed, titlePasses, type Ats, type TrackedCompany } from './filters.js';
+import { settleBoard, type BoardJob, type FetchCtx } from './greenhouse.js';
+import { FETCHERS } from './registry.js';
 
 export interface BoardsResult { jobs: Job[]; errors: string[]; stats: Array<{ company: string; ats: Ats; fetched: number; kept: number }> }
 
@@ -15,10 +14,9 @@ export const MAX_CONCURRENCY = 3;
 export const DEFAULT_MAX_PER_COMPANY = 200;
 export const DEFAULT_BOARD_TIMEOUT_MS = 30_000;
 export const DEFAULT_BUDGET_MS = 120_000;
-export const BOARD_SOURCES = new Set<string>(['greenhouse', 'lever', 'ashby']);
+// Sources whose jobs belong to one company board (dedupe groups are vendor + tenant). Aggregators are never in here.
+export const BOARD_SOURCES = new Set<string>(COMPANY_ATS);
 const capText = (s: string, n = DESCRIPTION_CAP) => (s.length > n ? s.slice(0, n).trimEnd() : s);
-
-const FETCHERS: Record<Ats, (c: TrackedCompany) => Promise<BoardJob[]>> = { greenhouse: fetchGreenhouse, lever: fetchLever, ashby: fetchAshby };
 
 export interface FetchBoardsOptions {
   configPath?: string;
@@ -30,6 +28,8 @@ export interface FetchBoardsOptions {
   boardTimeoutMs?: number;
   /** Wall-clock limit for the whole fetch (default 120 s); boards not started by then are reported as errors. */
   budgetMs?: number;
+  /** True for a job id that is already stored; providers that pay one request per posting skip those before spending requests. */
+  isKnown?: (id: string) => boolean;
 }
 
 let last: (BoardsResult & { at: string }) | null = null;
@@ -48,7 +48,7 @@ export function boardStatusPayload(r: (BoardsResult & { at: string }) | null = l
   };
 }
 
-type Slot = { c: TrackedCompany; jobs?: BoardJob[]; error?: string };
+type Slot = { c: TrackedCompany; jobs?: BoardJob[]; error?: string; warnings?: string[] };
 
 async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
   lastNote = undefined;
@@ -70,12 +70,20 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
       const remaining = deadline - Date.now();
       if (remaining <= 0) { slots[i] = { c, error: `${label}: skipped, time budget exhausted` }; continue; }
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<{ jobs: BoardJob[]; error: string | null }>((resolve) => {
-        timer = setTimeout(() => resolve({ jobs: [], error: `${label}: timeout` }), Math.min(boardTimeout, remaining));
+      const budget = Math.min(boardTimeout, remaining);
+      const timeout = new Promise<{ jobs: BoardJob[]; error: string | null; warnings?: string[] }>((resolve) => {
+        timer = setTimeout(() => resolve({ jobs: [], error: `${label}: timeout` }), budget);
       });
+      // Providers that make several requests stop on their own 2 s before the hard per-board timeout and return what they have.
+      const ctx: FetchCtx = {
+        prefilter: (title, locations, remote) => titlePasses(title, config.title_filter) && locationAllowed(locations, remote, config.location_filter),
+        titleOk: (title) => titlePasses(title, config.title_filter),
+        isKnown: opts.isKnown,
+        deadlineAt: Date.now() + Math.max(0, budget - 2000),
+      };
       try {
-        const r = await Promise.race([settleBoard(FETCHERS[c.ats], c), timeout]);
-        slots[i] = r.error ? { c, error: r.error.startsWith(`${label}:`) ? r.error : `${label}: ${r.error}` } : { c, jobs: r.jobs };
+        const r = await Promise.race([settleBoard(FETCHERS[c.ats], c, ctx), timeout]);
+        slots[i] = r.error ? { c, error: r.error.startsWith(`${label}:`) ? r.error : `${label}: ${r.error}` } : { c, jobs: r.jobs, warnings: r.warnings };
       } catch (e: any) {
         slots[i] = { c, error: `${label}: ${String(e?.message ?? e).slice(0, 300)}` };
       } finally {
@@ -90,6 +98,7 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
   const seen = new Set<string>();
   for (const s of slots) {
     if (s.error) { out.errors.push(s.error); continue; }
+    for (const w of s.warnings ?? []) out.errors.push(`${s.c.ats} ${s.c.slug}: ${w}`);
     const fetched = s.jobs ?? [];
     const kept = fetched
       .filter((j) => titlePasses(j.title, config.title_filter) && locationAllowed(j.locations, j.remote, config.location_filter))

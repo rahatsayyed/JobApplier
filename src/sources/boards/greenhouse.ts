@@ -8,10 +8,32 @@ import { getJson } from './transport.js';
 
 export interface BoardJob extends Job { locations: string[]; remote: boolean }
 
-export interface BoardResult { jobs: BoardJob[]; error: string | null }
+/** What runBoards hands to a provider so it can spend its request budget wisely (all optional; simple providers ignore it). */
+export interface FetchCtx {
+  /** Title and location prefilter from config/portals.json: providers that pay one request per posting apply it BEFORE asking for details. */
+  prefilter?: (title: string, locations: string[], remote: boolean) => boolean;
+  /** Title-only half of the prefilter, for postings whose location is not known until the detail request. */
+  titleOk?: (title: string) => boolean;
+  /** True for a job id that is already stored, so no detail request is wasted on it. */
+  isKnown?: (id: string) => boolean;
+  /** Epoch ms after which a provider must stop starting requests and return what it has. */
+  deadlineAt?: number;
+  /** Non-fatal notes (partial results, skipped postings) that end up in board_status errors. */
+  warn?: (message: string) => void;
+}
+export type BoardFetcher = (c: TrackedCompany, ctx?: FetchCtx) => Promise<BoardJob[]>;
+
+export interface BoardResult { jobs: BoardJob[]; error: string | null; warnings?: string[] }
 // Never-throwing wrapper over a provider fetch, so one bad board becomes a reportable error string (for board_status).
-export async function settleBoard(fn: (c: TrackedCompany) => Promise<BoardJob[]>, c: TrackedCompany): Promise<BoardResult> {
-  try { return { jobs: await fn(c), error: null }; } catch (e: any) { return { jobs: [], error: String(e?.message ?? e).slice(0, 300) }; }
+export async function settleBoard(fn: BoardFetcher, c: TrackedCompany, ctx: FetchCtx = {}): Promise<BoardResult> {
+  const warnings: string[] = [];
+  const warn = (m: string) => { if (warnings.length < 20) warnings.push(String(m).slice(0, 300)); ctx.warn?.(m); };
+  try {
+    const jobs = await fn(c, { ...ctx, warn });
+    return { jobs, error: null, ...(warnings.length ? { warnings } : {}) };
+  } catch (e: any) {
+    return { jobs: [], error: String(e?.message ?? e).slice(0, 300), ...(warnings.length ? { warnings } : {}) };
+  }
 }
 
 export const MAX_JOBS_PER_BOARD = 2000;
