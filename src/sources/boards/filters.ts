@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { hostMatches } from '../../lib/hostClass.js';
 
 // Company-board vendors: one board per tracked company. Each vendor has a provider in src/sources/boards/ and an entry in registry.ts.
-export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby'] as const;
+export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable'] as const;
 export type CompanyAts = (typeof COMPANY_ATS)[number];
 export type Ats = CompanyAts;
 export interface TrackedCompany {
