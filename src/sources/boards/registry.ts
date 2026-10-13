@@ -7,6 +7,7 @@ import { fetchAshby } from './ashby.js';
 import { fetchWorkable } from './workable.js';
 import { fetchRecruitee } from './recruitee.js';
 import { fetchPersonio } from './personio.js';
+import { fetchWorkday } from './workday.js';
 
 export const FETCHERS: Record<Ats, BoardFetcher> = {
   greenhouse: fetchGreenhouse,
@@ -15,4 +16,5 @@ export const FETCHERS: Record<Ats, BoardFetcher> = {
   workable: fetchWorkable,
   recruitee: fetchRecruitee,
   personio: fetchPersonio,
+  workday: fetchWorkday,
 };
