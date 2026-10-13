@@ -5,18 +5,40 @@
 // an item without one is skipped and counted in a warning (it would be saved description-less). An item whose title has no "Company: " prefix is
 // skipped too (no company means no contact search). url and apply_url are the weworkremotely.com page; discover-only (src/lib/discoverOnly.ts).
 // Every posting here is remote; the region decides the location filter ("Anywhere in the World" is worldwide, "USA Only" is not).
+// A region with exclusion wording ("Worldwide (excl. India)", "Anywhere (but not India)") is never mapped to bare Worldwide: the raw text is
+// kept (negations rewritten to "excluding") so the location filter fails it.
+// UNREVIEWED: We Work Remotely's terms of use and RSS usage policy have not been reviewed by the maintainer; read them before relying on this feed.
+// pubDate is accepted only when the parsed UTC day equals the day-of-month written in the text (no 31 Feb rollover, no zone shift).
 import { toIsoDay } from '../../db.js';
 import { hostMatches } from '../../lib/hostClass.js';
 import { htmlToPlain, type TrackedCompany } from './filters.js';
 import { capDescription, clip, MAX_JOBS_PER_BOARD, MAX_URL_CHARS, type BoardJob, type FetchCtx } from './greenhouse.js';
 import { exactHosts, getText } from './transport.js';
-import { shortHash } from './util.js';
+import { hasPlainAuthority, shortHash } from './util.js';
 import { childOf, childrenOf, parseXml, textOf } from './xml.js';
 
 const HOSTS = exactHosts('weworkremotely.com');
 const FEED = 'https://weworkremotely.com/remote-jobs.rss';
 
-const wwrUrl = (u: string): string => (u.length <= MAX_URL_CHARS && /^https:\/\//i.test(u) && hostMatches(u, 'weworkremotely.com') ? u : '');
+const EXCLUSION = /(?<![a-z])(?:excl|excluding|except|outside|but\s+not|not|without)(?![a-z])/i;
+
+/** Worldwide only for an unqualified worldwide region; exclusion text is kept (negations as "excluding") so locationAllowed rejects it. */
+export function wwrLocation(region: string): string {
+  const r = region.trim();
+  if (EXCLUSION.test(r)) return clip(r.replace(/(?<![a-z])(?:but\s+not|not|without)(?![a-z])/gi, 'excluding'));
+  return /anywhere in the world|worldwide/i.test(r) ? 'Worldwide' : clip(r || 'Unknown region');
+}
+
+/** ISO day from an RSS date, or undefined when unparseable, no readable day-of-month, or the UTC day differs from the written one. */
+export function wwrDate(text: string): string | undefined {
+  const ms = Date.parse(text);
+  if (Number.isNaN(ms)) return undefined;
+  const m = /(?:^|[^0-9])(\d{1,2})\s+[A-Za-z]{3}/.exec(text) ?? /\d{4}-\d{2}-(\d{2})/.exec(text);
+  if (!m || new Date(ms).getUTCDate() !== Number(m[1])) return undefined;
+  return toIsoDay(ms);
+}
+
+const wwrUrl = (u: string): string => (hasPlainAuthority(u) && u.length <= MAX_URL_CHARS && /^https:\/\//i.test(u) && hostMatches(u, 'weworkremotely.com') ? u : '');
 
 export function normalizeWwr(xml: string, c: TrackedCompany): { jobs: BoardJob[]; noDescription: number } {
   const channel = childOf(childOf(parseXml(xml), 'rss'), 'channel');
@@ -33,8 +55,7 @@ export function normalizeWwr(xml: string, c: TrackedCompany): { jobs: BoardJob[]
     const description = capDescription(htmlToPlain(textOf(it, 'description')));
     if (!description) { noDescription++; continue; }
     const region = textOf(it, 'region');
-    const ms = Date.parse(textOf(it, 'pubDate'));
-    const posted = Number.isNaN(ms) ? undefined : toIsoDay(ms);
+    const posted = wwrDate(textOf(it, 'pubDate'));
     jobs.push({
       id: `wwr:${shortHash(url, 16)}`,
       source: 'weworkremotely',
@@ -44,7 +65,7 @@ export function normalizeWwr(xml: string, c: TrackedCompany): { jobs: BoardJob[]
       apply_url: url,
       description,
       ...(posted ? { posted_at: posted } : {}),
-      locations: [/anywhere in the world|worldwide/i.test(region) ? 'Worldwide' : clip(region || 'Unknown region')],
+      locations: [wwrLocation(region)],
       remote: true,
     });
   }

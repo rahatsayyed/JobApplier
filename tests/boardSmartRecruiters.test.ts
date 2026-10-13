@@ -83,6 +83,20 @@ describe('fetchSmartRecruiters', () => {
     expect(jobs.map((j) => j.id)).toEqual(['sr:AcmeCorp:74300000003']);
     expect(warn.mock.calls[0][0]).toContain('2 detail request(s) failed or had no description');
   });
+  it('warns once, with a count, when the slug is so long that every id exceeds the id cap', async () => {
+    const long = { ...company, slug: 'a'.repeat(98) };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => json({ content: [item(1), item(2), item(3)] })));
+    const warn = vi.fn();
+    expect(await fetchSmartRecruiters(long, { warn })).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('3 posting(s) dropped: id "sr:<slug>:<id>" exceeds 100 characters (slug too long)');
+  });
+  it('failed details are counted in the warning and stay retriable (not stored, spend max_detail again)', async () => {
+    stub([[item(1), item(2)]], () => new Response('', { status: 500 }));
+    const warn = vi.fn();
+    expect(await fetchSmartRecruiters(company, { warn })).toEqual([]);
+    expect(warn.mock.calls[0][0]).toContain('2 detail request(s) failed or had no description (not stored, so they are retried next run');
+  });
   it('skips unsafe ids and unnamed postings, never uses the response ref for the URL', async () => {
     stub([[item(1, { id: '../x' }), item(2, { name: ' ' }), item(3, { ref: 'https://evil.example/x' }), null]]);
     const jobs = await fetchSmartRecruiters(company, {});

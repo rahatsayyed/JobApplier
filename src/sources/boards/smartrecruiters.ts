@@ -41,6 +41,7 @@ export async function fetchSmartRecruiters(c: TrackedCompany, ctx: FetchCtx = {}
 
   const candidates: Candidate[] = [];
   const seen = new Set<string>();
+  let idTooLong = 0;
   for (let page = 0; page < SR_MAX_PAGES; page++) {
     if (page > 0 && pastDeadline(ctx.deadlineAt)) { notes.push(`list stopped at page ${page} (time budget)`); break; }
     let json: any;
@@ -60,7 +61,7 @@ export async function fetchSmartRecruiters(c: TrackedCompany, ctx: FetchCtx = {}
     for (const p of json.content) {
       if (!p || typeof p.id !== 'string' || !POSTING_ID_RE.test(p.id) || !str(p.name) || seen.has(p.id)) continue;
       const jobId = `sr:${c.slug}:${p.id}`;
-      if (jobId.length > MAX_ID_CHARS) continue;
+      if (jobId.length > MAX_ID_CHARS) { idTooLong++; continue; }
       seen.add(p.id);
       fresh++;
       const loc = p.location ?? {};
@@ -111,7 +112,8 @@ export async function fetchSmartRecruiters(c: TrackedCompany, ctx: FetchCtx = {}
   }
 
   const deferred = Math.max(0, wanted.length - queue.length) + skippedForTime;
-  if (failed) notes.push(`${failed} detail request(s) failed or had no description (retried next run)`);
+  if (idTooLong) notes.push(`${idTooLong} posting(s) dropped: id "sr:<slug>:<id>" exceeds ${MAX_ID_CHARS} characters (slug too long)`);
+  if (failed) notes.push(`${failed} detail request(s) failed or had no description (not stored, so they are retried next run and use up max_detail again)`);
   if (deferred) notes.push(`${deferred} posting(s) deferred to the next run (max_detail ${maxDetail} or time budget)`);
   if (notes.length) ctx.warn?.(`partial: listed ${candidates.length}, ${wanted.length} passed the prefilter, ${out.length} returned; ${notes.join('; ')}`);
   return out;

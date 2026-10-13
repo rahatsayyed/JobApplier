@@ -80,7 +80,7 @@ export function extraConfigProblem(c: any): string | null {
   if (c.ats === 'workday' || c.site !== undefined) {
     if (typeof c.site !== 'string' || !SITE_RE.test(c.site)) return c.ats === 'workday' ? 'workday needs site (letters, digits, "_" and "-", at most 40)' : 'site must be letters, digits, "_" and "-", at most 40';
   }
-  if (c.ats === 'personio' && c.domain !== undefined && c.domain !== 'de' && c.domain !== 'com') return 'domain must be "de" or "com"';
+  if ((c.ats === 'personio' || (AGGREGATOR_ATS as readonly string[]).includes(c.ats)) && c.domain !== undefined && c.domain !== 'de' && c.domain !== 'com') return 'domain must be "de" or "com"';
   if (c.search !== undefined && (typeof c.search !== 'string' || c.search.length > 100 || /[\u0000-\u001f]/.test(c.search))) return 'search must be a string of at most 100 characters';
   for (const [k, max] of [['max_detail', 100], ['max_pages', 50]] as const) {
     if (c[k] !== undefined && (!Number.isInteger(c[k]) || c[k] < 1 || c[k] > max)) return `${k} must be an integer from 1 to ${max}`;
