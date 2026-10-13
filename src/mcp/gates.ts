@@ -44,7 +44,7 @@ server.registerTool(
           language_gate: verdict.optional(),
         })
       ),
-      jobs: z.array(z.object({ id: z.string(), title: z.string(), description: z.string().nullable().optional() })),
+      jobs: z.array(z.object({ id: z.string(), title: z.string(), description: z.string().nullable().optional(), location: z.string().nullable().optional(), remote: z.boolean().nullable().optional() })),
     },
   },
   async ({ results, jobs }) => {

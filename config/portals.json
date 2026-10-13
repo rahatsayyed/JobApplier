@@ -20,7 +20,7 @@
     "negative": ["word:staff", "principal", "director", "manager", "head of", "vp", "word:intern", "word:interns", "word:internship", "word:sales", "account executive", "lead:marketing", "recruiter", "lead:designer", "data scientist", "lead:android", "lead:ios", "lead:qa"]
   },
   "location_filter": {
-    "allow": ["india", "bengaluru", "bangalore", "pune", "mumbai", "hyderabad", "chennai", "delhi", "new delhi", "gurgaon", "gurugram", "noida", "kolkata", "ahmedabad", "jaipur", "kochi", "apac", "united arab emirates", "uae", "dubai", "abu dhabi", "sharjah", "saudi arabia", "ksa", "riyadh", "jeddah", "qatar", "doha", "kuwait", "bahrain", "oman", "muscat", "gcc", "middle east", "mena"],
+    "allow": ["india", "bengaluru", "bangalore", "pune", "mumbai", "hyderabad", "chennai", "delhi", "new delhi", "gurgaon", "gurugram", "noida", "kolkata", "ahmedabad", "jaipur", "kochi", "apac", "united arab emirates", "uae", "dubai", "abu dhabi", "sharjah", "saudi arabia", "ksa", "riyadh", "jeddah", "qatar", "doha", "kuwait", "bahrain", "oman", "muscat", "gcc", "middle east", "mena", "manama", "kuwait city", "ajman", "ras al khaimah", "dammam", "al khobar", "salalah", "دبي", "أبوظبي", "الرياض", "الدوحة", "مسقط", "الكويت", "المنامة", "الإمارات", "السعودية", "قطر", "البحرين"],
     "global": ["remote", "anywhere", "worldwide", "global"]
   }
 }

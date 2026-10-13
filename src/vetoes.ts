@@ -4,7 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { languageGate, type LanguageConfig } from './languageGate.js';
 import { ageDays, deadlinePassed, staleFlag } from './freshness.js';
 import { assessLegitimacy, type Legitimacy } from './legitimacy.js';
-import { mentionedTargetRegion, type TargetRegions } from './targetRegions.js';
+import { specificTargets, targetRegionEvidence, type TargetRegions } from './targetRegions.js';
+import { findRestriction } from './remotePolicy.js';
+
+/** The target term that justifies turning a model location FAIL into a FLAG, or null (FAIL stays): no restriction marker, and real evidence (see targetRegionEvidence). */
+function regionDowngrade(job: { title: string; description: string; location?: string | null }, targets: string[]): string | null {
+  const specific = specificTargets(targets);
+  const restricted = findRestriction(String(job.location ?? ''), { scope: 'location', targets: specific })
+    ?? findRestriction(`${job.title}\n${job.description}`, { scope: 'posting', targets: specific });
+  return restricted ? null : targetRegionEvidence(job, targets);
+}
 
 export type Verdict = 'PASS' | 'FAIL' | 'FLAG';
 
@@ -20,7 +29,7 @@ export interface VetoResult { excluded: boolean; reason?: string; flags: string[
 
 export function applyVetoes(
   m: { job_id: string; score: number; location_verdict?: Verdict; language_gate?: Verdict },
-  job: { title: string; description: string },
+  job: { title: string; description: string; location?: string | null; remote?: boolean },
   dealBreakers: string[],
   extras?: VetoExtras,
 ): VetoResult {
@@ -39,7 +48,8 @@ export function applyVetoes(
   const soft: string[] = [];
   // Backstop for the model's location verdict: a FAIL on a posting that names a target region (Gulf by default) is shown as a FLAG, never passed silently.
   let locationVerdict = m.location_verdict;
-  const regionHit = locationVerdict === 'FAIL' && extras?.targetRegions ? mentionedTargetRegion(`${job.title}\n${job.description}`, extras.targetRegions.targets) : null;
+  // A restriction marker (residency, "US only", right to work in a non-target place...) in the location, title or the posting text keeps the FAIL.
+  const regionHit = locationVerdict === 'FAIL' && extras?.targetRegions ? regionDowngrade(job, extras.targetRegions.targets) : null;
   if (regionHit) {
     locationVerdict = 'FLAG';
     soft.push(`location FLAG: the matcher said FAIL but the posting names target region "${regionHit}" (relocation, visa or residency may be needed: check the posting)`);
@@ -90,12 +100,12 @@ export function loadDealBreakers(file: string = dealBreakersPath): string[] {
 /** Run applyVetoes per result. `keywords` overrides the config file (for tests). */
 export function vetoResults(
   results: { job_id: string; score: number; location_verdict?: Verdict; language_gate?: Verdict }[],
-  jobs: { id: string; title: string; description?: string | null }[],
+  jobs: { id: string; title: string; description?: string | null; location?: string | null; remote?: boolean | null }[],
   keywords?: string[],
   ctx?: { facts?: Map<string, JobFacts>; now?: Date; languages?: LanguageConfig | null; languagesInvalid?: string; targetRegions?: TargetRegions | null; targetRegionsInvalid?: string },
 ): Array<{ job_id: string } & VetoResult> {
   const dealBreakers = (keywords ?? loadDealBreakers()).map((k) => k.trim()).filter(Boolean);
-  const byId = new Map(jobs.map((j) => [j.id, { title: j.title, description: j.description ?? '' }]));
+  const byId = new Map(jobs.map((j) => [j.id, { title: j.title, description: j.description ?? '', location: j.location ?? null, remote: j.remote ?? undefined }]));
   return results.map((r) => {
     const job = byId.get(r.job_id) ?? { title: '', description: '' };
     const extras = ctx ? { facts: ctx.facts?.get(r.job_id), now: ctx.now, languages: ctx.languages, languagesInvalid: ctx.languagesInvalid, targetRegions: ctx.targetRegions, targetRegionsInvalid: ctx.targetRegionsInvalid } : undefined;
