@@ -90,3 +90,35 @@ describe('request hardening is preserved for every helper', () => {
     await expect(postJson('https://api.lever.co/x', {}, 'l a')).rejects.toThrow('l a: timeout');
   });
 });
+
+describe('fix round 1', () => {
+  it('refuses explicit ports but accepts :443, and refuses trailing-dot hosts for both policy kinds', async () => {
+    const f = vi.fn().mockResolvedValue(ok('{}'));
+    vi.stubGlobal('fetch', f);
+    await expect(getJson('https://api.lever.co:8443/x', 'x')).rejects.toThrow('x: host not allowed');
+    await expect(getJson('https://a.recruitee.com:444/x', 'x', { hosts: apexHosts('recruitee.com') })).rejects.toThrow('x: host not allowed');
+    await getJson('https://api.lever.co:443/x', 'x');
+    await expect(getJson('https://api.lever.co./x', 'x')).rejects.toThrow('x: host not allowed');
+    await expect(getJson('https://a.recruitee.com./x', 'x', { hosts: apexHosts('recruitee.com') })).rejects.toThrow('x: host not allowed');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+  it('postJson forces the JSON content type, rejects undefined, circular and BigInt payloads', async () => {
+    const f = vi.fn().mockResolvedValue(ok('{}'));
+    vi.stubGlobal('fetch', f);
+    await postJson('https://api.lever.co/x', {}, 'p', { headers: { 'content-type': 'text/plain' } });
+    const h = f.mock.calls[0][1].headers;
+    expect(h['Content-Type']).toBe('application/json');
+    expect(Object.keys(h).filter((k) => k.toLowerCase() === 'content-type')).toHaveLength(1);
+    const circ: any = {}; circ.self = circ;
+    await expect(postJson('https://api.lever.co/x', undefined, 'p')).rejects.toThrow('p: invalid request body');
+    await expect(postJson('https://api.lever.co/x', circ, 'p')).rejects.toThrow('p: invalid request body');
+    await expect(postJson('https://api.lever.co/x', { n: 1n }, 'p')).rejects.toThrow('p: invalid request body');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+  it('a throwing host predicate is reported as host not allowed', async () => {
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    await expect(getJson('https://a.example.com/x', 'x', { hosts: () => { throw new Error('boom'); } })).rejects.toThrow('x: host not allowed');
+    expect(f).not.toHaveBeenCalled();
+  });
+});

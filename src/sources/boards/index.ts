@@ -71,6 +71,7 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
       if (remaining <= 0) { slots[i] = { c, error: `${label}: skipped, time budget exhausted` }; continue; }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const budget = Math.min(boardTimeout, remaining);
+      const collected: string[] = [];
       const timeout = new Promise<{ jobs: BoardJob[]; error: string | null; warnings?: string[] }>((resolve) => {
         timer = setTimeout(() => resolve({ jobs: [], error: `${label}: timeout` }), budget);
       });
@@ -80,12 +81,14 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
         titleOk: (title) => titlePasses(title, config.title_filter),
         isKnown: opts.isKnown,
         deadlineAt: Date.now() + Math.max(0, budget - 2000),
+        // Collected here (not only inside settleBoard) so warnings survive a per-board timeout or a thrown error.
+        warn: (m) => { if (collected.length < 20) collected.push(String(m).slice(0, 300)); },
       };
       try {
         const r = await Promise.race([settleBoard(FETCHERS[c.ats], c, ctx), timeout]);
-        slots[i] = r.error ? { c, error: r.error.startsWith(`${label}:`) ? r.error : `${label}: ${r.error}` } : { c, jobs: r.jobs, warnings: r.warnings };
+        slots[i] = r.error ? { c, error: r.error.startsWith(`${label}:`) ? r.error : `${label}: ${r.error}`, warnings: collected } : { c, jobs: r.jobs, warnings: collected };
       } catch (e: any) {
-        slots[i] = { c, error: `${label}: ${String(e?.message ?? e).slice(0, 300)}` };
+        slots[i] = { c, error: `${label}: ${String(e?.message ?? e).slice(0, 300)}`, warnings: collected };
       } finally {
         if (timer) clearTimeout(timer);
       }
@@ -97,8 +100,8 @@ async function runBoards(opts: FetchBoardsOptions): Promise<BoardsResult> {
   const out: BoardsResult = { jobs: [], errors: [...(warnings ?? [])], stats: [] };
   const seen = new Set<string>();
   for (const s of slots) {
-    if (s.error) { out.errors.push(s.error); continue; }
     for (const w of s.warnings ?? []) out.errors.push(`${s.c.ats} ${s.c.slug}: ${w}`);
+    if (s.error) { out.errors.push(s.error); continue; }
     const fetched = s.jobs ?? [];
     const kept = fetched
       .filter((j) => titlePasses(j.title, config.title_filter) && locationAllowed(j.locations, j.remote, config.location_filter))

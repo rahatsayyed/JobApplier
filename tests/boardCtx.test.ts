@@ -47,4 +47,10 @@ describe('fetchBoards hands each provider a context', () => {
     expect(r.errors).toEqual(['greenhouse a: partial: 40 of 400 postings detailed']);
     expect(r.stats).toEqual([{ company: 'A', ats: 'greenhouse', fetched: 1, kept: 1 }]);
   });
+  it('keeps warnings collected before a per-board timeout', async () => {
+    const { fetchBoards } = await import('../src/sources/boards/index.js');
+    spy.mockImplementation(async (_c: any, ctx: any) => { ctx.warn('partial: 5 of 50 detailed'); return new Promise(() => {}); });
+    const r = await fetchBoards({ configPath: config([{ name: 'A', ats: 'greenhouse', slug: 'a', enabled: true }]), boardTimeoutMs: 50 });
+    expect(r.errors).toEqual(['greenhouse a: partial: 5 of 50 detailed', 'greenhouse a: timeout']);
+  });
 });

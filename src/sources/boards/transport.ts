@@ -60,11 +60,15 @@ async function requestText(url: string, label: string, method: 'GET' | 'POST', b
   try { u = new URL(url); } catch { throw new Error(`${label}: host not allowed`); }
   const policy = opts.hosts ?? DEFAULT_API_HOSTS;
   const host = u.hostname.toLowerCase();
-  const hostOk = typeof policy === 'function' ? policy(host) : policy.has(host);
-  if (u.protocol !== 'https:' || u.username || u.password || !hostOk || !isSafeFetchUrl(url)) throw new Error(`${label}: host not allowed`);
+  let hostOk = false;
+  try { hostOk = !host.endsWith('.') && (typeof policy === 'function' ? policy(host) === true : policy.has(host)); } catch { hostOk = false; }
+  if (u.protocol !== 'https:' || u.username || u.password || u.port || !hostOk || !isSafeFetchUrl(url)) throw new Error(`${label}: host not allowed`);
   if (body !== undefined && body.length > MAX_REQUEST_BODY_CHARS) throw new Error(`${label}: request body too large`);
   const headers: Record<string, string> = { ...BOARD_HEADERS, Accept: opts.accept ?? defaultAccept, ...(opts.headers ?? {}), 'User-Agent': BOARD_USER_AGENT };
-  if (method === 'POST' && !Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['Content-Type'] = 'application/json';
+  if (method === 'POST') {
+    for (const k of Object.keys(headers)) if (k.toLowerCase() === 'content-type') delete headers[k];
+    headers['Content-Type'] = 'application/json';
+  }
   const signal = AbortSignal.timeout(BOARD_TIMEOUT_MS);
   let res: Response;
   try {
@@ -99,5 +103,8 @@ export async function getText(url: string, label: string, opts: RequestOptions =
 
 /** POST a JSON payload and parse the JSON answer (Workday CXS). */
 export async function postJson(url: string, payload: unknown, label: string, opts: RequestOptions = {}): Promise<any> {
-  return parseJson(await requestText(url, label, 'POST', JSON.stringify(payload), 'application/json', opts), label);
+  let body: string | undefined;
+  try { body = JSON.stringify(payload); } catch { throw new Error(`${label}: invalid request body`); }
+  if (typeof body !== 'string') throw new Error(`${label}: invalid request body`);
+  return parseJson(await requestText(url, label, 'POST', body, 'application/json', opts), label);
 }

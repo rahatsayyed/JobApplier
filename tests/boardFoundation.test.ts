@@ -89,6 +89,17 @@ describe('settleBoard with a context', () => {
   });
 });
 
+describe('fix round 1', () => {
+  it('validates wd and site for every vendor whenever present', () => {
+    expect(extraConfigProblem({ ats: 'greenhouse', wd: 'wd5' + String.fromCharCode(47) + '..' + String.fromCharCode(47) + 'x' })).toMatch(/wd/);
+    expect(extraConfigProblem({ ats: 'lever', site: '../x' })).toMatch(/site/);
+    expect(extraConfigProblem({ ats: 'ashby', wd: 'wd5', site: 'Ext' })).toBeNull();
+  });
+  it('trailing hyphen slug message does not claim hyphens are fine', () => {
+    expect(slugProblem('workday', 'acme-')).toMatch(/not starting or ending with "-"/);
+  });
+});
+
 describe('util', () => {
   it('shortHash is stable and fixed length; pastDeadline handles undefined', () => {
     expect(shortHash('abc')).toBe(shortHash('abc'));

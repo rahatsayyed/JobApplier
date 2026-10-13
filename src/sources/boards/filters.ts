@@ -45,9 +45,9 @@ const TOKEN_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 const VENDOR_SLUG_RULES: Record<string, { re: RegExp; hint: string; max?: number }> = {
   workable: { re: TOKEN_SLUG_RE, hint: 'letters, digits, "_" and "-"' },
   smartrecruiters: { re: TOKEN_SLUG_RE, hint: 'letters, digits, "_" and "-"' },
-  recruitee: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and "-" (the tenant subdomain)' },
-  personio: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and "-" (the tenant subdomain)' },
-  workday: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and "-" (the tenant), at most 40 characters', max: 40 },
+  recruitee: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and inner "-", not starting or ending with "-" (the tenant subdomain)' },
+  personio: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and inner "-", not starting or ending with "-" (the tenant subdomain)' },
+  workday: { re: HOST_LABEL_RE, hint: 'lowercase letters, digits and inner "-", not starting or ending with "-" (the tenant), at most 40 characters', max: 40 },
 };
 /** null when the slug is fine for this vendor, else a short reason. */
 export function slugProblem(ats: string, slug: unknown): string | null {
@@ -65,9 +65,11 @@ const WD_RE = /^wd\d{1,3}$/;
 const SITE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 /** Validates the optional vendor fields of one tracked_companies entry; null when fine. */
 export function extraConfigProblem(c: any): string | null {
-  if (c.ats === 'workday') {
-    if (typeof c.wd !== 'string' || !WD_RE.test(c.wd)) return 'workday needs wd like "wd5"';
-    if (typeof c.site !== 'string' || !SITE_RE.test(c.site)) return 'workday needs site (letters, digits, "_" and "-", at most 40)';
+  if (c.ats === 'workday' || c.wd !== undefined) {
+    if (typeof c.wd !== 'string' || !WD_RE.test(c.wd)) return c.ats === 'workday' ? 'workday needs wd like "wd5"' : 'wd must look like "wd5"';
+  }
+  if (c.ats === 'workday' || c.site !== undefined) {
+    if (typeof c.site !== 'string' || !SITE_RE.test(c.site)) return c.ats === 'workday' ? 'workday needs site (letters, digits, "_" and "-", at most 40)' : 'site must be letters, digits, "_" and "-", at most 40';
   }
   if (c.domain !== undefined && c.domain !== 'de' && c.domain !== 'com') return 'domain must be "de" or "com"';
   if (c.search !== undefined && (typeof c.search !== 'string' || c.search.length > 100 || /[\u0000-\u001f]/.test(c.search))) return 'search must be a string of at most 100 characters';
