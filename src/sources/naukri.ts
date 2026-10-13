@@ -3,6 +3,22 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { chromium as patchrightChromium } from 'patchright';
+
+/**
+ * Headless mode (`NAUKRI_HEADLESS=true`): Patchright driving the installed Google Chrome with a
+ * real User-Agent. Akamai blocks on the `HeadlessChrome` UA token, so the UA override is what
+ * unblocks it (see scripts/experiments/naukri/RESULTS.md). Off by default: headed Playwright is
+ * the known-good path.
+ */
+export const HEADLESS_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+export const HEADLESS_CONTEXT_OPTIONS = {
+  userAgent: HEADLESS_USER_AGENT,
+  locale: 'en-IN',
+  timezoneId: 'Asia/Kolkata',
+  viewport: { width: 1440, height: 900 },
+};
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..', '..');
@@ -164,8 +180,9 @@ function isResolvedApplyUrl(url: string): boolean {
 /**
  * Scrapes Naukri's search-results page for a role/location, then (if a saved session exists)
  * resolves the real apply_url for up to `MAX_APPLY_URL_RESOLUTIONS_PER_FETCH` "new" jobs (per
- * `deps.isNewJob`) via `resolveApplyUrl`. One browser launch (`headless: false` — Naukri's Akamai
- * bot protection blocks headless Chromium outright, see Global Constraints), with two contexts:
+ * `deps.isNewJob`) via `resolveApplyUrl`. One browser launch (headed by default, because Naukri's
+ * Akamai bot protection blocks stock headless Chromium; `NAUKRI_HEADLESS=true` switches to
+ * Patchright + real Chrome + a real UA, which passes), with two contexts:
  * an unauthenticated one for scraping the search-results page, and (if a saved session exists) an
  * authenticated one for the apply-url resolution phase.
  *
@@ -176,17 +193,21 @@ export async function fetchNaukri(
   params: { role: string; location?: string },
   deps: NaukriDeps = {}
 ): Promise<Job[]> {
-  const browserLauncher = deps.chromium ?? chromium;
+  const headless = process.env.NAUKRI_HEADLESS === 'true';
+  const browserLauncher = deps.chromium ?? (headless ? (patchrightChromium as unknown as typeof chromium) : chromium);
+  const contextOptions = headless ? HEADLESS_CONTEXT_OPTIONS : {};
   const isNewJob = deps.isNewJob ?? (() => true);
   const sessionStatePath = deps.sessionStatePath ?? DEFAULT_SESSION_STATE_PATH;
   const searchUrl = buildNaukriSearchUrl(params.role, params.location);
 
   let browser: Browser | undefined;
   try {
-    browser = await browserLauncher.launch({ headless: false });
+    browser = await browserLauncher.launch(
+      headless ? { channel: 'chrome', headless: true, args: ['--headless=new'] } : { headless: false }
+    );
 
     let jobs: Job[] = [];
-    const searchContext = await browser.newContext();
+    const searchContext = await browser.newContext(contextOptions);
     try {
       const page = await searchContext.newPage();
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
@@ -219,7 +240,7 @@ export async function fetchNaukri(
     const jobsToResolve = jobs.filter((job) => isNewJob(job.id)).slice(0, MAX_APPLY_URL_RESOLUTIONS_PER_FETCH);
 
     if (jobsToResolve.length > 0 && existsSync(sessionStatePath)) {
-      const applyContext = await browser.newContext({ storageState: sessionStatePath });
+      const applyContext = await browser.newContext({ ...contextOptions, storageState: sessionStatePath });
       try {
         for (const job of jobsToResolve) {
           try {

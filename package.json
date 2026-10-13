@@ -28,6 +28,7 @@
     "@musistudio/claude-code-router": "^2.0.0",
     "better-sqlite3": "^12.11.1",
     "nodemailer": "^6.10.0",
+    "patchright": "^1.63.0",
     "pdf-parse": "1.1.1",
     "playwright": "^1.58.0"
   },
