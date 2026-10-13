@@ -9,11 +9,13 @@ export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable', 'recruit
 export type CompanyAts = (typeof COMPANY_ATS)[number];
 // Aggregators: one board-wide feed with many employers. They are configured in the "aggregators" object of portals.json (not in
 // tracked_companies), run through the same fetch loop, caps, filters and board_status, but are never part of BOARD_SOURCES (index.ts).
-export const AGGREGATOR_ATS = ['hackernews'] as const;
+export const AGGREGATOR_ATS = ['hackernews', 'himalayas', 'weworkremotely'] as const;
 export type AggregatorAts = (typeof AGGREGATOR_ATS)[number];
 export type Ats = CompanyAts | AggregatorAts;
 export const AGGREGATOR_DEFAULTS: Record<AggregatorAts, { name: string; slug: string }> = {
   hackernews: { name: 'Hacker News Who is hiring', slug: 'whoishiring' },
+  himalayas: { name: 'Himalayas', slug: 'himalayas' },
+  weworkremotely: { name: 'We Work Remotely', slug: 'weworkremotely' },
 };
 export interface TrackedCompany {
   name: string; ats: Ats; slug: string; enabled: boolean; region?: 'eu';
