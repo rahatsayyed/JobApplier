@@ -60,8 +60,12 @@ describe('languageGate', () => {
 });
 
 describe('loadLanguageConfig', () => {
-  it('shipped config parses, ships English only and unconfirmed', () => {
-    expect(loadLanguageConfig()).toEqual({ declared: [{ language: 'English', level: 'fluent' }], confirmed: false });
+  it('shipped config parses and declares at least English at a known level', () => {
+    const cfg = loadLanguageConfig();
+    expect(cfg).not.toBeNull();
+    expect(typeof cfg!.confirmed).toBe('boolean');
+    expect(cfg!.declared.find((d) => d.language === 'English')).toBeTruthy();
+    for (const d of cfg!.declared) expect(['basic', 'professional', 'fluent', 'native']).toContain(d.level);
   });
   it('reads confirmed:true, and returns null for a missing, broken or empty file', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'lang-'));

@@ -1,1 +1,10 @@
-{ "confirmed": false, "declared": [ { "language": "English", "level": "fluent" } ] }
+{
+  "confirmed": true,
+  "declared": [
+    { "language": "English", "level": "fluent" },
+    { "language": "Hindi", "level": "fluent" },
+    { "language": "Marathi", "level": "fluent" },
+    { "language": "Urdu", "level": "fluent" },
+    { "language": "Arabic", "level": "basic" }
+  ]
+}
