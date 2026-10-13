@@ -1,64 +1,12 @@
 // Adapted from career-ops-hq/career-ops providers/greenhouse.mjs (MIT, (c) 2026 Santiago Fernandez de Valderrama). See that repo's LICENSE.
 import { toIsoDay, type Job } from '../../db.js';
-import { isSafeFetchUrl } from '../../liveness.js';
 import { assertSlug, htmlToPlain, MAX_DESCRIPTION_CHARS, safeVendorUrl, type TrackedCompany } from './filters.js';
 
+// The hardened transport now lives in ./transport.ts; these re-exports keep every existing import working.
+export { BOARD_HEADERS, BOARD_TIMEOUT_MS, MAX_BODY_BYTES, getJson, getText, postJson } from './transport.js';
+import { getJson } from './transport.js';
+
 export interface BoardJob extends Job { locations: string[]; remote: boolean }
-
-export const BOARD_TIMEOUT_MS = 20_000;
-export const MAX_BODY_BYTES = 15 * 1024 * 1024;
-export const BOARD_HEADERS = { 'User-Agent': 'jobapplier/1.0 (personal job search; contact via repo owner)', Accept: 'application/json' };
-const ALLOWED_API_HOSTS = new Set(['boards-api.greenhouse.io', 'api.lever.co', 'api.eu.lever.co', 'api.ashbyhq.com']);
-
-// Same idea as the module-private readBodyCapped in src/liveness.ts (not exported, and it truncates), but a board body cut off mid-JSON is useless, so exceeding the cap rejects.
-async function readBodyCapped(res: Response, label: string): Promise<string> {
-  const declared = Number(res.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-    try { await res.body?.cancel(); } catch { /* best effort */ }
-    throw new Error(`${label}: response too large`);
-  }
-  const reader = res.body?.getReader?.();
-  if (!reader) {
-    const t = await res.text();
-    if (Buffer.byteLength(t) > MAX_BODY_BYTES) throw new Error(`${label}: response too large`);
-    return t;
-  }
-  const decoder = new TextDecoder();
-  let received = 0;
-  let text = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done || !value) break;
-    received += value.length;
-    if (received > MAX_BODY_BYTES) { await reader.cancel().catch(() => {}); throw new Error(`${label}: response too large`); }
-    text += decoder.decode(value, { stream: true });
-  }
-  return text + decoder.decode();
-}
-
-export async function getJson(url: string, label: string): Promise<any> {
-  let u: URL;
-  try { u = new URL(url); } catch { throw new Error(`${label}: host not allowed`); }
-  if (u.protocol !== 'https:' || !ALLOWED_API_HOSTS.has(u.hostname) || !isSafeFetchUrl(url)) throw new Error(`${label}: host not allowed`);
-  const signal = AbortSignal.timeout(BOARD_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(url, { headers: BOARD_HEADERS, signal, redirect: 'error' });
-  } catch (e: any) {
-    const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
-    throw new Error(`${label}: ${timedOut ? 'timeout' : `request failed (${String(e?.cause?.message ?? e?.message ?? e).slice(0, 120)})`}`);
-  }
-  if (!res.ok) {
-    try { await res.body?.cancel(); } catch { /* best effort */ }
-    throw new Error(`${label}: HTTP ${res.status}`);
-  }
-  let text: string;
-  try { text = await readBodyCapped(res, label); } catch (e: any) {
-    if (typeof e?.message === 'string' && e.message.startsWith(`${label}:`)) throw e;
-    throw new Error(`${label}: ${e?.name === 'TimeoutError' || e?.name === 'AbortError' ? 'timeout' : 'read failed'}`);
-  }
-  try { return JSON.parse(text); } catch { throw new Error(`${label}: invalid JSON`); }
-}
 
 export interface BoardResult { jobs: BoardJob[]; error: string | null }
 // Never-throwing wrapper over a provider fetch, so one bad board becomes a reportable error string (for board_status).
