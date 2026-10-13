@@ -16,8 +16,9 @@ const regions = DEFAULT_TARGET_REGIONS;
 describe('target regions config', () => {
   it('the shipped config/target-regions.json equals the built-in defaults, and every Gulf term is accepted by the portals.json location filter', () => {
     const file = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'config', 'target-regions.json');
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ home: ['India'], targets: GULF_TERMS, remote: true });
-    expect(loadTargetRegionsStatus(file)).toEqual({ config: DEFAULT_TARGET_REGIONS });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ home: ['India'], targets: GULF_TERMS, remote: true, remote_anywhere: true });
+    // the shipped file differs from the built-in defaults only in remote_anywhere (shipped true, default false)
+    expect(loadTargetRegionsStatus(file)).toEqual({ config: { ...DEFAULT_TARGET_REGIONS, remote_anywhere: true } });
     const { config } = loadPortals();
     for (const t of GULF_TERMS) expect(locationAllowed([t], false, config!.location_filter)).toBe(true);
   });
@@ -29,7 +30,7 @@ describe('target regions config', () => {
     expect(bad('{"home":[],"targets":[]}').invalid).toMatch(/home/);
     expect(bad('{"home":["India"],"targets":"UAE"}').invalid).toMatch(/targets/);
     expect(bad('{"home":["India"],"targets":[],"remote":"yes"}').invalid).toMatch(/remote/);
-    expect(bad('{"home":["India"],"targets":["Qatar"]}').config).toEqual({ home: ['India'], targets: ['Qatar'], remote: true });
+    expect(bad('{"home":["India"],"targets":["Qatar"]}').config).toEqual({ home: ['India'], targets: ['Qatar'], remote: true, remote_anywhere: false });
   });
   it('mentionedTargetRegion matches whole words only', () => {
     for (const [text, hit] of [['Muscat, Oman', 'Oman'], ['based in DOHA', 'Doha'], ['Dubai Internet City', 'Dubai'], ['across the GCC', 'GCC'], ['KSA-based', 'KSA']] as const) {

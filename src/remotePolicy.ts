@@ -67,3 +67,19 @@ export function findRestriction(text: string, opts: { scope: 'location' | 'posti
   }
   return null;
 }
+
+// A clear remote word in a location string ("Remote - Brazil", "Work from home", "Distributed", "Anywhere in Europe").
+export const REMOTE_WORD = /(?<![a-z0-9])(?:remote(?:ly)?|work from home|wfh|distributed|anywhere)(?![a-z0-9])/;
+const ONSITE_WORD = /(?<![a-z0-9])(?:on-?site|in-?office|in office|office[- ]based|hybrid|relocat\w*|no remote|not remote|remote (?:work )?(?:is )?not)(?![a-z0-9])/;
+const DESC_HEAD = 2000;
+
+// Is this posting remote? Yes when the job's remote flag is set or a remote word is in the location, title or the first 2000 characters
+// of the description, AND nothing in the location, title or that head says on-site, hybrid, in-office, relocation or "no remote"
+// (an on-site mention always wins: fail safe). Linear and capped; the text is untrusted.
+export function isRemotePosting(job: { title: string; description: string; location?: string | null; remote?: boolean | null }): boolean {
+  const loc = fold(String(job.location ?? '').slice(0, 500));
+  const title = fold(String(job.title ?? '').slice(0, 500));
+  const head = fold(String(job.description ?? '').slice(0, DESC_HEAD));
+  if (ONSITE_WORD.test(loc) || ONSITE_WORD.test(title) || ONSITE_WORD.test(head)) return false;
+  return job.remote === true || REMOTE_WORD.test(loc) || REMOTE_WORD.test(title) || REMOTE_WORD.test(head);
+}

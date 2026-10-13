@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostMatches } from '../../lib/hostClass.js';
+import { findRestriction, REMOTE_WORD } from '../../remotePolicy.js';
 
 // Company-board vendors: one board per tracked company. Each vendor has a provider in src/sources/boards/ and an entry in registry.ts.
 export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable', 'recruitee', 'personio', 'workday', 'smartrecruiters'] as const;
@@ -29,7 +30,7 @@ export interface TrackedCompany {
 export interface PortalsConfig {
   tracked_companies: TrackedCompany[];
   title_filter: { positive: string[]; negative: string[] };
-  location_filter: { allow: string[]; global: string[] };
+  location_filter: { allow: string[]; global: string[]; remote_anywhere?: boolean };
 }
 
 const fold = (s: string) => String(s ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
@@ -129,13 +130,23 @@ function isBareGlobal(seg: string, globals: string[]): boolean {
   return rest.replace(/[^a-z0-9]+/g, '') === '';
 }
 
-export function locationAllowed(locations: string[] | null | undefined, remote: boolean, f: { allow: string[]; global: string[] }): boolean {
+// With remote_anywhere on, "not open to India" and "other than India" also exclude a segment even though it names an allowed place.
+const INDIA_EXCLUDER = /(?:other than|not (?:open|available) (?:to|in))\s+(?:[a-z]+\s+){0,3}?india/;
+
+/**
+ * `f.remote_anywhere` (default false): a remote posting (the `remote` flag or a remote word in the segment) based in any other place passes
+ * unless the segment carries a restriction marker (src/remotePolicy.ts, shared with the veto backstop). Off = the plan 4 behaviour exactly.
+ */
+export function locationAllowed(locations: string[] | null | undefined, remote: boolean, f: { allow: string[]; global: string[]; remote_anywhere?: boolean }): boolean {
   let segs = (Array.isArray(locations) && locations.length ? locations : ['']).flatMap((l) => fold(l).split(';')).map((s) => s.trim()).filter(Boolean);
   if (!segs.length) segs = [''];
+  const anywhere = f.remote_anywhere === true;
   for (const seg of segs) {
     if (EXCLUDER.test(seg)) continue;
+    if (anywhere && INDIA_EXCLUDER.test(seg)) continue;
     if (f.allow.some((a) => a.trim() && wordIn(seg, a))) return true;
     if (remote && isBareGlobal(seg, f.global)) return true;
+    if (anywhere && (remote || REMOTE_WORD.test(seg)) && !findRestriction(seg, { scope: 'location' })) return true;
   }
   return false;
 }
@@ -276,6 +287,8 @@ export function loadPortals(file: string = defaultPath): { config: PortalsConfig
         location_filter: {
           allow: strs(raw?.location_filter?.allow),
           global: Array.isArray(raw?.location_filter?.global) ? strs(raw.location_filter.global) : DEFAULT_GLOBAL,
+          // only the boolean true turns it on; absent or invalid = false
+          remote_anywhere: raw?.location_filter?.remote_anywhere === true,
         },
       },
       error: null,

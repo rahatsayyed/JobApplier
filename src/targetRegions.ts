@@ -12,6 +12,8 @@ export interface TargetRegions {
   targets: string[];
   /** Remote roles that accept the candidate are acceptable. */
   remote: boolean;
+  /** Remote roles based in any other country are acceptable unless the posting restricts eligibility (see src/remotePolicy.ts). Default false. */
+  remote_anywhere: boolean;
 }
 
 export const GULF_TERMS = [
@@ -23,7 +25,7 @@ export const GULF_TERMS = [
 ];
 /** Region-wide words: they stay in the board allow list but never trigger the location downgrade ("we sell to the Middle East"). */
 export const BROAD_TERMS = ['GCC', 'Middle East', 'MENA'];
-export const DEFAULT_TARGET_REGIONS: TargetRegions = { home: ['India'], targets: GULF_TERMS, remote: true };
+export const DEFAULT_TARGET_REGIONS: TargetRegions = { home: ['India'], targets: GULF_TERMS, remote: true, remote_anywhere: false };
 
 const defaultPath = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), 'config', 'target-regions.json');
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -39,7 +41,8 @@ export function loadTargetRegionsStatus(file: string = defaultPath): { config: T
     if (!home || !home.length) return { config: null, invalid: 'home must be a non-empty array of short strings' };
     if (!targets) return { config: null, invalid: 'targets must be an array of at most 100 short strings' };
     if (raw.remote !== undefined && typeof raw.remote !== 'boolean') return { config: null, invalid: 'remote must be true or false' };
-    return { config: { home, targets, remote: raw.remote !== false } };
+    // remote_anywhere: only the boolean true switches it on; absent or invalid means false (fail safe).
+    return { config: { home, targets, remote: raw.remote !== false, remote_anywhere: raw.remote_anywhere === true } };
   } catch (e: any) {
     return { config: null, invalid: String(e?.message ?? e).slice(0, 120) };
   }

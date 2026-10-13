@@ -5,14 +5,20 @@ import { languageGate, type LanguageConfig } from './languageGate.js';
 import { ageDays, deadlinePassed, staleFlag } from './freshness.js';
 import { assessLegitimacy, type Legitimacy } from './legitimacy.js';
 import { specificTargets, targetRegionEvidence, type TargetRegions } from './targetRegions.js';
-import { findRestriction } from './remotePolicy.js';
+import { findRestriction, isRemotePosting } from './remotePolicy.js';
 
-/** The target term that justifies turning a model location FAIL into a FLAG, or null (FAIL stays): no restriction marker, and real evidence (see targetRegionEvidence). */
-function regionDowngrade(job: { title: string; description: string; location?: string | null }, targets: string[]): string | null {
-  const specific = specificTargets(targets);
+// Why a model location FAIL may be shown as a FLAG, or null (FAIL stays). Never when a restriction marker (src/remotePolicy.ts) is in the
+// location, title or the first 20000 characters of the description. Otherwise: real target-region evidence (targetRegionEvidence), or, with
+// remote_anywhere on, a remote posting (isRemotePosting; on-site mentions win, so on-site elsewhere stays FAIL).
+function locationDowngrade(job: { title: string; description: string; location?: string | null; remote?: boolean }, tr: TargetRegions): { flag: string } | null {
+  const specific = specificTargets(tr.targets);
   const restricted = findRestriction(String(job.location ?? ''), { scope: 'location', targets: specific })
     ?? findRestriction(`${job.title}\n${job.description}`, { scope: 'posting', targets: specific });
-  return restricted ? null : targetRegionEvidence(job, targets);
+  if (restricted) return null;
+  const hit = targetRegionEvidence(job, tr.targets);
+  if (hit) return { flag: `location FLAG: the matcher said FAIL but the posting names target region "${hit}" (relocation, visa or residency may be needed: check the posting)` };
+  if (tr.remote_anywhere === true && isRemotePosting(job)) return { flag: 'location FLAG: remote role based elsewhere: verify eligibility' };
+  return null;
 }
 
 export type Verdict = 'PASS' | 'FAIL' | 'FLAG';
@@ -49,10 +55,10 @@ export function applyVetoes(
   // Backstop for the model's location verdict: a FAIL on a posting that names a target region (Gulf by default) is shown as a FLAG, never passed silently.
   let locationVerdict = m.location_verdict;
   // A restriction marker (residency, "US only", right to work in a non-target place...) in the location, title or the posting text keeps the FAIL.
-  const regionHit = locationVerdict === 'FAIL' && extras?.targetRegions ? regionDowngrade(job, extras.targetRegions.targets) : null;
-  if (regionHit) {
+  const down = locationVerdict === 'FAIL' && extras?.targetRegions ? locationDowngrade(job, extras.targetRegions) : null;
+  if (down) {
     locationVerdict = 'FLAG';
-    soft.push(`location FLAG: the matcher said FAIL but the posting names target region "${regionHit}" (relocation, visa or residency may be needed: check the posting)`);
+    soft.push(down.flag);
   } else if (locationVerdict === 'FLAG') soft.push('location FLAG');
   if (extras?.targetRegions === null) soft.push(`target regions config invalid: ${extras.targetRegionsInvalid ?? 'unreadable'}`);
   if (m.language_gate === 'FLAG' || ts?.verdict === 'FLAG') soft.push(ts?.verdict === 'FLAG' ? `language FLAG: ${ts.note}` : 'language FLAG');

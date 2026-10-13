@@ -26,7 +26,8 @@ describe('config/portals.json (the real file)', () => {
 });
 
 describe('Gulf locations in the location filter', () => {
-  const f = config!.location_filter;
+  // These pin the plan 4 / Gulf allow-list rules, so the remote_anywhere option (shipped true, see remoteAnywhere.test.ts) is switched off here.
+  const f = { ...config!.location_filter, remote_anywhere: false };
   it.each([
     'Dubai, United Arab Emirates', 'Abu Dhabi', 'Sharjah, UAE', 'Riyadh, Saudi Arabia', 'Jeddah', 'KSA', 'Doha, Qatar', 'Kuwait City, Kuwait',
     'Manama, Bahrain', 'Muscat, Oman', 'GCC', 'Middle East', 'MENA', 'Remote, UAE', 'Hybrid - Dubai',

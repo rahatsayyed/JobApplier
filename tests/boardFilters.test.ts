@@ -103,7 +103,8 @@ describe('locationAllowed', () => {
     [['Remote, US;'], true, false],
   ])('%j remote=%s -> %s', (locs, remote, ok) => { expect(locationAllowed(locs, remote, lf)).toBe(ok); });
   it('the shipped location filter rejects the live GitLab leaks', () => {
-    const shipped = loadPortals().config!.location_filter;
+    // remote_anywhere (shipped true) is switched off here: this pins the plan 4 rule; remoteAnywhere.test.ts covers the shipped option.
+    const shipped = { ...loadPortals().config!.location_filter, remote_anywhere: false };
     for (const l of ['Remote, US', 'Remote, Sweden', 'Remote, Israel', 'Remote - Worldwide (excl. India)', 'Remote, Canada; Remote, United States']) {
       expect(locationAllowed([l], true, shipped)).toBe(false);
     }
