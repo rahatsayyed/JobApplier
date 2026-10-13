@@ -14,6 +14,7 @@ import { detectLearned, saveLearnedPlatform } from '../ats/learned.js';
 import { snapshotFormControls } from '../lib/domSnapshot.js';
 import { bootstrapFieldMap } from '../lib/atsBootstrap.js';
 import { lookAlikeAtsHost } from '../lib/hostClass.js';
+import { isDiscoverOnlySource } from '../lib/discoverOnly.js';
 
 // Best-effort, NOT live-verified selectors (unlike linkedin.ts's
 // SELECTORS.submissionConfirmation, which was confirmed live against a real posting).
@@ -216,6 +217,11 @@ export async function applyExternal(
   const job = getJob(database, job_id);
   if (!job || !job.apply_url) {
     return recordAndReturn(database, job_id, null, 'manual_review', 'job not found or missing apply_url');
+  }
+  // Jobs from discover-only sources (Workday boards, aggregators, vendors without an apply module) are refused before the veto lookup,
+  // the bootstrap, the browser and the daily counter: their apply_url may be an aggregator page or a tenant host we never learned.
+  if (isDiscoverOnlySource(job.source)) {
+    return recordAndReturn(database, job_id, null, 'manual_review', `source "${job.source}" is discover-only: apply is not supported for it (email and connect outreach still run)`);
   }
   const vetoReason = getExcludedReason(database, job_id);
   if (vetoReason) {

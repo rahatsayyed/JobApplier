@@ -5,6 +5,7 @@ import { classifyDeadlines, type DeadlineSweep } from './freshness.js';
 import type { Legitimacy } from './legitimacy.js';
 import { dbPath } from './dbPath.js';
 import { companyKey, repostCount, titleIdentityKey } from './reposts.js';
+import { isDiscoverOnlySource } from './lib/discoverOnly.js';
 
 /** enqueue_outreach.ats_coverage: an integer percentage, or null when the final render had no keywords (tailor contract). */
 export const atsCoverageSchema = z.number().int().min(0).max(100).nullable().optional();
@@ -562,6 +563,10 @@ export function enqueueOutreach(
     review_rejected?: number | null;
   }
 ): number {
+  // Discover-only sources (see src/lib/discoverOnly.ts) never get an apply attempt, whatever the preparer asked for: 'none' keeps
+  // the sender away from the shared daily apply counter while email and connect outreach on the same row still run.
+  const source = (db.prepare('SELECT source FROM jobs WHERE id = ?').get(item.job_id) as { source: string | null } | undefined)?.source;
+  const applyPlatform = isDiscoverOnlySource(source) ? 'none' : item.apply_platform;
   const result = db.prepare(`
     INSERT INTO outreach_queue (
       job_id, resume_pdf_path, email_subject, email_body, email_to,
@@ -579,7 +584,7 @@ export function enqueueOutreach(
     item.connect_profile_url,
     item.connect_category,
     item.connect_company,
-    item.apply_platform,
+    applyPlatform,
     item.apply_url,
     item.resume_json ?? null,
     item.ats_coverage ?? null,
