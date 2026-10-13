@@ -5,10 +5,14 @@ import { fetchGreenhouse, type BoardFetcher } from './greenhouse.js';
 import { fetchLever } from './lever.js';
 import { fetchAshby } from './ashby.js';
 import { fetchWorkable } from './workable.js';
+import { fetchRecruitee } from './recruitee.js';
+import { fetchPersonio } from './personio.js';
 
 export const FETCHERS: Record<Ats, BoardFetcher> = {
   greenhouse: fetchGreenhouse,
   lever: fetchLever,
   ashby: fetchAshby,
   workable: fetchWorkable,
+  recruitee: fetchRecruitee,
+  personio: fetchPersonio,
 };
