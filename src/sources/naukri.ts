@@ -8,7 +8,7 @@ import { chromium as patchrightChromium } from 'patchright';
 /**
  * Headless mode (`NAUKRI_HEADLESS=true`): Patchright driving the installed Google Chrome with a
  * real User-Agent. Akamai blocks on the `HeadlessChrome` UA token, so the UA override is what
- * unblocks it (see scripts/experiments/naukri/RESULTS.md). Off by default: headed Playwright is
+ * unblocks it. Off by default: headed Playwright is
  * the known-good path.
  */
 export const HEADLESS_USER_AGENT =

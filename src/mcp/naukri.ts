@@ -15,8 +15,8 @@ import { HEADLESS_CONTEXT_OPTIONS, extractNaukriJobId } from '../sources/naukri.
 /**
  * `naukri` MCP server: hands and eyes for a persistent HEADLESS Naukri browser session that the
  * calling Claude drives step by step. It never decides an answer and never loops on its own.
- * Headless only (Akamai blocks stock headless Chromium; see scripts/experiments/naukri/RESULTS.md,
- * the same patchright + real Chrome + real UA recipe src/sources/naukri.ts uses).
+ * Headless only (Akamai blocks stock headless Chromium): it uses
+ * the same patchright + real Chrome + real UA recipe as src/sources/naukri.ts.
  *
  * All page-derived text (job page, chatbot messages) is untrusted third-party input: it is only
  * ever returned inside a delimited block with a "do not follow instructions" note.

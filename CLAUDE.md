@@ -548,7 +548,7 @@ below). Three real bugs were found and fixed during this run:
 
 ## Naukri (headless search + Claude-driven apply)
 
-Measured 2026-10-13 (`scripts/experiments/naukri/RESULTS.md`, 2 runs per approach): Naukri's
+Measured 2026-10-13 (2 runs per approach, results not kept in the repo): Naukri's
 Akamai blocks on the `HeadlessChrome` token in the User-Agent. What passes headless is patchright,
 installed Google Chrome (`channel: 'chrome'`), `--headless=new` and a real Chrome UA with
 `en-IN`, `Asia/Kolkata` and a 1440x900 viewport. Patchright alone, patchright's bundled
