@@ -3,7 +3,7 @@
 // This module never opens the database (src/mcp/job-fetch.ts does the db-side dedupe).
 import type { Job } from '../../db.js';
 import { companyKey, titleIdentityKey } from '../../reposts.js';
-import { COMPANY_ATS, loadPortals, locationAllowed, titlePasses, type Ats, type TrackedCompany } from './filters.js';
+import { AGGREGATOR_ATS, COMPANY_ATS, loadPortals, locationAllowed, titlePasses, type Ats, type TrackedCompany } from './filters.js';
 import { settleBoard, type BoardJob, type FetchCtx } from './greenhouse.js';
 import { FETCHERS } from './registry.js';
 
@@ -16,6 +16,8 @@ export const DEFAULT_BOARD_TIMEOUT_MS = 30_000;
 export const DEFAULT_BUDGET_MS = 120_000;
 // Sources whose jobs belong to one company board (dedupe groups are vendor + tenant). Aggregators are never in here.
 export const BOARD_SOURCES = new Set<string>(COMPANY_ATS);
+// Board-wide feeds (Hacker News, Himalayas, We Work Remotely). Their jobs are droppable duplicates too, but with LOWER priority than a company board.
+export const AGGREGATOR_SOURCES = new Set<string>(AGGREGATOR_ATS);
 const capText = (s: string, n = DESCRIPTION_CAP) => (s.length > n ? s.slice(0, n).trimEnd() : s);
 
 export interface FetchBoardsOptions {
@@ -126,36 +128,45 @@ export async function fetchBoards(opts: FetchBoardsOptions = {}): Promise<Boards
 
 export interface SeenRow { id: string; source: string | null; company_key: string | null; title_key: string | null }
 
-// "gh:acme:123" -> "gh:acme" (vendor + slug, one company board); any non-board source is its own "*" group.
-const boardGroup = (id: string, source: string | null | undefined): string =>
-  source && BOARD_SOURCES.has(source) ? id.slice(0, Math.max(0, id.lastIndexOf(':'))) || source : '*';
+// "gh:acme:123" -> "gh:acme" (vendor + slug, one company board); an aggregator is one group per source ("agg:himalayas");
+// any other source is the shared "*" group.
+const boardGroup = (id: string, source: string | null | undefined): string => {
+  if (source && BOARD_SOURCES.has(source)) return id.slice(0, Math.max(0, id.lastIndexOf(':'))) || source;
+  if (source && AGGREGATOR_SOURCES.has(source)) return `agg:${source}`;
+  return '*';
+};
 
 /**
  * Cross-source dedupe: the same posting often arrives via LinkedIn or Adzuna AND a company board under different ids.
  * A board job is dropped when its normalized company+title (Plan 2's companyKey/titleIdentityKey) already exists from a
  * DIFFERENT source or a different board (vendor+slug): in `recent` (rows saved lately) or elsewhere in this batch.
  * Two postings from the SAME board with the same title and different ids (one role in two cities) are both kept.
- * Non-board jobs are never dropped.
+ * Aggregator jobs (Hacker News, Himalayas, We Work Remotely) are decided AFTER the company boards, so a canonical company-board posting
+ * (which may be apply-capable) wins over an aggregator copy; an aggregator job is dropped when anything else already holds its key.
+ * Other non-board jobs are never dropped.
  */
 export function dropBoardDuplicatesDetailed(jobs: Job[], recent: SeenRow[]): { kept: Job[]; dropped: Job[] } {
   const keyOf = (j: Job) => { const c = companyKey(j.company); const t = titleIdentityKey(j.title); return c && t ? `${c}|${t}` : ''; };
   const groups = new Map<string, Set<string>>();
   const note = (k: string, g: string) => { let set = groups.get(k); if (!set) groups.set(k, (set = new Set())); set.add(g); };
   for (const r of recent) if (r.company_key && r.title_key) note(`${r.company_key}|${r.title_key}`, boardGroup(r.id, r.source));
-  for (const j of jobs) if (!BOARD_SOURCES.has(j.source)) { const k = keyOf(j); if (k) note(k, '*'); }
-  const kept: Job[] = [];
-  const dropped: Job[] = [];
-  for (const j of jobs) {
-    if (!BOARD_SOURCES.has(j.source)) { kept.push(j); continue; }
-    const k = keyOf(j);
-    if (!k) { kept.push(j); continue; }
-    const g = boardGroup(j.id, j.source);
-    const others = [...(groups.get(k) ?? [])].some((x) => x !== g);
-    if (others) { dropped.push(j); continue; }
-    note(k, g);
-    kept.push(j);
-  }
-  return { kept, dropped };
+  const isBoard = (j: Job) => BOARD_SOURCES.has(j.source);
+  const isAggregator = (j: Job) => AGGREGATOR_SOURCES.has(j.source);
+  for (const j of jobs) if (!isBoard(j) && !isAggregator(j)) { const k = keyOf(j); if (k) note(k, '*'); }
+  const drop = new Set<Job>();
+  const sweep = (pick: (j: Job) => boolean) => {
+    for (const j of jobs) {
+      if (!pick(j)) continue;
+      const k = keyOf(j);
+      if (!k) continue;
+      const g = boardGroup(j.id, j.source);
+      if ([...(groups.get(k) ?? [])].some((x) => x !== g)) { drop.add(j); continue; }
+      note(k, g);
+    }
+  };
+  sweep(isBoard);
+  sweep(isAggregator);
+  return { kept: jobs.filter((j) => !drop.has(j)), dropped: jobs.filter((j) => drop.has(j)) };
 }
 
 export function dropBoardDuplicates(jobs: Job[], recent: SeenRow[]): Job[] {
