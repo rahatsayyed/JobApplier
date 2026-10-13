@@ -7,6 +7,7 @@ import { openDb, getJob, getExcludedReason, getFirstHardStop, saveApplication } 
 import { dbPath } from '../dbPath.js';
 import { checkAndIncrement } from '../lib/rateLimit.js';
 import { hostMatches } from '../lib/hostClass.js';
+import { isDiscoverOnlySource } from '../lib/discoverOnly.js';
 import {
   resolveControlWithFallback,
   resolveAnswerTopicWithFallback,
@@ -385,6 +386,11 @@ export async function applyEasyApply(
   const job = getJob(database, job_id);
   if (!job || !job.url) {
     return recordAndReturn(database, job_id, 'manual_review', 'job not found or missing url');
+  }
+  // Discover-only sources never get an apply attempt, even when their url happens to be a linkedin.com one:
+  // refused before the host check, the veto lookup, the session, the browser and the daily counter.
+  if (isDiscoverOnlySource(job.source)) {
+    return recordAndReturn(database, job_id, 'manual_review', `source "${job.source}" is discover-only: apply is not supported for it (email and connect outreach still run)`);
   }
   const vetoReason = getExcludedReason(database, job_id);
   if (vetoReason) {

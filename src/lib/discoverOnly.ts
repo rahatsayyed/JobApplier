@@ -7,5 +7,5 @@ export const DISCOVER_ONLY_SOURCES: ReadonlySet<string> = new Set([
 ]);
 
 export function isDiscoverOnlySource(source: string | null | undefined): boolean {
-  return typeof source === 'string' && DISCOVER_ONLY_SOURCES.has(source);
+  return typeof source === 'string' && DISCOVER_ONLY_SOURCES.has(source.trim().toLowerCase());
 }

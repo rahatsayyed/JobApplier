@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DISCOVER_ONLY_SOURCES, isDiscoverOnlySource } from '../src/lib/discoverOnly.js';
 import { applyExternal } from '../src/apply/external.js';
+import { applyEasyApply } from '../src/apply/linkedin.js';
 import { enqueueOutreach, openDb, saveJob, saveOutreach } from '../src/db.js';
 
 const queueItem = (job_id: string, apply_platform: string | null) => ({
@@ -19,6 +20,7 @@ describe('isDiscoverOnlySource', () => {
     expect([...DISCOVER_ONLY_SOURCES].sort()).toEqual(['hackernews', 'himalayas', 'personio', 'recruitee', 'smartrecruiters', 'weworkremotely', 'workable', 'workday']);
     for (const s of ['greenhouse', 'lever', 'ashby', 'linkedin', 'adzuna', 'remotive', 'naukri', '', null, undefined]) expect(isDiscoverOnlySource(s)).toBe(false);
     expect(isDiscoverOnlySource('workday')).toBe(true);
+    for (const s of ['Workday', ' workday ', 'HACKERNEWS']) expect(isDiscoverOnlySource(s)).toBe(true);
   });
 });
 
@@ -55,5 +57,40 @@ describe('applyExternal refuses discover-only jobs before anything else', () => 
     expect(runClaude).not.toHaveBeenCalled();
     expect(existsSync(learnedPlatformsPath)).toBe(false);
     expect(db.prepare("SELECT count FROM daily_counters WHERE day = date('now') AND key = ?").get('easy_apply')).toBeUndefined();
+  });
+});
+
+describe('case variants and missing job rows', () => {
+  it('enqueueOutreach coerces case-variant sources; a job_id with no jobs row passes the platform through', () => {
+    const db = openDb(':memory:');
+    saveJob(db, job('wd:1', 'Workday', 'https://acme.wd5.myworkdayjobs.com/ext/job/x_R1'));
+    saveJob(db, job('hn:3', ' workday ', 'https://news.ycombinator.com/item?id=3'));
+    saveJob(db, job('hn:4', 'HACKERNEWS', 'https://news.ycombinator.com/item?id=4'));
+    const plat = (id: number) => (db.prepare('SELECT apply_platform FROM outreach_queue WHERE id = ?').get(id) as any).apply_platform;
+    for (const j of ['wd:1', 'hn:3', 'hn:4']) expect(plat(enqueueOutreach(db, queueItem(j, 'workday')))).toBe('none');
+    expect(plat(enqueueOutreach(db, queueItem('no-such-job', 'greenhouse')))).toBe('greenhouse');
+  });
+
+  it.each(['Workday', ' workday ', 'HACKERNEWS'])('applyExternal refuses source %j', async (source) => {
+    const db = openDb(':memory:');
+    saveJob(db, job('x:1', source, 'https://news.ycombinator.com/item?id=9'));
+    const launch = vi.fn();
+    const r = await applyExternal({ job_id: 'x:1' }, { db, maxAppliesPerDay: 5, chromium: { launch } as any });
+    expect(r.status).toBe('manual_review');
+    expect(r.reason).toMatch(/discover-only/);
+    expect(launch).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyEasyApply refuses discover-only jobs even with a linkedin.com url', () => {
+  it.each(['hackernews', 'HackerNews', ' workday '])('%j', async (source) => {
+    const db = openDb(':memory:');
+    saveJob(db, job('li:1', source, 'https://www.linkedin.com/jobs/view/123'));
+    const launch = vi.fn();
+    const r = await applyEasyApply({ job_id: 'li:1' }, { db, maxAppliesPerDay: 5, chromium: { launch } as any });
+    expect(r.status).toBe('manual_review');
+    expect(r.reason).toMatch(/discover-only/);
+    expect(launch).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT count FROM daily_counters WHERE key = ?').get('easy_apply')).toBeUndefined();
   });
 });
