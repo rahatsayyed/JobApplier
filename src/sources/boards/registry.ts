@@ -9,6 +9,7 @@ import { fetchRecruitee } from './recruitee.js';
 import { fetchPersonio } from './personio.js';
 import { fetchWorkday } from './workday.js';
 import { fetchHackerNews } from './hackernews.js';
+import { fetchSmartRecruiters } from './smartrecruiters.js';
 
 export const FETCHERS: Record<Ats, BoardFetcher> = {
   greenhouse: fetchGreenhouse,
@@ -19,4 +20,5 @@ export const FETCHERS: Record<Ats, BoardFetcher> = {
   personio: fetchPersonio,
   workday: fetchWorkday,
   hackernews: fetchHackerNews,
+  smartrecruiters: fetchSmartRecruiters,
 };

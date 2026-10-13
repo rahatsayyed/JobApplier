@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { hostMatches } from '../../lib/hostClass.js';
 
 // Company-board vendors: one board per tracked company. Each vendor has a provider in src/sources/boards/ and an entry in registry.ts.
-export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable', 'recruitee', 'personio', 'workday'] as const;
+export const COMPANY_ATS = ['greenhouse', 'lever', 'ashby', 'workable', 'recruitee', 'personio', 'workday', 'smartrecruiters'] as const;
 export type CompanyAts = (typeof COMPANY_ATS)[number];
 // Aggregators: one board-wide feed with many employers. They are configured in the "aggregators" object of portals.json (not in
 // tracked_companies), run through the same fetch loop, caps, filters and board_status, but are never part of BOARD_SOURCES (index.ts).
